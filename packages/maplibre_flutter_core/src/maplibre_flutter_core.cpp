@@ -120,6 +120,20 @@ void renderNow(MblMap *m) {
   }
 }
 
+// Render thread only. Refreshes the cached camera from the map (after relative
+// gesture ops, where we don't know the resulting camera up front).
+void updateCameraCache(MblMap *m) {
+  const auto cam = m->map->getCameraOptions();
+  std::lock_guard<std::mutex> lk(m->cameraMutex);
+  if (cam.center) {
+    m->camera.lat = cam.center->latitude();
+    m->camera.lng = cam.center->longitude();
+  }
+  if (cam.zoom) m->camera.zoom = *cam.zoom;
+  if (cam.bearing) m->camera.bearing = *cam.bearing;
+  if (cam.pitch) m->camera.pitch = *cam.pitch;
+}
+
 void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                       float pixelRatio, std::string styleUri) {
   mbgl::util::RunLoop loop;
@@ -233,6 +247,29 @@ void mbl_map_resize(MblMap *m, uint32_t width, uint32_t height) {
   m->post([m, width, height] {
     m->frontend->setSize(mbgl::Size{width, height});
     m->map->setSize(mbgl::Size{width, height});
+    renderNow(m);
+  });
+}
+
+void mbl_map_move_by(MblMap *m, double dx, double dy) {
+  if (m == nullptr) {
+    return;
+  }
+  m->post([m, dx, dy] {
+    m->map->moveBy(mbgl::ScreenCoordinate{dx, dy});
+    updateCameraCache(m);
+    renderNow(m);
+  });
+}
+
+void mbl_map_scale_by(MblMap *m, double scale, double anchor_x,
+                      double anchor_y) {
+  if (m == nullptr) {
+    return;
+  }
+  m->post([m, scale, anchor_x, anchor_y] {
+    m->map->scaleBy(scale, mbgl::ScreenCoordinate{anchor_x, anchor_y});
+    updateCameraCache(m);
     renderNow(m);
   });
 }

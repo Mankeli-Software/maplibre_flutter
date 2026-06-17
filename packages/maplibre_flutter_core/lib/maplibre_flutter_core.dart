@@ -170,6 +170,19 @@ class MapLibreCoreMap {
     bindings.mbl_map_resize(_handle, width, height);
   }
 
+  /// Pans the map by a screen-space delta in device pixels (for the gesture
+  /// layer). The camera cache is refreshed so [getCamera] stays accurate.
+  void moveBy(double dx, double dy) {
+    _checkAlive();
+    bindings.mbl_map_move_by(_handle, dx, dy);
+  }
+
+  /// Zooms by [scale] (>1 zooms in) about the anchor point in device pixels.
+  void scaleBy(double scale, double anchorX, double anchorY) {
+    _checkAlive();
+    bindings.mbl_map_scale_by(_handle, scale, anchorX, anchorY);
+  }
+
   /// Returns the latest rendered frame as tightly-packed BGRA (premultiplied
   /// alpha) bytes, or null if none is available yet. Non-blocking — the render
   /// thread produces frames asynchronously; use [awaitFrame] to wait for the

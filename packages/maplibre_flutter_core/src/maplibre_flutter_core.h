@@ -65,6 +65,15 @@ FFI_PLUGIN_EXPORT void mbl_map_get_camera(MblMap *map, double *out_lat,
 FFI_PLUGIN_EXPORT void mbl_map_resize(MblMap *map, uint32_t width,
                                       uint32_t height);
 
+// Pan the map by a screen-space delta (device pixels) and re-render. For the
+// shared desktop gesture layer.
+FFI_PLUGIN_EXPORT void mbl_map_move_by(MblMap *map, double dx, double dy);
+
+// Zoom by `scale` (>1 zooms in) about the anchor point (device pixels) and
+// re-render.
+FFI_PLUGIN_EXPORT void mbl_map_scale_by(MblMap *map, double scale,
+                                        double anchor_x, double anchor_y);
+
 // Register (or clear, with NULL) the frame-ready callback. See MblFrameCallback.
 FFI_PLUGIN_EXPORT void mbl_map_set_frame_callback(MblMap *map,
                                                   MblFrameCallback callback,
