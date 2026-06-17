@@ -2,7 +2,7 @@ name: maplibre_flutter_android
 description: >-
   The Android implementation of maplibre_flutter (jnigen over the Kotlin MapLibre SDK, AndroidView).
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2

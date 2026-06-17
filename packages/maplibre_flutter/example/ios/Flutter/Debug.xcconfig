@@ -1,1 +1,4 @@
 #include "Generated.xcconfig"
+// Optional local-only signing config (DEVELOPMENT_TEAM); git-ignored, absent in
+// CI. The `?` keeps the build working when the file is missing. See README.
+#include? "Local.xcconfig"

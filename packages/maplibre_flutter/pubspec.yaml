@@ -3,7 +3,7 @@ description: >-
   Native MapLibre vector maps for Flutter on every platform — Android, iOS,
   macOS, Windows, Linux, and Web — with true native rendering on desktop.
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2

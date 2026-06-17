@@ -2,7 +2,7 @@ name: maplibre_flutter_macos
 description: >-
   The macOS implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, Metal external texture).
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2

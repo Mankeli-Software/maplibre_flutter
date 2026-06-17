@@ -60,7 +60,19 @@ is scaffolded vs. still TODO:
     has working zoom / fly-to / style-toggle buttons. `flutter build apk --debug` green;
     `libmaplibre.so` + `libdartjni.so` bundled. Milestone A render confirmed on device; B button
     behaviour pending a device run.
-  - **iOS / macOS / Windows / Linux / Web** native sides are still stubs — `createMap()` throws
+  - **iOS — milestones A + B done.** Hybrid plugin packaged for **both SPM and CocoaPods**
+    (§9): native module under `ios/maplibre_flutter_ios/` (`Package.swift` + `Sources/…`, plus
+    `maplibre_flutter_ios.podspec`), MapLibre Apple SDK 6.27.0. `MaplibreFlutterIosPlugin`
+    registers a `UiKitView` factory; `MapLibrePlatformView` builds an `MLNMapView` from
+    `creationParams`. **Milestone B control via swiftgen:** Dart mints `mapId` → native
+    `MapRegistry` registers a `MapLibreController` → Dart resolves it over the ObjC runtime and
+    drives camera/style. **swiftgen-bound classes are Foundation-only** (`MapLibreController`,
+    `MapRegistry`); all `MLN*` usage is quarantined in `MapLibreMapBackend` (not a swiftgen
+    input) behind an internal `ops` protocol, because **swiftgen compiles its inputs** and can't
+    see the MapLibre framework (Section 5b). Bindings committed at
+    `lib/src/maplibre_flutter_ios_bindings.g.dart` (`tool/swiftgen.dart`). Example buttons work
+    on iOS unchanged. SPM **and** CocoaPods example builds green; device frame pending a sim run.
+  - **macOS / Windows / Linux / Web** native sides are still stubs — `createMap()` throws
     `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
     No `mbgl-core` submodule yet; the core shim is still the template `sum`/`sum_long_running`.
 
@@ -178,18 +190,36 @@ swiftgen is **still experimental** — pin versions and expect rough edges.
 - Swift exposed to Dart must be **`@objc public`** and classes must inherit **`NSObject`**.
   Only ObjC-compatible types (no Swift structs, enums-with-payload, or generics across the
   boundary).
-- Prefer **`ObjCCompatibleSwiftFileInput`** (for already-`@objc` Swift we control) over
-  `SwiftFileInput` — fewer surprises.
-- Always set ffigen **`include` filters** to your own interfaces/protocols, or you generate
-  hundreds of lines of `NSObject`/`NSString` bindings.
-- For observer/notification callbacks use **`implementAsListener(...)`** (non-blocking).
-- **SDK-version workaround:** `Target.iOSArm64Latest()` can throw `FormatException`; resolve
-  the SDK path/version via `xcrun --sdk iphoneos --show-sdk-path/--show-sdk-version` and
-  build `Target` manually.
-- Produces **two** files — Dart bindings (`lib/src/..._ios.g.dart`) and ObjC glue
-  (`ios/Classes/....m`). **Commit both.** The `.m` must be covered by the podspec
-  (`s.source_files = 'Classes/**/*'`).
-- **SPM (+ CocoaPods) packaging** is mandatory — see Section 9.
+- Use **`ObjCCompatibleSwiftFileInput`** for already-`@objc` Swift we control (no wrapper
+  layer). With it, **no ObjC `.m` glue is emitted** in practice (the `Output.objectiveCFile`
+  path is required but stays unwritten) — so the SPM "no mixed Swift+ObjC in one target" rule
+  never bites, and the bindings work purely over the ObjC runtime via `package:objective_c`.
+- **swiftgen COMPILES its input files** (unlike jnigen, which reads compiled bytecode). So an
+  input must build against the **bare SDK** — it **cannot import a third-party framework**
+  (e.g. `MapLibre`). Pattern (see `maplibre_flutter_ios`): keep the bound classes Foundation-only
+  and forward to an internal Swift `protocol`; put all `MLN*` code in a **non-input** backend
+  file that implements the protocol. Mirrors the Android Java-shim split.
+- **Do NOT use `@objc(ExplicitName)`.** swiftgen looks the class up by its **module-qualified**
+  runtime name (`<module>.<Class>`, e.g. `maplibre_flutter_ios.MapLibreController`), which is the
+  Swift default for a plain `@objc` class. An explicit name unqualifies the runtime class and
+  breaks `objc.getClass`. The Swift **module name must equal the plugin package name** in both
+  SPM (target name) and CocoaPods (pod name) so the qualified name matches at runtime.
+- **Use named Swift parameters** on multi-arg methods (`func moveCamera(lat:lng:…)`), or the
+  ObjC selector `moveCamera::::` generates ugly Dart params (`unnamed$1…`). Named labels →
+  `moveCameraWithLat(lat, {lng, zoom, …})`.
+- Restrict generation with **`FfiGeneratorOptions(objectiveC: ObjectiveC(interfaces:
+  Interfaces(include: (d) => d.originalName == 'YourClass')))`**, else you bind half of
+  Foundation. (A `SEVERE` enum warning about pulled-in `NS*` enums is non-fatal.)
+- **SDK-version workaround:** `Target.iOSArm64Latest()` can throw `FormatException`; resolve the
+  SDK path via `xcrun --sdk iphoneos --show-sdk-path` and build `Target(triple:'arm64-apple-ios13.0', sdk:…)`.
+- Commit the generated **`lib/src/..._bindings.g.dart`**. Deps: `objective_c` + `ffi` (runtime);
+  `swiftgen` + `ffigen`/`logging`/`pub_semver` (the tool imports these directly). **`objective_c`
+  is capped `<9.4.1`** — 9.4.1 needs `hooks ^2.0.0`, clashing with core's `hooks ^1.0.0` in the
+  shared workspace resolution (same single-resolution constraint as the melos pin, §6).
+- **SPM + CocoaPods both build** (§9). Flutter applies the example's SPM/Pod integration at
+  **build time** (ephemeral) — toggling `--enable-swift-package-manager` mutates the example's
+  `ios`/`macos` xcconfig + pbxproj + generates Podfiles; `git checkout` that churn after CI-style
+  dual builds, it is regenerated on demand and should not be committed.
 
 ### 5c. ffigen — desktop core (`tool/ffigen.dart`)
 
@@ -291,10 +321,11 @@ Build the base architecture first, then implement platforms in this order. Keep 
 0. **Base architecture** — workspace + melos, platform-interface contract, app-facing widget
    shell that switches view-vs-texture, and an end-to-end **solid-colour texture** through a
    `Texture` widget on one platform to prove the plumbing (no MapLibre yet).
-1. **Android** — jnigen + Kotlin SDK, `AndroidView`. Lowest risk. *Milestones A (visible map) +
-   B (jnigen camera/style control) done. ← current focus moves to step 2 (iOS) after a device
-   smoke-test of the control buttons.*
+1. **Android** — jnigen + Kotlin SDK, `AndroidView`. Lowest risk. *Done (A visible map + B jnigen
+   control); confirmed on device.*
 2. **iOS** — swiftgen + Apple SDK, `UiKitView`. Mirrors Android; completes the mobile tier.
+   *Done (A visible map + B swiftgen control); SPM + CocoaPods both build. Device sim frame
+   pending. ← current focus moves to step 3 (desktop core).*
 3. **Desktop core** — `maplibre_flutter_core`: C-shim + `mbgl-core` submodule + ffigen, render
    a real frame into a texture. Then **Linux** (`FlTextureGL`) → **Windows** (ANGLE + GPU
    surface) → **macOS** (Metal). Start with CPU readback (pixel-buffer) for correctness, then
@@ -474,5 +505,22 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   demotiles ↔ OpenFreeMap Liberty — both keyless). Verified: `melos analyze`(`--fatal-infos`)/
   `test`/`format` green; `flutter build apk --debug` green with `libdartjni.so` + `libmaplibre.so`
   bundled. Button behaviour still needs a manual device run before moving to iOS.
+
+- **2026-06-17 — iOS milestones A + B (Section 8 step 2); mobile tier complete.** Hybrid plugin,
+  dual-packaged SPM + CocoaPods (§9), MapLibre Apple SDK 6.27.0, `MLNMapView` via `UiKitView`.
+  Control mirrors Android (Dart → ObjC runtime → shim → SDK, no method channel) but adapts to a
+  key swiftgen difference: **swiftgen compiles its inputs**, so the bound classes
+  (`MapLibreController`, `MapRegistry`) are **Foundation-only** and forward through an internal
+  `MapLibreMapOps` protocol to `MapLibreMapBackend` (the only file importing MapLibre, *not* a
+  swiftgen input). Notable swiftgen findings, all now in §5b: `ObjCCompatibleSwiftFileInput`
+  emits **no `.m`** (so SPM's no-mixed-language rule is moot); the bound class is looked up by its
+  **module-qualified** runtime name, so **no `@objc(ExplicitName)`** and the Swift module must
+  equal the package name in both SPM and Pod; use **named Swift params** for clean Dart selectors;
+  `objective_c` pinned **`<9.4.1`** (its `hooks ^2.0.0` clashes with core's `hooks ^1.0.0` in the
+  one shared workspace resolution — same family as the melos pin). Reverted all flutter-generated
+  example `ios`/`macos` project churn (xcconfig/pbxproj/Podfiles) — flutter re-applies integration
+  at build time, nothing to commit. Verified: `melos analyze`(`--fatal-infos`)/`test`/`format`
+  green; example builds on the simulator via **both** SPM and CocoaPods. Device-sim frame + button
+  behaviour still need a manual run.
 
 _Append new decisions here with date and rationale._

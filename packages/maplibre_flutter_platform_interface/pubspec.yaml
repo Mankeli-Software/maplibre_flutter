@@ -4,7 +4,7 @@ description: >-
   implementations subclass MaplibreFlutterPlatform; app code depends on the
   maplibre_flutter package, not this one directly.
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2

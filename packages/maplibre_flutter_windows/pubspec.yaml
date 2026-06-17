@@ -2,7 +2,7 @@ name: maplibre_flutter_windows
 description: >-
   The Windows implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, ANGLE/GPU-surface texture).
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2
