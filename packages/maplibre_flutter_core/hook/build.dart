@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:code_assets/code_assets.dart';
 import 'package:hooks/hooks.dart';
 import 'package:logging/logging.dart';
 import 'package:native_toolchain_cmake/native_toolchain_cmake.dart';
@@ -27,6 +28,14 @@ void main(List<String> args) async {
       ..level = Level.ALL
       // ignore: avoid_print
       ..onRecord.listen((r) => print(r.message));
+
+    // Some hook invocations (notably `flutter run` on desktop) don't request
+    // code assets; native_toolchain_cmake unconditionally reads
+    // `input.config.code`, which throws when the code-assets extension is
+    // absent. There is nothing for us to build in that case.
+    if (!input.config.buildCodeAssets) {
+      return;
+    }
 
     final packageRoot = input.packageRoot;
     final submodule = Directory.fromUri(
