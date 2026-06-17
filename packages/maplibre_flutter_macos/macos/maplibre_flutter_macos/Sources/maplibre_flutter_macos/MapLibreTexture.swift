@@ -38,6 +38,13 @@ final class MapLibreTexture: NSObject, FlutterTexture {
   private let copyFrameFn: CopyFrameFn
   private let setFrameCallbackFn: SetFrameCallbackFn
 
+  // Reused IOSurface-backed buffer pool (recreated only on size change) so we
+  // don't allocate a fresh CVPixelBuffer every frame; the pool recycles buffers
+  // freed by the engine, which also avoids tearing. (CLAUDE.md §8 M5.)
+  private var pool: CVPixelBufferPool?
+  private var poolWidth = 0
+  private var poolHeight = 0
+
   init(
     mapHandle: UnsafeMutableRawPointer, copyFrameAddress: Int,
     setFrameCallbackAddress: Int, registry: FlutterTextureRegistry
@@ -71,6 +78,34 @@ final class MapLibreTexture: NSObject, FlutterTexture {
     registry?.textureFrameAvailable(textureId)
   }
 
+  /// An IOSurface-backed pool sized to the current frame, recreated only when
+  /// the size changes.
+  private func pixelBufferPool(width: Int, height: Int) -> CVPixelBufferPool? {
+    if let pool = pool, poolWidth == width, poolHeight == height {
+      return pool
+    }
+    let pixelBufferAttrs: [String: Any] = [
+      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+      kCVPixelBufferWidthKey as String: width,
+      kCVPixelBufferHeightKey as String: height,
+      kCVPixelBufferMetalCompatibilityKey as String: true,
+      kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+    ]
+    let poolAttrs: [String: Any] = [
+      kCVPixelBufferPoolMinimumBufferCountKey as String: 3
+    ]
+    var newPool: CVPixelBufferPool?
+    guard
+      CVPixelBufferPoolCreate(
+        kCFAllocatorDefault, poolAttrs as CFDictionary,
+        pixelBufferAttrs as CFDictionary, &newPool) == kCVReturnSuccess
+    else { return nil }
+    pool = newPool
+    poolWidth = width
+    poolHeight = height
+    return newPool
+  }
+
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
     // Query the current frame size first (null dst), so the buffer always
     // matches the core's render surface even after a resize.
@@ -82,16 +117,13 @@ final class MapLibreTexture: NSObject, FlutterTexture {
     let width = Int(w)
     let height = Int(h)
 
+    guard let pool = pixelBufferPool(width: width, height: height) else {
+      return nil
+    }
     var pixelBuffer: CVPixelBuffer?
-    let attrs: [String: Any] = [
-      kCVPixelBufferMetalCompatibilityKey as String: true,
-      kCVPixelBufferIOSurfacePropertiesKey as String: [:],
-    ]
     guard
-      CVPixelBufferCreate(
-        kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-        attrs as CFDictionary, &pixelBuffer) == kCVReturnSuccess,
-      let buffer = pixelBuffer
+      CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
+        == kCVReturnSuccess, let buffer = pixelBuffer
     else { return nil }
 
     CVPixelBufferLockBaseAddress(buffer, [])
