@@ -28,12 +28,10 @@ private let mblFrameReady: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
 
 /// Bridges one core `MblMap*`'s rendered frames into a Flutter `Texture`
 /// (CPU readback, CLAUDE.md §8 M2). The render thread calls `onFrameReady`;
-/// Flutter then pulls `copyPixelBuffer`, which copies the latest BGRA frame out
-/// of the core into a `CVPixelBuffer`.
+/// Flutter then pulls `copyPixelBuffer`, which sizes itself to the current frame
+/// (so it follows core resizes) and copies the latest BGRA frame out.
 final class MapLibreTexture: NSObject, FlutterTexture {
   private let mapHandle: UnsafeMutableRawPointer
-  private let width: Int
-  private let height: Int
   private weak var registry: FlutterTextureRegistry?
   private var textureId: Int64 = 0
 
@@ -42,8 +40,7 @@ final class MapLibreTexture: NSObject, FlutterTexture {
 
   init(
     mapHandle: UnsafeMutableRawPointer, copyFrameAddress: Int,
-    setFrameCallbackAddress: Int, width: Int, height: Int,
-    registry: FlutterTextureRegistry
+    setFrameCallbackAddress: Int, registry: FlutterTextureRegistry
   ) {
     self.mapHandle = mapHandle
     self.copyFrameFn = unsafeBitCast(
@@ -51,8 +48,6 @@ final class MapLibreTexture: NSObject, FlutterTexture {
     self.setFrameCallbackFn = unsafeBitCast(
       UnsafeMutableRawPointer(bitPattern: setFrameCallbackAddress)!,
       to: SetFrameCallbackFn.self)
-    self.width = width
-    self.height = height
     self.registry = registry
     super.init()
   }
@@ -77,6 +72,16 @@ final class MapLibreTexture: NSObject, FlutterTexture {
   }
 
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
+    // Query the current frame size first (null dst), so the buffer always
+    // matches the core's render surface even after a resize.
+    var w: UInt32 = 0
+    var h: UInt32 = 0
+    var stride: UInt32 = 0
+    guard copyFrameFn(mapHandle, nil, 0, &w, &h, &stride) != 0, w > 0, h > 0
+    else { return nil }
+    let width = Int(w)
+    let height = Int(h)
+
     var pixelBuffer: CVPixelBuffer?
     let attrs: [String: Any] = [
       kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -98,9 +103,6 @@ final class MapLibreTexture: NSObject, FlutterTexture {
 
     let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
     let tightRow = width * 4
-    var w: UInt32 = 0
-    var h: UInt32 = 0
-    var stride: UInt32 = 0
     let ok: Int32
     if bytesPerRow == tightRow {
       ok = copyFrameFn(mapHandle, base, bytesPerRow * height, &w, &h, &stride)

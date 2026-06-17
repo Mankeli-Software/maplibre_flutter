@@ -81,6 +81,10 @@ FFI_PLUGIN_EXPORT int mbl_map_await_frame(MblMap *map, uint32_t timeout_ms);
 // frame dimensions/row stride to the (nullable) out params. Returns 1 on success,
 // 0 if no frame yet or the buffer is too small. Safe to call from the raster
 // thread (the plugin calls it from copyPixelBuffer).
+//
+// A null `dst` is "query mode": it writes the current frame dimensions/stride
+// and returns 1 (if a frame exists) without copying — lets the caller size a
+// destination buffer first, so the texture can follow resizes automatically.
 FFI_PLUGIN_EXPORT int mbl_map_copy_frame(MblMap *map, uint8_t *dst,
                                          size_t dst_capacity,
                                          uint32_t *out_width,

@@ -18,6 +18,8 @@ class _FakeController implements MapLibreMapController {
   @override
   Future<void> setStyle(String styleUri) async {}
   @override
+  Future<void> resize(Size size, double devicePixelRatio) async {}
+  @override
   Future<void> dispose() async => disposed = true;
 }
 

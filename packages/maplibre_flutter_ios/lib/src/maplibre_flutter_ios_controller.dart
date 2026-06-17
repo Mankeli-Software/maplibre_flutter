@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Size;
 
 import 'package:objective_c/objective_c.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -114,6 +115,11 @@ class MapLibreFlutterIosController implements MapLibreMapController {
     final c = _resolve();
     if (c == null) return;
     c.setStyle(styleUri.toNSString());
+  }
+
+  @override
+  Future<void> resize(Size size, double devicePixelRatio) async {
+    // The iOS UiKitView auto-sizes to the widget; nothing to do.
   }
 
   @override

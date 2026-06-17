@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Size;
 
 import 'package:jni/jni.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -125,6 +126,11 @@ class MapLibreFlutterAndroidController implements MapLibreMapController {
     } finally {
       jStyle.release();
     }
+  }
+
+  @override
+  Future<void> resize(Size size, double devicePixelRatio) async {
+    // The Android platform view auto-sizes to the widget; nothing to do.
   }
 
   @override

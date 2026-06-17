@@ -263,7 +263,7 @@ int mbl_map_await_frame(MblMap *m, uint32_t timeout_ms) {
 int mbl_map_copy_frame(MblMap *m, uint8_t *dst, size_t dst_capacity,
                        uint32_t *out_width, uint32_t *out_height,
                        uint32_t *out_stride) {
-  if (m == nullptr || dst == nullptr) {
+  if (m == nullptr) {
     return 0;
   }
   std::lock_guard<std::mutex> lk(m->frameMutex);
@@ -276,6 +276,11 @@ int mbl_map_copy_frame(MblMap *m, uint8_t *dst, size_t dst_capacity,
   if (out_width) *out_width = w;
   if (out_height) *out_height = h;
   if (out_stride) *out_stride = stride;
+  // Query mode: a null dst reports the frame dimensions only (so a caller can
+  // size a destination buffer before copying).
+  if (dst == nullptr) {
+    return 1;
+  }
   if (dst_capacity < static_cast<size_t>(stride) * h) {
     return 0;
   }

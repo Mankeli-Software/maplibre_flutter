@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
@@ -12,6 +14,8 @@ class _FakeController implements MapLibreMapController {
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {}
   @override
   Future<void> setStyle(String styleUri) async {}
+  @override
+  Future<void> resize(Size size, double devicePixelRatio) async {}
   @override
   Future<void> dispose() async {}
 }

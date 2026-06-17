@@ -48,12 +48,9 @@ public class MaplibreFlutterMacosPlugin: NSObject, FlutterPlugin {
             details: nil))
         return
       }
-      let width = (args?["width"] as? Int) ?? 0
-      let height = (args?["height"] as? Int) ?? 0
       let texture = MapLibreTexture(
         mapHandle: mapHandle, copyFrameAddress: Int(copyFrameAddr),
-        setFrameCallbackAddress: Int(setCallbackAddr), width: width,
-        height: height, registry: textures)
+        setFrameCallbackAddress: Int(setCallbackAddr), registry: textures)
       let textureId = texture.register()
       registered[textureId] = texture
       result(NSNumber(value: textureId))
