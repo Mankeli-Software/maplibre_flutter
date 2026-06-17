@@ -1,18 +1,95 @@
-name: maplibre_flutter
-description: "A new Dart FFI package project."
-version: 0.0.1
+name: maplibre_flutter_workspace
+description: >-
+  Pub workspace + melos root for the maplibre_flutter federated plugin. Not a
+  publishable package — it only declares the workspace members and dev tooling.
+publish_to: none
 
 environment:
   sdk: ^3.12.2
 
-dependencies:
-  code_assets: ^1.0.0
-  hooks: ^1.0.0
-  logging: ^1.3.0
-  native_toolchain_c: ^0.17.4
+# Dart pub workspace (Dart 3.7+). Every member sets `resolution: workspace`.
+workspace:
+  - packages/maplibre_flutter
+  - packages/maplibre_flutter_platform_interface
+  - packages/maplibre_flutter_core
+  - packages/maplibre_flutter_android
+  - packages/maplibre_flutter_ios
+  - packages/maplibre_flutter_macos
+  - packages/maplibre_flutter_windows
+  - packages/maplibre_flutter_linux
+  - packages/maplibre_flutter_web
+  - packages/maplibre_flutter/example
 
 dev_dependencies:
-  ffi: ^2.1.4
-  ffigen: ^20.1.1
-  flutter_lints: ^6.0.0
-  test: ^1.28.0
+  # Pinned to 7.8.1 (not ^7): melos 7.8.2 bumped cli_util to ^0.5.0, but ffigen
+  # 20.1.1 (maplibre_flutter_core) pins cli_util ^0.4.2, and a pub workspace
+  # shares one resolution. 7.8.1 is the newest melos still on cli_util ^0.4.2.
+  # Bump when ffigen relaxes cli_util.
+  melos: 7.8.1
+
+# Melos 7 reads its config from this `melos:` block (not melos.yaml) and derives
+# the package list from the pub `workspace:` field above.
+melos:
+  repository: https://github.com/JTorkk/maplibre_flutter
+
+  # `melos version` drives releases from Conventional Commits. Sibling packages
+  # depend on each other by version constraint (not path) since the pub
+  # workspace links them locally; updateDependentsConstraints keeps those
+  # constraints in lockstep on every bump.
+  command:
+    version:
+      conventionalCommits: true
+      updateDependentsConstraints: true
+      linkToCommits: true
+
+  scripts:
+    analyze:
+      description: Analyze every package.
+      run: dart analyze --fatal-infos
+      exec:
+        concurrency: 4
+
+    format:
+      description: Format and fail on changes (CI-safe).
+      run: dart format --set-exit-if-changed .
+      exec:
+        concurrency: 4
+
+    format:fix:
+      description: Fix formatting in all packages.
+      run: dart format .
+      exec:
+        concurrency: 4
+
+    test:
+      description: Run widget/unit tests in the Flutter packages.
+      run: flutter test
+      exec:
+        concurrency: 1
+        failFast: true
+      packageFilters:
+        flutter: true
+        dirExists: test
+
+    test:native:
+      description: >-
+        Run pure-Dart/FFI tests (maplibre_flutter_core). `dart test` runs the
+        build hook to compile the native shim first.
+      run: dart test
+      exec:
+        concurrency: 1
+        failFast: true
+      packageFilters:
+        flutter: false
+        dirExists: test
+
+    publish:dry-run:
+      description: >-
+        Dry-run `dart pub publish` in every publishable package (skips the
+        workspace root and the example). Run before `melos publish`.
+      run: dart pub publish --dry-run
+      exec:
+        concurrency: 1
+        failFast: true
+      packageFilters:
+        noPrivate: true

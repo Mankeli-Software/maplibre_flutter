@@ -1,0 +1,34 @@
+name: maplibre_flutter_web
+description: >-
+  The Web implementation of maplibre_flutter (maplibre-gl-js via dart:js_interop, HtmlElementView).
+version: 0.0.1
+repository: https://github.com/JTorkk/maplibre_flutter
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=3.41.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  maplibre_flutter_platform_interface: ^0.0.1
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    implements: maplibre_flutter
+    platforms:
+      web:
+        # Web's registrant is a Dart class (not dartPluginClass): its
+        # registerWith takes a flutter_web_plugins Registrar. maplibre-gl-js /
+        # HtmlElementView wiring lands in this platform's build-order step.
+        pluginClass: MapLibreFlutterWeb
+        fileName: maplibre_flutter_web.dart

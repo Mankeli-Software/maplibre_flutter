@@ -14,7 +14,7 @@ Web. The differentiator versus existing packages (`maplibre_gl`, `maplibre`) is 
 native rendering on desktop** instead of a `maplibre-gl-js` WebView. On desktop we drive
 the MapLibre Native C++ core (`mbgl-core`) directly.
 
-**Long-term goal:** become the *official* MapLibre Flutter binding. This has two
+**Long-term goal:** become the *stable* MapLibre Flutter binding. This has
 consequences that must be respected throughout:
 
 - **Quality and test coverage are the pitch.** A working native-desktop demo plus
@@ -32,14 +32,28 @@ which produces a **single FFI package** (`lib/`, `src/`, `hook/build.dart`,
 **Target shape:** a melos-managed monorepo of federated packages (Section 4). Migrate as
 follows, and keep this section updated as steps complete:
 
-- [ ] Convert the repo root into a **pub workspace** + melos (Section 6).
-- [ ] Repurpose the generated FFI package as `packages/maplibre_flutter_core` (the
+- [x] Convert the repo root into a **pub workspace** + melos (Section 6).
+- [x] Repurpose the generated FFI package as `packages/maplibre_flutter_core` (the
       `mbgl-core` C-shim + `ffigen` bindings used by the desktop platforms).
-- [ ] Scaffold the app-facing package, the platform-interface package, and the per-platform
+- [x] Scaffold the app-facing package, the platform-interface package, and the per-platform
       implementation packages.
-- [ ] Wire endorsement so app users depend only on `maplibre_flutter`.
+- [x] Wire endorsement so app users depend only on `maplibre_flutter`.
 
-Do not assume the federated structure exists yet — check the tree before editing.
+The federated structure now exists (all 10 members resolve, analyze, and test). What
+is scaffolded vs. still TODO:
+
+- **Done:** pub workspace + melos config (in root `pubspec.yaml`, not `melos.yaml`);
+  `maplibre_flutter_core` (renamed FFI pkg, bindings under `lib/src/`, `tool/ffigen.dart`,
+  hook asset id fixed to `src/...`); the render-agnostic platform interface + `MapLibreMap`
+  widget that switches `Texture` vs platform-view; six platform impl packages registering
+  via the interface; example app on the new API; tests for interface/widget/core.
+- **TODO (build order, Section 8):** native side of every platform impl is a stub —
+  `createMap()` throws `UnimplementedError`. Platform packages declare only `dartPluginClass`
+  (web: `pluginClass`); the hybrid `pluginClass` + native folders land per platform as its
+  build-order step is implemented. No `mbgl-core` submodule yet; the core shim is still the
+  template `sum`/`sum_long_running`.
+
+Still check the tree before editing — package contents are skeletons.
 
 ---
 
@@ -50,7 +64,7 @@ Section 11.
 
 | Decision     | Choice                                                                                              |
 | ------------ | --------------------------------------------------------------------------------------------------- |
-| Package name | `maplibre_flutter`                                                                                   |
+| Package name | `maplibre_flutter`                                                                                  |
 | Structure    | Package-separated **federated plugin**, **melos** monorepo + pub workspaces                         |
 | Android      | **jnigen** against the Kotlin MapLibre SDK; `AndroidView` / `SurfaceTexture`                        |
 | iOS          | **swiftgen** against the MapLibre Apple SDK (`MLNMapView`); **`UiKitView` platform view**           |
@@ -92,7 +106,8 @@ maplibre_flutter/                      # repo root: pub workspace + melos
 ├─ melos.yaml                         # (or melos block in root pubspec)
 ├─ CLAUDE.md
 └─ packages/
-   ├─ maplibre_flutter/                # app-facing: public API + MaplibreMap widget; endorses impls
+   ├─ maplibre_flutter/                # app-facing: public API + MapLibreMap widget; endorses impls
+   │  └─ example/                      # shared example app (also the manual test harness)
    ├─ maplibre_flutter_platform_interface/
    ├─ maplibre_flutter_core/           # C-shim over mbgl-core + ffigen bindings (desktop shared)
    ├─ maplibre_flutter_android/        # jnigen → Kotlin SDK     (hybrid)
@@ -101,7 +116,6 @@ maplibre_flutter/                      # repo root: pub workspace + melos
    ├─ maplibre_flutter_windows/        # ffigen → core + texture  (hybrid)
    ├─ maplibre_flutter_linux/          # ffigen → core + texture  (hybrid)
    └─ maplibre_flutter_web/            # maplibre-gl-js via JS interop
-   └─ example/                        # shared example app (also the manual test harness)
 ```
 
 `mbgl-core` and `maplibre-gl-native` source are vendored as a **git submodule** under
@@ -164,7 +178,7 @@ Neither generator emits a unified API. Bridge with the **abstract-class + factor
 each platform file importing only its own bindings:
 
 ```dart
-abstract class MaplibreNativePlatform {
+abstract class MapLibreFlutterPlatform {
   // ... render-agnostic contract (see Section 3) ...
 }
 // app-facing widget picks UiKitView/AndroidView vs Texture(textureId) internally.
@@ -177,32 +191,46 @@ the Dart GC can collect the proxy and silently break callbacks. Clear it on disp
 
 ## 6. Tooling & commands
 
-Pin current versions before relying on these (jni 1.x, ffigen, swiftgen-experimental,
-melos `^7.8.2` — **always check pub.dev for the newest stable**, see Section 10; melos↔pub-workspace
-config has shifted across 6→7).
+Pin current versions before relying on these (jni 1.x, ffigen, swiftgen-experimental —
+**always check pub.dev for the newest stable**, see Section 10; melos↔pub-workspace config
+has shifted across 6→7).
+
+> **melos is pinned to `7.8.1`, not `^7.8.2`.** melos 7.8.2 bumped `cli_util` to `^0.5.0`,
+> but `ffigen 20.1.1` (used by `maplibre_flutter_core`) pins `cli_util ^0.4.2`, and a pub
+> workspace shares **one** resolution. 7.8.1 is the newest melos still on `cli_util ^0.4.2`.
+> Bump it the moment ffigen relaxes `cli_util`. melos config lives in the **root
+> `pubspec.yaml` `melos:` block** (melos 7 ignores `melos.yaml` for pub workspaces); the
+> package list is derived from the `workspace:` field.
 
 ```bash
 # Workspace setup
-dart pub get                                  # resolves all workspace members
-dart pub global activate melos                # if not a dev_dependency yet
+flutter pub get                               # resolves all workspace members (flutter, not dart — members depend on the Flutter SDK)
 
 # Codegen (run from the owning package)
 dart run tool/jnigen.dart                      # android — build android once first
 dart run tool/swiftgen.dart                    # ios
 dart run tool/ffigen.dart                      # core/desktop
 
-# Quality (via melos scripts)
-melos run analyze
-melos run test
-melos run format
+# Quality (via melos scripts; melos is a dev_dependency → `dart run melos ...`)
+dart run melos run analyze
+dart run melos run test --no-select            # flutter packages; --no-select runs all non-interactively
+dart run melos run test:native                 # pure-Dart/FFI (maplibre_flutter_core)
+dart run melos run format
 
 # Per-platform example builds (manual verification)
-cd packages/example && flutter run -d <android|ios|macos|windows|linux|chrome>
+cd packages/maplibre_flutter/example && flutter run -d <android|ios|macos|windows|linux|chrome>
 
 # Release
-melos version                                  # coordinated, Conventional Commits
-flutter pub publish --dry-run                  # authoritative name/similarity check
+melos version                                  # coordinated bump, Conventional Commits (command.version block)
+dart run melos run publish:dry-run             # `dart pub publish --dry-run` in every non-private package
+melos publish                                  # publish in dependency order (after dry-run is clean)
 ```
+
+All nine federated packages are **publishable** (no `publish_to: none`); only the
+workspace root and `example` stay private. Siblings depend on each other by **version
+constraint** (`^x.y.z`), not `path:` — the pub workspace links them locally for dev, and
+`command.version.updateDependentsConstraints` keeps the constraints in lockstep on bump.
+Each package carries its own `LICENSE` (BSD-3-Clause), `README.md`, and `CHANGELOG.md`.
 
 ---
 
@@ -215,7 +243,7 @@ Extensive tests are a project goal, not an afterthought. Layers:
 2. **Dart-wrapper unit tests** — each platform wrapper with its **generated bindings
    mocked**, verifying we call the right native methods and manage callback/lifecycle
    references correctly (the GC-reference pitfall above deserves explicit tests).
-3. **Widget/golden tests** — `MaplibreMap` widget: correct branch (platform view vs
+3. **Widget/golden tests** — `MapLibreMap` widget: correct branch (platform view vs
    `Texture`) per platform, lifecycle, dispose.
 4. **Native unit tests** — Kotlin (JUnit), Swift (XCTest), and C++ shim (ctest/GoogleTest)
    for logic that lives below the binding.
@@ -308,6 +336,11 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
 
 ## 10. Conventions
 
+- **Casing of "MapLibre":** Dart **identifiers** (classes, widgets, enums) use the
+  brand casing **`MapLibre`** (capital L) — `MapLibreMap`, `MapLibreFlutterPlatform`,
+  `MapLibreMapController`, `MapLibreRenderHandle`. **Package names, file names, library
+  names, asset ids, and the `maplibre_flutter` pubspec keys stay snake_case `maplibre_…`**
+  (lowercase) — do not rename those. So: `class MapLibreMap` lives in `maplibre_flutter`.
 - **Dart style:** `dart format`, `flutter analyze` clean. Public API gets dartdoc.
 - **Commits:** Conventional Commits (drives `melos version`).
 - **Generated code:** committed, never hand-edited, regenerated via `tool/` scripts only.
@@ -357,5 +390,29 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   platforms are *not* built together — chosen for "best mobile experience first, desktop
   brought to par after."
 - Ship mobile tier before desktop tier.
+- **2026-06-17 — Federated monorepo scaffolded (base architecture, Section 8 step 0).**
+  Repo is now a pub workspace + melos with 10 members (Section 4). Notable choices made
+  during scaffolding: (1) **melos pinned to `7.8.1`** to avoid the `cli_util` clash with
+  ffigen (see Section 6); melos config lives in the root `pubspec.yaml` `melos:` block.
+  (2) **No `MethodChannel` default** in the platform interface — `instance` throws until a
+  platform registers (Section 10: no method channels on the data path). (3) The render
+  split is expressed by a single `sealed MapLibreRenderHandle` (`PlatformViewHandle` /
+  `TextureHandle` / `ElementViewHandle`); the `MapLibreMap` widget is the only place that
+  branches on it. (4) Platform packages register via **`dartPluginClass`** (web:
+  `pluginClass`); the hybrid `pluginClass` + native folders are deferred to each platform's
+  build-order step, and `createMap()` throws `UnimplementedError` until then. (5) Core
+  bindings moved to `lib/src/`, so the build-hook asset id is `src/<pkg>_bindings_generated.dart`.
+- **2026-06-17 — example moved under `packages/maplibre_flutter/example`** (was
+  `packages/example`). It is the app-facing package's own example (`path: ../`); workspace
+  member path and Section 4/6 references updated.
+- **2026-06-17 — Made the nine federated packages pub.dev-publishable.** Dropped
+  `publish_to: none` from all nine; root + `example` stay private. Sibling deps converted
+  from `path:` to **version constraints** (`^0.0.1`) — the pub workspace still links them
+  locally, so this is dev-transparent but lets pub resolve them when published. Added per-
+  package `LICENSE` (**BSD-3-Clause**, holder Mankeli Solutions Oy). melos `command.version`
+  block (conventionalCommits + updateDependentsConstraints + linkToCommits) and a
+  `publish:dry-run` script added (Section 6). Fixed root `.gitignore` `/build/`→`build/`
+  (root-anchored glob let nested package `build/` artifacts leak into the publish archive —
+  13 MB → 4 KB). Rationale: publishing readiness is part of the "official binding" pitch.
 
 _Append new decisions here with date and rationale._

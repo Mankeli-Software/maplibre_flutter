@@ -1,0 +1,23 @@
+name: maplibre_flutter_platform_interface
+description: >-
+  The common platform interface for the maplibre_flutter plugin. Platform
+  implementations subclass MaplibreFlutterPlatform; app code depends on the
+  maplibre_flutter package, not this one directly.
+version: 0.0.1
+repository: https://github.com/JTorkk/maplibre_flutter
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=3.41.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.1.8
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter

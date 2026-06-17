@@ -1,0 +1,32 @@
+name: maplibre_flutter_windows
+description: >-
+  The Windows implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, ANGLE/GPU-surface texture).
+version: 0.0.1
+repository: https://github.com/JTorkk/maplibre_flutter
+
+environment:
+  sdk: ^3.12.2
+  flutter: ">=3.41.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  maplibre_flutter_platform_interface: ^0.0.1
+  maplibre_flutter_core: ^0.0.1
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    implements: maplibre_flutter
+    platforms:
+      windows:
+        dartPluginClass: MapLibreFlutterWindows
+        # Hybrid (dartPluginClass + pluginClass) is added with this platform's
+        # build-order step, when the native view/texture registrar is wired
+        # (CLAUDE.md §3). Dart-only registration keeps pub/analyze green now.
