@@ -1,7 +1,7 @@
 name: maplibre_flutter_windows
 description: >-
   The Windows implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, ANGLE/GPU-surface texture).
-version: 0.0.1
+version: 0.0.2
 repository: https://github.com/JTorkk/maplibre_flutter
 
 environment:
@@ -13,8 +13,8 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.1
-  maplibre_flutter_core: ^0.0.1
+  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_core: ^0.0.2
 
 dev_dependencies:
   flutter_lints: ^6.0.0

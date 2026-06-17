@@ -3,7 +3,7 @@ description: >-
   Shared desktop core for maplibre_flutter: a thin C ABI shim over MapLibre
   Native (mbgl-core) plus the ffigen bindings used by the macOS, Windows, and
   Linux implementation packages.
-version: 0.0.1
+version: 0.0.2
 repository: https://github.com/JTorkk/maplibre_flutter
 
 environment:
