@@ -32,6 +32,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Opt into Hybrid Composition Plus: on capable devices (Android API
+             34+, Vulkan) platform views (the MapLibre SurfaceView) use the new
+             fast compositor; Flutter falls back to classic Hybrid Composition
+             automatically otherwise. -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableHcpp"
+            android:value="true" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

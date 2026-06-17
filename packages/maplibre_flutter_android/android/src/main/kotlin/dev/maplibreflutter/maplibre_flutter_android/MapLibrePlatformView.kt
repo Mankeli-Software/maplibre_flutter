@@ -10,14 +10,16 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 
 /**
- * A single embedded MapLibre map (milestone A: render only).
+ * A single embedded MapLibre map.
  *
  * Builds a [MapView], pumps the minimal lifecycle it needs to draw (skipping it
  * is the classic blank-map cause), and loads the style + initial camera from the
- * `creationParams`. `textureMode(true)` makes the map a `TextureView` so it
- * composites correctly under Flutter's default Virtual Display `AndroidView`.
+ * `creationParams`. The map keeps its default `SurfaceView` renderer (no
+ * `textureMode`): the Dart side embeds it with Hybrid Composition
+ * (`initSurfaceAndroidView`), which composites a SurfaceView correctly — and is
+ * upgraded to Hybrid Composition Plus on capable devices.
  *
- * Milestone B will register `viewId -> controller` here so Dart can drive the
+ * Registers `mapId -> controller` in [MapRegistry] so Dart can drive the
  * camera/style over jnigen.
  */
 class MapLibrePlatformView(
@@ -46,7 +48,6 @@ class MapLibrePlatformView(
         val pitch = (params["pitch"] as? Number)?.toDouble() ?: 0.0
 
         val options = MapLibreMapOptions.createFromAttributes(context)
-            .textureMode(true)
             .camera(
                 CameraPosition.Builder()
                     .target(LatLng(lat, lng))

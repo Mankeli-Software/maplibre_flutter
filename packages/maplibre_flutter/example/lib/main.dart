@@ -37,6 +37,7 @@ class MapDemoPage extends StatefulWidget {
 
 class _MapDemoPageState extends State<MapDemoPage> {
   MapLibreMapController? _controller;
+  bool _ready = false;
   String _style = _demotiles;
   int _placeIndex = 0;
 
@@ -81,7 +82,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
                 styleUri: _demotiles,
                 initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
               ),
-              onMapCreated: (c) => _controller = c,
+              onMapCreated: (c) async {
+                _controller = c;
+                // The controller exists before the native map is ready; wait
+                // for it, then enable the camera/style controls.
+                await c.onReady;
+                if (mounted) setState(() => _ready = true);
+              },
             ),
           ),
           Positioned(
@@ -92,26 +99,26 @@ class _MapDemoPageState extends State<MapDemoPage> {
               children: [
                 FloatingActionButton(
                   heroTag: 'zoom_in',
-                  onPressed: () => _zoomBy(1),
+                  onPressed: _ready ? () => _zoomBy(1) : null,
                   child: const Icon(Icons.add),
                 ),
                 const SizedBox(height: 8),
                 FloatingActionButton(
                   heroTag: 'zoom_out',
-                  onPressed: () => _zoomBy(-1),
+                  onPressed: _ready ? () => _zoomBy(-1) : null,
                   child: const Icon(Icons.remove),
                 ),
                 const SizedBox(height: 8),
                 FloatingActionButton.extended(
                   heroTag: 'fly',
-                  onPressed: _flyToNextPlace,
+                  onPressed: _ready ? _flyToNextPlace : null,
                   icon: const Icon(Icons.flight),
                   label: Text('Fly to ${_places[_placeIndex].$1}'),
                 ),
                 const SizedBox(height: 8),
                 FloatingActionButton.extended(
                   heroTag: 'style',
-                  onPressed: _toggleStyle,
+                  onPressed: _ready ? _toggleStyle : null,
                   icon: const Icon(Icons.layers),
                   label: Text(_style == _demotiles ? 'Demotiles' : 'Liberty'),
                 ),

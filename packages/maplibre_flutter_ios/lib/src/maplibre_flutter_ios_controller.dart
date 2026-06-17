@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:objective_c/objective_c.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
@@ -15,7 +17,9 @@ const String kIosMapViewType = 'maplibre_flutter/ios';
 /// the swiftgen bindings ([bindings.MapRegistry.get]) to drive the map. No
 /// data-path method channel is involved (CLAUDE.md §10).
 class MapLibreFlutterIosController implements MapLibreMapController {
-  MapLibreFlutterIosController(this._options) : _mapId = _nextMapId++;
+  MapLibreFlutterIosController(this._options) : _mapId = _nextMapId++ {
+    _pollReady();
+  }
 
   final MapOptions _options;
   final int _mapId;
@@ -28,12 +32,17 @@ class MapLibreFlutterIosController implements MapLibreMapController {
   bindings.MapLibreController? _native;
   bool _disposed = false;
 
+  final Completer<void> _ready = Completer<void>();
+
   @override
   MapLibreRenderHandle get renderHandle => PlatformViewHandle(
     viewType: kIosMapViewType,
     id: _mapId,
     creationParams: _creationParams(),
   );
+
+  @override
+  Future<void> get onReady => _ready.future;
 
   Map<String, Object?> _creationParams() {
     final camera = _options.initialCamera;
@@ -61,6 +70,17 @@ class MapLibreFlutterIosController implements MapLibreMapController {
     }
     _native = found;
     return found.isReady ? found : null;
+  }
+
+  /// Polls until the native map is ready, then completes [onReady]. Stops once
+  /// resolved; never completes if the map is disposed first.
+  void _pollReady() {
+    if (_disposed || _ready.isCompleted) return;
+    if (_resolve() != null) {
+      _ready.complete();
+      return;
+    }
+    Future<void>.delayed(const Duration(milliseconds: 50), _pollReady);
   }
 
   @override
