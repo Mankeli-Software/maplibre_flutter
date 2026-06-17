@@ -15,13 +15,24 @@ sealed class MapLibreRenderHandle {
 /// Embed via `AndroidView` / `UiKitView` — used by the mobile SDK tier.
 @immutable
 final class PlatformViewHandle extends MapLibreRenderHandle {
-  const PlatformViewHandle({required this.viewType, this.id});
+  const PlatformViewHandle({
+    required this.viewType,
+    this.id,
+    this.creationParams,
+  });
 
   /// Registered platform-view type name.
   final String viewType;
 
   /// Optional native-side id for routing later calls to this view.
   final int? id;
+
+  /// Initial configuration handed to the native view at construction time
+  /// (e.g. style URI and camera), passed through the platform-view registrar's
+  /// `creationParams` — not a data-path method channel (CLAUDE.md §10). The
+  /// mobile tier (Android/iOS) serialises [MapOptions] into this map; the
+  /// desktop/web tiers leave it null.
+  final Map<String, Object?>? creationParams;
 }
 
 /// Embed via a `Texture` widget — used by the desktop core tier.

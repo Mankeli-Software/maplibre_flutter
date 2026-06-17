@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
@@ -48,6 +49,35 @@ void main() {
 
     final texture = tester.widget<Texture>(find.byType(Texture));
     expect(texture.textureId, 7);
+  });
+
+  testWidgets('android PlatformViewHandle renders an AndroidView', (
+    tester,
+  ) async {
+    // Reset inline (not addTearDown): the framework's debug-var invariant check
+    // runs at the end of the test body, before registered tearDowns.
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      MapLibreFlutterPlatform.instance = _FakePlatform(
+        const PlatformViewHandle(
+          viewType: 'maplibre_flutter/android',
+          creationParams: {'styleUri': 'https://example.com/style.json'},
+        ),
+      );
+
+      await tester.pumpWidget(
+        const Directionality(
+          textDirection: TextDirection.ltr,
+          child: MapLibreMap(options: _options),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final view = tester.widget<AndroidView>(find.byType(AndroidView));
+      expect(view.viewType, 'maplibre_flutter/android');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('onMapCreated fires and dispose tears down the controller', (

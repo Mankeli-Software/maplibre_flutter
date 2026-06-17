@@ -47,11 +47,22 @@ is scaffolded vs. still TODO:
   hook asset id fixed to `src/...`); the render-agnostic platform interface + `MapLibreMap`
   widget that switches `Texture` vs platform-view; six platform impl packages registering
   via the interface; example app on the new API; tests for interface/widget/core.
-- **TODO (build order, Section 8):** native side of every platform impl is a stub —
-  `createMap()` throws `UnimplementedError`. Platform packages declare only `dartPluginClass`
-  (web: `pluginClass`); the hybrid `pluginClass` + native folders land per platform as its
-  build-order step is implemented. No `mbgl-core` submodule yet; the core shim is still the
-  template `sum`/`sum_long_running`.
+- **In progress (build order, Section 8):**
+  - **Android — milestones A + B done.** Hybrid plugin: native module (`android/`, AGP 9,
+    built-in Kotlin, MapLibre Android SDK 11.11.0) registers an `AndroidView` factory;
+    `MapLibrePlatformView` (Kotlin) builds a `MapView` (`textureMode(true)`, minimal lifecycle)
+    from `creationParams`. **Milestone B control layer:** Dart mints a `mapId` → native
+    `MapRegistry` registers a `MapLibreController` under it → Dart looks it up over **jnigen** and
+    drives camera/style (`getCamera`/`moveCamera`/`setStyle`), main-thread-marshaled in the
+    controller. **The two jnigen-bound classes (`MapRegistry`, `MapLibreController`) are Java, not
+    Kotlin** — jnigen 0.16's summarizer can't read AGP 9's Kotlin-2.3 metadata (Section 5a). Bindings
+    committed at `lib/src/maplibre_flutter_android_bindings.g.dart` (`tool/jnigen.dart`). Example app
+    has working zoom / fly-to / style-toggle buttons. `flutter build apk --debug` green;
+    `libmaplibre.so` + `libdartjni.so` bundled. Milestone A render confirmed on device; B button
+    behaviour pending a device run.
+  - **iOS / macOS / Windows / Linux / Web** native sides are still stubs — `createMap()` throws
+    `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
+    No `mbgl-core` submodule yet; the core shim is still the template `sum`/`sum_long_running`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -131,7 +142,22 @@ We use code generators rather than method channels. Each generator is configured
 
 ### 5a. jnigen — Android (`tool/jnigen.dart`)
 
-- Requires the Android project to be **built at least once** before generating.
+- **Bind Java, not Kotlin, for the classes in `Config.classes`.** jnigen 0.16's ASM
+  summarizer uses a `kotlinx-metadata-jvm` that maxes out at Kotlin metadata 2.1.0, but AGP 9's
+  built-in Kotlin emits 2.3 metadata → `IllegalArgumentException: ... version 2.3.0, while
+  maximum supported version is 2.1.0` then `FormatException: Unexpected end of input`. So the
+  jnigen-summarised shim classes (e.g. `MapRegistry`, `MapLibreController`) live in
+  `android/src/main/java/...` as **Java**. The rest of the module stays Kotlin — only *listed*
+  classes are summarised, and referenced `org.maplibre.*` types stay opaque `JObject`. Revisit
+  if jnigen bumps its metadata lib.
+- Keep the bound surface **primitives + `String`** so referenced SDK types are never summarised
+  (avoids both the metadata issue and binding bloat).
+- Requires the Android project to be **built at least once** before generating — and rebuilt
+  after changing the bound classes, since jnigen reads the **release** compile jar. Quick path:
+  `./gradlew :maplibre_flutter_android:bundleLibCompileToJarRelease --rerun-tasks` in
+  `packages/maplibre_flutter/example/android`, then re-run the tool.
+- `addGradleDeps: true` + `androidExample: '../maplibre_flutter/example'` (this plugin has no
+  example of its own; the app-facing example builds it).
 - Uses `jni` **1.0+** runtime (`package:jni`, plus `package:jni_flutter` for `Context`/
   `Activity`; current `Activity` access needs `PlatformDispatcher.instance.engineId`).
 - List **every** class to bind in `Config.classes`. Output a single file under `lib/src/`.
@@ -265,7 +291,9 @@ Build the base architecture first, then implement platforms in this order. Keep 
 0. **Base architecture** — workspace + melos, platform-interface contract, app-facing widget
    shell that switches view-vs-texture, and an end-to-end **solid-colour texture** through a
    `Texture` widget on one platform to prove the plumbing (no MapLibre yet).
-1. **Android** ← *current focus after base* — jnigen + Kotlin SDK, `AndroidView`. Lowest risk.
+1. **Android** — jnigen + Kotlin SDK, `AndroidView`. Lowest risk. *Milestones A (visible map) +
+   B (jnigen camera/style control) done. ← current focus moves to step 2 (iOS) after a device
+   smoke-test of the control buttons.*
 2. **iOS** — swiftgen + Apple SDK, `UiKitView`. Mirrors Android; completes the mobile tier.
 3. **Desktop core** — `maplibre_flutter_core`: C-shim + `mbgl-core` submodule + ffigen, render
    a real frame into a texture. Then **Linux** (`FlTextureGL`) → **Windows** (ANGLE + GPU
@@ -413,5 +441,38 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   `publish:dry-run` script added (Section 6). Fixed root `.gitignore` `/build/`→`build/`
   (root-anchored glob let nested package `build/` artifacts leak into the publish archive —
   13 MB → 4 KB). Rationale: publishing readiness is part of the "official binding" pitch.
+
+- **2026-06-17 — Android milestone A: a MapLibre map renders (Section 8 step 1, part 1).**
+  Chose "visible map first, control layer second." Built the hybrid Android plugin: native
+  `android/` module (AGP 9, `namespace`, **no `kotlin-android`** — built-in Kotlin, Java 17,
+  `org.maplibre.gl:android-sdk:11.11.0`), a `PlatformViewFactory` registered by
+  `MaplibreFlutterAndroidPlugin` (`pluginClass`), and `MapLibrePlatformView` building a `MapView`
+  with `textureMode(true)` (so it composites under Flutter's default Virtual-Display `AndroidView`)
+  + minimal lifecycle + style/camera from `creationParams`. Interface change: added
+  **`creationParams` to `PlatformViewHandle`** (additive) so the mobile tier passes initial
+  config through the platform-view registrar, not a data-path method channel. `MapLibreMap._embed`
+  now branches `PlatformViewHandle`→`AndroidView` on `defaultTargetPlatform == android` (iOS
+  deferred to its step). Camera/style controller methods throw `UnimplementedError('milestone B')`.
+  **Toolchain note:** Flutter 3.44's migrator forcibly re-adds `android.builtInKotlin=false` to the
+  example `gradle.properties`; left as Flutter-managed. The plugin module does **not** apply
+  `kotlin-android` and builds either way, so it stays §9-compliant for the AGP 10 end-state.
+  Verified: `melos analyze`/`test`/`format` green; `flutter build apk --debug` green with
+  `libmaplibre.so` bundled. On-device frame still needs manual `flutter run -d <android>`.
+
+- **2026-06-17 — Android milestone B: Dart drives the map over jnigen (Section 8 step 1, part 2).**
+  Control flows Dart → jni → a thin Java shim, no method channel on the data path. Dart mints a
+  `mapId`, passes it via `creationParams`; `MapLibrePlatformView` calls `MapRegistry.register(mapId)`
+  and `controller.attachMap(map)` once the map is ready; the Dart controller looks the controller
+  up with `MapRegistry.get(mapId)` and calls `getCamera`/`moveCamera`/`setStyle`. **Bound shim
+  classes are Java** (`MapRegistry`, `MapLibreController` under `android/src/main/java/`) because
+  jnigen 0.16 can't read AGP 9's Kotlin-2.3 metadata (Section 5a) — a deliberate deviation from
+  §5's "Kotlin in `android/`", scoped to just the two summarised classes. The SDK is **main-thread
+  only**, so the controller marshals every command onto the main looper and caches the camera from
+  an idle listener for cheap getter reads. Dart holds the controller's JNI ref in a field and
+  `release()`s it once in `dispose()` (§5d). Deps: `jni: ^1.0.0`, `jnigen: ^0.16.0` (resolved
+  cleanly in the workspace). Example gained zoom / fly-to / style-toggle buttons (toggles
+  demotiles ↔ OpenFreeMap Liberty — both keyless). Verified: `melos analyze`(`--fatal-infos`)/
+  `test`/`format` green; `flutter build apk --debug` green with `libdartjni.so` + `libmaplibre.so`
+  bundled. Button behaviour still needs a manual device run before moving to iOS.
 
 _Append new decisions here with date and rationale._
