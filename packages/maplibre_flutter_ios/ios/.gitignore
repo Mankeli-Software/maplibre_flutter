@@ -1,0 +1,6 @@
+# Local-only SourceKit/SwiftPM editing aid (VS Code): a symlink to the
+# Flutter-generated FlutterFramework SPM package in the example's build output,
+# so `swift package resolve` can resolve the plugin package standalone and the
+# Swift LSP stops reporting "No such module 'MapLibre'". Machine-local, never
+# committed. See README → "Editing the native Swift in VS Code".
+FlutterFramework

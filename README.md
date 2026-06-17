@@ -57,6 +57,25 @@ To run the example on a **physical iOS device**:
 Xcode project deliberately carries **no** `DEVELOPMENT_TEAM`, so the local value is the
 only source.
 
+### Editing the native Swift
+
+The plugin's iOS Swift sources depend on the Flutter SDK package, which Flutter only
+materialises during a build. **In Xcode**, just open `packages/maplibre_flutter/example/ios/
+Runner.xcworkspace` — modules resolve there.
+
+**In VS Code** the Swift LSP reports `No such module 'MapLibre'` until the package can resolve
+standalone. One-time setup (after building the example iOS app at least once):
+
+```bash
+cd packages/maplibre_flutter_ios/ios
+# symlink the Flutter-generated FlutterFramework package where Package.swift expects it
+ln -sfn ../../maplibre_flutter/example/ios/Flutter/ephemeral/Packages/.packages/FlutterFramework FlutterFramework
+(cd maplibre_flutter_ios && swift package resolve)   # fetches the MapLibre xcframework
+```
+
+Then reload the VS Code window. The symlink and `Package.resolved` are git-ignored (local
+build state). It only dangles after `flutter clean` — rebuild the example to restore it.
+
 ---
 
 ## Publishing

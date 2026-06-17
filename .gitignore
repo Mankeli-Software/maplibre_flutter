@@ -29,3 +29,8 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 build/
 coverage/
+
+# Gradle / Kotlin / native build caches (plugin modules + example)
+.gradle/
+.kotlin/
+.cxx/
