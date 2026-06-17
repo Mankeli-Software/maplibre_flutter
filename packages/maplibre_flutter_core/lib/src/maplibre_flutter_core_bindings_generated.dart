@@ -66,6 +66,19 @@ external void mbl_map_get_camera(
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Uint32, ffi.Uint32)>()
 external void mbl_map_resize(ffi.Pointer<MblMap> map, int width, int height);
 
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Double, ffi.Double)>()
+external void mbl_map_move_by(ffi.Pointer<MblMap> map, double dx, double dy);
+
+@ffi.Native<
+  ffi.Void Function(ffi.Pointer<MblMap>, ffi.Double, ffi.Double, ffi.Double)
+>()
+external void mbl_map_scale_by(
+  ffi.Pointer<MblMap> map,
+  double scale,
+  double anchor_x,
+  double anchor_y,
+);
+
 @ffi.Native<
   ffi.Void Function(
     ffi.Pointer<MblMap>,

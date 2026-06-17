@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
@@ -73,8 +75,13 @@ class _MapLibreMapState extends State<MapLibreMap> {
     switch (handle) {
       case TextureHandle(:final textureId):
         // Desktop tier: report the view's size + DPR so the core renders at the
-        // right resolution and aspect ratio (and follows window resizes).
-        // `resize` is idempotent, so reporting on every layout is cheap.
+        // right resolution and aspect ratio (and follows window resizes), and
+        // drive pan/zoom from Flutter gestures when the controller supports it
+        // (CLAUDE.md §3: the desktop tier handles gestures in Dart).
+        Widget map = Texture(textureId: textureId);
+        if (controller case final MapLibreGestureHandler gestures) {
+          map = _DesktopMapGestures(handler: gestures, child: map);
+        }
         return LayoutBuilder(
           builder: (context, constraints) {
             final size = constraints.biggest;
@@ -84,7 +91,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
                 controller.resize(size, dpr);
               }
             });
-            return Texture(textureId: textureId);
+            return map;
           },
         );
       case PlatformViewHandle():
@@ -162,5 +169,73 @@ class _UnimplementedEmbed extends StatelessWidget {
       return true;
     }());
     return const SizedBox.shrink();
+  }
+}
+
+/// Translates pointer gestures over a desktop map `Texture` into relative camera
+/// moves on a [MapLibreGestureHandler]: drag (or trackpad) pans, pinch or the
+/// scroll wheel zooms about the pointer. The desktop tier handles gestures in
+/// Dart so every desktop platform shares this behaviour (CLAUDE.md §3).
+class _DesktopMapGestures extends StatefulWidget {
+  const _DesktopMapGestures({required this.handler, required this.child});
+
+  final MapLibreGestureHandler handler;
+  final Widget child;
+
+  @override
+  State<_DesktopMapGestures> createState() => _DesktopMapGesturesState();
+}
+
+class _DesktopMapGesturesState extends State<_DesktopMapGestures> {
+  Offset _lastFocalPoint = Offset.zero;
+  double _lastScale = 1;
+
+  void _onScaleStart(ScaleStartDetails details) {
+    _lastFocalPoint = details.localFocalPoint;
+    _lastScale = 1;
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    final focal = details.localFocalPoint;
+    final dx = focal.dx - _lastFocalPoint.dx;
+    final dy = focal.dy - _lastFocalPoint.dy;
+    if (dx != 0 || dy != 0) {
+      widget.handler.moveBy(dx, dy);
+    }
+    _lastFocalPoint = focal;
+
+    if (details.scale > 0) {
+      final relative = details.scale / _lastScale;
+      if (relative != 1.0) {
+        widget.handler.scaleBy(relative, focal.dx, focal.dy);
+      }
+      _lastScale = details.scale;
+    }
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent) {
+      // Scroll up (negative dy) zooms in, about the pointer.
+      final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
+      if (factor != 1.0) {
+        widget.handler.scaleBy(
+          factor,
+          event.localPosition.dx,
+          event.localPosition.dy,
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: _onPointerSignal,
+      child: GestureDetector(
+        onScaleStart: _onScaleStart,
+        onScaleUpdate: _onScaleUpdate,
+        child: widget.child,
+      ),
+    );
   }
 }

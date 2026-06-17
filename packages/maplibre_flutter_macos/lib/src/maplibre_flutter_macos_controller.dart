@@ -22,7 +22,8 @@ const MethodChannel _registrar = MethodChannel(
 /// `MapLibreTexture` copies that into a `CVPixelBuffer` for the `Texture`. This
 /// controller creates the core map, registers the texture, forwards
 /// camera/style, and resizes the off-screen surface to the widget. (§8 M2–M3.)
-class MapLibreFlutterMacosController implements MapLibreMapController {
+class MapLibreFlutterMacosController
+    implements MapLibreMapController, MapLibreGestureHandler {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -31,6 +32,7 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
   final int _textureId;
 
   bool _disposed = false;
+  double _devicePixelRatio = 1;
   final Completer<void> _ready = Completer<void>();
 
   // Initial off-screen size in device pixels; replaced once the widget reports
@@ -120,12 +122,30 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
   @override
   Future<void> resize(Size size, double devicePixelRatio) async {
     if (_disposed) return;
+    _devicePixelRatio = devicePixelRatio;
     final w = (size.width * devicePixelRatio).round();
     final h = (size.height * devicePixelRatio).round();
     if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
     _renderWidth = w;
     _renderHeight = h;
     _coreMap.resize(w, h);
+  }
+
+  @override
+  void moveBy(double dx, double dy) {
+    if (_disposed) return;
+    // Gesture deltas are logical pixels; the core renders in device pixels.
+    _coreMap.moveBy(dx * _devicePixelRatio, dy * _devicePixelRatio);
+  }
+
+  @override
+  void scaleBy(double scale, double anchorX, double anchorY) {
+    if (_disposed) return;
+    _coreMap.scaleBy(
+      scale,
+      anchorX * _devicePixelRatio,
+      anchorY * _devicePixelRatio,
+    );
   }
 
   @override

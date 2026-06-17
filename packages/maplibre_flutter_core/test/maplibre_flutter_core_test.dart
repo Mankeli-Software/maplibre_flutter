@@ -84,4 +84,29 @@ void main() {
     expect(frame!.length, 480 * 320 * 4);
     expect(map.writePng('/tmp/maplibre_resized.png'), isTrue);
   });
+
+  test('scaleBy zooms the camera in (gesture op)', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+    final before = map.getCamera().zoom;
+
+    map.scaleBy(2, 256, 256); // zoom in 2x about the centre → zoom + 1
+    // The gesture op applies and refreshes the camera cache on the render
+    // thread, so the change is observable after a short delay.
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (map.getCamera().zoom <= before + 0.5 &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    expect(map.getCamera().zoom, greaterThan(before));
+  });
 }
