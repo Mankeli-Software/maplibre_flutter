@@ -29,37 +29,37 @@ Packages with other changes:
 
 #### `maplibre_flutter` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_android` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_core` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_ios` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_linux` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_macos` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_platform_interface` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_web` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 
 #### `maplibre_flutter_windows` - `v0.0.2`
 
- - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/JTorkk/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
+ - **FEAT**: scaffold federated monorepo, publishable on pub.dev. ([d6fff80d](https://github.com/Mankeli-Software/maplibre_flutter/commit/d6fff80df09a8f74123a41fffadd207bde125e36))
 

@@ -30,7 +30,7 @@ dev_dependencies:
 # Melos 7 reads its config from this `melos:` block (not melos.yaml) and derives
 # the package list from the pub `workspace:` field above.
 melos:
-  repository: https://github.com/JTorkk/maplibre_flutter
+  repository: https://github.com/Mankeli-Software/maplibre_flutter
 
   # `melos version` drives releases from Conventional Commits. Sibling packages
   # depend on each other by version constraint (not path) since the pub

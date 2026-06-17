@@ -26,6 +26,39 @@ See [`CLAUDE.md`](CLAUDE.md) for architecture decisions and the decision log.
 
 ---
 
+## Running the example
+
+The example app lives at `packages/maplibre_flutter/example`:
+
+```bash
+cd packages/maplibre_flutter/example
+flutter run -d <android|ios|macos|windows|linux|chrome>
+```
+
+### iOS & macOS codesigning (local setup)
+
+To avoid committing personal Apple Development Team IDs, the example injects signing
+config from a local, git-ignored file instead of the Xcode project.
+
+To run the example on a **physical iOS device**:
+
+1. Create a local config file (already ignored by Git):
+   - `packages/maplibre_flutter/example/ios/Flutter/Local.xcconfig`
+
+2. Add your Apple Development Team ID:
+   ```properties
+   DEVELOPMENT_TEAM = YOUR_TEAM_ID
+   ```
+   Replace `YOUR_TEAM_ID` with your 10-character Team ID from the Apple Developer
+   account portal.
+
+`Debug.xcconfig` / `Release.xcconfig` pull it in via `#include? "Local.xcconfig"` — the
+`?` makes it optional, so CI and the simulator (no signing) build without the file. The
+Xcode project deliberately carries **no** `DEVELOPMENT_TEAM`, so the local value is the
+only source.
+
+---
+
 ## Publishing
 
 All nine federated packages are publishable; only the workspace root and `example` stay

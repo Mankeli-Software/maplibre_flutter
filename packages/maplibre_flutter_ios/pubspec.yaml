@@ -2,7 +2,7 @@ name: maplibre_flutter_ios
 description: >-
   The iOS implementation of maplibre_flutter (swiftgen over the MapLibre Apple SDK, UiKitView).
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2
@@ -14,18 +14,35 @@ dependencies:
   flutter:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
+  # swiftgen control layer (CLAUDE.md §5b): Dart drives the native MapLibre map
+  # over the Objective-C runtime, not method channels.
+  #
+  # Capped below 9.4.1: that release bumped `hooks` to ^2.0.0, but the shared
+  # pub-workspace resolution still pins `hooks ^1.0.0` via maplibre_flutter_core's
+  # build hook (same single-resolution constraint as the melos pin, §6). The
+  # solver backtracks to 9.4.0 here; raise the ceiling once core moves to hooks 2.x.
+  objective_c: ">=9.3.0 <9.4.1"
+  ffi: ^2.1.0 # used by the generated swiftgen bindings
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
+  # Generator for lib/src/*_bindings.g.dart (committed, via tool/swiftgen.dart).
+  swiftgen: ^0.1.2
+  # Imported directly by tool/swiftgen.dart (also transitive via swiftgen).
+  ffigen: ^20.1.1
+  logging: ^1.3.0
+  pub_semver: ^2.2.0
 
 flutter:
   plugin:
     implements: maplibre_flutter
     platforms:
       ios:
+        # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
+        # implementation; the native plugin registers the UiKitView factory with
+        # the platform-view registrar (CLAUDE.md §3). Packaged for both SPM and
+        # CocoaPods (§9); sharedDarwinSource is deliberately NOT used.
         dartPluginClass: MapLibreFlutterIos
-        # Hybrid (dartPluginClass + pluginClass) is added with this platform's
-        # build-order step, when the native view/texture registrar is wired
-        # (CLAUDE.md §3). Dart-only registration keeps pub/analyze green now.
+        pluginClass: MaplibreFlutterIosPlugin

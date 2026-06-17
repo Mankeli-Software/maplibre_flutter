@@ -4,7 +4,7 @@ description: >-
   Native (mbgl-core) plus the ffigen bindings used by the macOS, Windows, and
   Linux implementation packages.
 version: 0.0.2
-repository: https://github.com/JTorkk/maplibre_flutter
+repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
   sdk: ^3.12.2

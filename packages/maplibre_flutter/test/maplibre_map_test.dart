@@ -80,6 +80,31 @@ void main() {
     }
   });
 
+  testWidgets('iOS PlatformViewHandle renders a UiKitView', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      MapLibreFlutterPlatform.instance = _FakePlatform(
+        const PlatformViewHandle(
+          viewType: 'maplibre_flutter/ios',
+          creationParams: {'styleUri': 'https://example.com/style.json'},
+        ),
+      );
+
+      await tester.pumpWidget(
+        const Directionality(
+          textDirection: TextDirection.ltr,
+          child: MapLibreMap(options: _options),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final view = tester.widget<UiKitView>(find.byType(UiKitView));
+      expect(view.viewType, 'maplibre_flutter/ios');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('onMapCreated fires and dispose tears down the controller', (
     tester,
   ) async {

@@ -86,6 +86,12 @@ class _MapLibreMapState extends State<MapLibreMap> {
           creationParams: handle.creationParams,
           creationParamsCodec: const StandardMessageCodec(),
         );
+      case TargetPlatform.iOS:
+        return UiKitView(
+          viewType: handle.viewType,
+          creationParams: handle.creationParams,
+          creationParamsCodec: const StandardMessageCodec(),
+        );
       default:
         return _UnimplementedEmbed(
           label: 'platform view "${handle.viewType}" on $defaultTargetPlatform',
