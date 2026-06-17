@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
@@ -66,12 +68,28 @@ class _MapLibreMapState extends State<MapLibreMap> {
     switch (handle) {
       case TextureHandle(:final textureId):
         return Texture(textureId: textureId);
-      case PlatformViewHandle(:final viewType):
-        // Each platform package registers the concrete view factory; the
-        // mobile impls swap this for AndroidView / UiKitView once wired.
-        return _UnimplementedEmbed(label: 'platform view "$viewType"');
+      case PlatformViewHandle():
+        return _platformView(handle);
       case ElementViewHandle(:final viewType):
         return _UnimplementedEmbed(label: 'element view "$viewType"');
+    }
+  }
+
+  /// Embed a native view. The mobile tier (Android/iOS) reaches here; the
+  /// concrete view factory is registered by the platform package. iOS
+  /// (`UiKitView`) is wired in its build-order step (CLAUDE.md §8).
+  Widget _platformView(PlatformViewHandle handle) {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return AndroidView(
+          viewType: handle.viewType,
+          creationParams: handle.creationParams,
+          creationParamsCodec: const StandardMessageCodec(),
+        );
+      default:
+        return _UnimplementedEmbed(
+          label: 'platform view "${handle.viewType}" on $defaultTargetPlatform',
+        );
     }
   }
 }

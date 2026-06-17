@@ -1,10 +1,13 @@
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
+import 'src/maplibre_flutter_android_controller.dart';
+
 /// The android implementation of `maplibre_flutter`.
 ///
-/// Registered automatically via `dartPluginClass` in pubspec.yaml. Native
-/// rendering is wired in this platform's build-order step (CLAUDE.md §8); for
-/// now [createMap] throws so the wiring is unmistakable.
+/// Registered automatically via `dartPluginClass` in pubspec.yaml. [createMap]
+/// returns a [PlatformViewHandle]; the native `MaplibreFlutterAndroidPlugin`
+/// (registered via `pluginClass`) provides the `AndroidView` factory that
+/// renders the map (CLAUDE.md §3, §8 step 1).
 class MapLibreFlutterAndroid extends MapLibreFlutterPlatform {
   /// Called by the Flutter plugin registrant to install this implementation.
   static void registerWith() {
@@ -12,9 +15,7 @@ class MapLibreFlutterAndroid extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) {
-    throw UnimplementedError(
-      'maplibre_flutter_android createMap() is not implemented yet (see CLAUDE.md §8).',
-    );
+  Future<MapLibreMapController> createMap(MapOptions options) async {
+    return MapLibreFlutterAndroidController(options);
   }
 }

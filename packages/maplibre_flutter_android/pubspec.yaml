@@ -14,19 +14,25 @@ dependencies:
   flutter:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
+  # jnigen control layer (CLAUDE.md §5a): Dart drives the native MapLibre map
+  # over JNI, not method channels.
+  jni: ^1.0.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
+  # Generator for lib/src/*_bindings.g.dart (committed, regenerated via tool/).
+  jnigen: ^0.16.0
 
 flutter:
   plugin:
     implements: maplibre_flutter
     platforms:
       android:
+        # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
+        # implementation; the native plugin registers the AndroidView factory
+        # with the platform-view registrar (CLAUDE.md §3).
         dartPluginClass: MapLibreFlutterAndroid
-        # Hybrid (dartPluginClass + pluginClass) is added with this platform's
-        # build-order step, when the native view/texture registrar is wired
-        # (CLAUDE.md §3). Dart-only registration keeps pub/analyze green now.
-        # package: dev.maplibreflutter.maplibre_flutter_android
+        pluginClass: MaplibreFlutterAndroidPlugin
+        package: dev.maplibreflutter.maplibre_flutter_android
