@@ -1,108 +1,228 @@
-import 'dart:async';
-import 'dart:isolate';
+import 'dart:ffi' as ffi;
+import 'dart:typed_data';
+
+import 'package:ffi/ffi.dart';
 
 import 'src/maplibre_flutter_core_bindings_generated.dart' as bindings;
 
-/// A very short-lived native function.
+/// A camera read back from the native core.
 ///
-/// For very short-lived functions, it is fine to call them on the main isolate.
-/// They will block the Dart execution while running the native function, so
-/// only do this for native functions which are guaranteed to be short-lived.
-int sum(int a, int b) => bindings.sum(a, b);
+/// Plain record — `maplibre_flutter_core` has no Flutter dependency, so it does
+/// not use the platform interface's `MapCamera`; the desktop implementation
+/// packages adapt between the two.
+typedef CoreCamera = ({
+  double latitude,
+  double longitude,
+  double zoom,
+  double bearing,
+  double pitch,
+});
 
-/// A longer lived native function, which occupies the thread calling it.
+/// A handle to one off-screen MapLibre map rendered by mbgl-core.
 ///
-/// Do not call these kind of native functions in the main isolate. They will
-/// block Dart execution. This will cause dropped frames in Flutter applications.
-/// Instead, call these native functions on a separate isolate.
-///
-/// Modify this to suit your own use case. Example use cases:
-///
-/// 1. Reuse a single isolate for various different kinds of requests.
-/// 2. Use multiple helper isolates for parallel execution.
-Future<int> sumAsync(int a, int b) async {
-  final SendPort helperIsolateSendPort = await _helperIsolateSendPort;
-  final int requestId = _nextSumRequestId++;
-  final _SumRequest request = _SumRequest(requestId, a, b);
-  final Completer<int> completer = Completer<int>();
-  _sumRequests[requestId] = completer;
-  helperIsolateSendPort.send(request);
-  return completer.future;
-}
+/// Shared by the desktop implementation packages (macOS now; Windows/Linux
+/// later) over the C ABI shim (see `src/maplibre_flutter_core.h`). Rendering is
+/// synchronous in M1; the macOS package drives it off the UI isolate and bridges
+/// frames into a Flutter texture (CLAUDE.md §5c, §8 M2). Call [dispose] to free
+/// native resources.
+class MapLibreCoreMap {
+  MapLibreCoreMap._(this._handle, this._width, this._height);
 
-/// A request to compute `sum`.
-///
-/// Typically sent from one isolate to another.
-class _SumRequest {
-  final int id;
-  final int a;
-  final int b;
+  final ffi.Pointer<bindings.MblMap> _handle;
+  int _width;
+  int _height;
+  bool _disposed = false;
 
-  const _SumRequest(this.id, this.a, this.b);
-}
+  /// Frame width in device pixels.
+  int get width => _width;
 
-/// A response with the result of `sum`.
-///
-/// Typically sent from one isolate to another.
-class _SumResponse {
-  final int id;
-  final int result;
+  /// Frame height in device pixels.
+  int get height => _height;
 
-  const _SumResponse(this.id, this.result);
-}
+  /// Address of the native `MblMap*`, for handing to a platform plugin's texture
+  /// bridge over the registrar channel (CLAUDE.md §3): the plugin reads frames
+  /// with [copyFrameFunctionAddress] and registers the frame-ready callback via
+  /// [setFrameCallbackFunctionAddress], both against this handle. Treat as opaque.
+  int get nativeAddress => _handle.address;
 
-/// Counter to identify [_SumRequest]s and [_SumResponse]s.
-int _nextSumRequestId = 0;
+  /// Address of the native `mbl_map_copy_frame` function. A platform plugin
+  /// calls it directly (reusing Dart's resolved symbol rather than re-looking it
+  /// up in the bundled framework, which is brittle across packaging layouts).
+  static int get copyFrameFunctionAddress =>
+      ffi.Native.addressOf<
+            ffi.NativeFunction<
+              ffi.Int Function(
+                ffi.Pointer<bindings.MblMap>,
+                ffi.Pointer<ffi.Uint8>,
+                ffi.Size,
+                ffi.Pointer<ffi.Uint32>,
+                ffi.Pointer<ffi.Uint32>,
+                ffi.Pointer<ffi.Uint32>,
+              )
+            >
+          >(bindings.mbl_map_copy_frame)
+          .address;
 
-/// Mapping from [_SumRequest] `id`s to the completers corresponding to the correct future of the pending request.
-final Map<int, Completer<int>> _sumRequests = <int, Completer<int>>{};
+  /// Address of the native `mbl_map_set_frame_callback` function (see
+  /// [copyFrameFunctionAddress]).
+  static int get setFrameCallbackFunctionAddress =>
+      ffi.Native.addressOf<
+            ffi.NativeFunction<
+              ffi.Void Function(
+                ffi.Pointer<bindings.MblMap>,
+                ffi.Pointer<
+                  ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>
+                >,
+                ffi.Pointer<ffi.Void>,
+              )
+            >
+          >(bindings.mbl_map_set_frame_callback)
+          .address;
 
-/// The SendPort belonging to the helper isolate.
-Future<SendPort> _helperIsolateSendPort = () async {
-  // The helper isolate is going to send us back a SendPort, which we want to
-  // wait for.
-  final Completer<SendPort> completer = Completer<SendPort>();
-
-  // Receive port on the main isolate to receive messages from the helper.
-  // We receive two types of messages:
-  // 1. A port to send messages on.
-  // 2. Responses to requests we sent.
-  final ReceivePort receivePort = ReceivePort()
-    ..listen((dynamic data) {
-      if (data is SendPort) {
-        // The helper isolate sent us the port on which we can sent it requests.
-        completer.complete(data);
-        return;
+  /// Creates an off-screen map of [width]x[height] device pixels at
+  /// [pixelRatio], loading [styleUri]. Throws if the native map cannot be made.
+  static MapLibreCoreMap create({
+    required int width,
+    required int height,
+    required double pixelRatio,
+    required String styleUri,
+  }) {
+    final stylePtr = styleUri.toNativeUtf8();
+    try {
+      final handle = bindings.mbl_map_create(
+        width,
+        height,
+        pixelRatio,
+        stylePtr.cast(),
+      );
+      if (handle == ffi.nullptr) {
+        throw StateError('mbl_map_create failed for style "$styleUri"');
       }
-      if (data is _SumResponse) {
-        // The helper isolate sent us a response to a request we sent.
-        final Completer<int> completer = _sumRequests[data.id]!;
-        _sumRequests.remove(data.id);
-        completer.complete(data.result);
-        return;
-      }
-      throw UnsupportedError('Unsupported message type: ${data.runtimeType}');
+      return MapLibreCoreMap._(handle, width, height);
+    } finally {
+      malloc.free(stylePtr);
+    }
+  }
+
+  /// Replaces the active style (URL, file path, or inline JSON).
+  void setStyle(String styleUri) {
+    _checkAlive();
+    final p = styleUri.toNativeUtf8();
+    try {
+      bindings.mbl_map_set_style(_handle, p.cast());
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// Jumps the camera (no animation in M1).
+  void setCamera({
+    required double latitude,
+    required double longitude,
+    double zoom = 0,
+    double bearing = 0,
+    double pitch = 0,
+  }) {
+    _checkAlive();
+    bindings.mbl_map_set_camera(
+      _handle,
+      latitude,
+      longitude,
+      zoom,
+      bearing,
+      pitch,
+    );
+  }
+
+  /// Reads the last-set camera.
+  CoreCamera getCamera() {
+    _checkAlive();
+    return using((arena) {
+      final lat = arena<ffi.Double>();
+      final lng = arena<ffi.Double>();
+      final zoom = arena<ffi.Double>();
+      final bearing = arena<ffi.Double>();
+      final pitch = arena<ffi.Double>();
+      bindings.mbl_map_get_camera(_handle, lat, lng, zoom, bearing, pitch);
+      return (
+        latitude: lat.value,
+        longitude: lng.value,
+        zoom: zoom.value,
+        bearing: bearing.value,
+        pitch: pitch.value,
+      );
     });
+  }
 
-  // Start the helper isolate.
-  await Isolate.spawn((SendPort sendPort) async {
-    final ReceivePort helperReceivePort = ReceivePort()
-      ..listen((dynamic data) {
-        // On the helper isolate listen to requests and respond to them.
-        if (data is _SumRequest) {
-          final int result = bindings.sum_long_running(data.a, data.b);
-          final _SumResponse response = _SumResponse(data.id, result);
-          sendPort.send(response);
-          return;
-        }
-        throw UnsupportedError('Unsupported message type: ${data.runtimeType}');
+  /// Blocks up to [timeout] until at least one frame has rendered, returning
+  /// true if a frame is then available. Intended for initial-readiness and
+  /// headless/test use — not the per-frame present path.
+  bool awaitFrame(Duration timeout) {
+    _checkAlive();
+    return bindings.mbl_map_await_frame(_handle, timeout.inMilliseconds) != 0;
+  }
+
+  /// Resizes the off-screen surface (device pixels) and triggers a re-render.
+  void resize(int width, int height) {
+    _checkAlive();
+    _width = width;
+    _height = height;
+    bindings.mbl_map_resize(_handle, width, height);
+  }
+
+  /// Returns the latest rendered frame as tightly-packed BGRA (premultiplied
+  /// alpha) bytes, or null if none is available yet. Non-blocking — the render
+  /// thread produces frames asynchronously; use [awaitFrame] to wait for the
+  /// first one.
+  Uint8List? copyFrame() {
+    _checkAlive();
+    final capacity = _width * _height * 4;
+    final dst = malloc<ffi.Uint8>(capacity);
+    try {
+      return using((arena) {
+        final w = arena<ffi.Uint32>();
+        final h = arena<ffi.Uint32>();
+        final stride = arena<ffi.Uint32>();
+        final ok = bindings.mbl_map_copy_frame(
+          _handle,
+          dst,
+          capacity,
+          w,
+          h,
+          stride,
+        );
+        if (ok == 0) return null;
+        final length = stride.value * h.value;
+        // Copy out of native memory before it is freed.
+        return Uint8List.fromList(dst.asTypedList(length));
       });
+    } finally {
+      malloc.free(dst);
+    }
+  }
 
-    // Send the port to the main isolate on which we can receive requests.
-    sendPort.send(helperReceivePort.sendPort);
-  }, receivePort.sendPort);
+  /// Debug/verification: writes the latest frame to a PNG at [path] using
+  /// mbgl's encoder. Returns true on success. Not part of the render path.
+  bool writePng(String path) {
+    _checkAlive();
+    final p = path.toNativeUtf8();
+    try {
+      return bindings.mbl_map_write_png(_handle, p.cast()) != 0;
+    } finally {
+      malloc.free(p);
+    }
+  }
 
-  // Wait until the helper isolate has sent us back the SendPort on which we
-  // can start sending requests.
-  return completer.future;
-}();
+  /// Frees the native map. Idempotent.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    bindings.mbl_map_destroy(_handle);
+  }
+
+  void _checkAlive() {
+    if (_disposed) {
+      throw StateError('MapLibreCoreMap used after dispose()');
+    }
+  }
+}

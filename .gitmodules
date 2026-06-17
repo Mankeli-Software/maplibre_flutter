@@ -1,0 +1,4 @@
+[submodule "packages/maplibre_flutter_core/third_party/maplibre-native"]
+	path = packages/maplibre_flutter_core/third_party/maplibre-native
+	url = https://github.com/maplibre/maplibre-native.git
+	shallow = true

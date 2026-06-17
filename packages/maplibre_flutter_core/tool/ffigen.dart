@@ -23,12 +23,17 @@ void main() {
       commentType: const CommentType.def(),
     ),
     headers: Headers(entryPoints: [Uri.file('src/maplibre_flutter_core.h')]),
-    functions: Functions.includeAll,
-    structs: Structs.includeAll,
-    enums: Enums.includeAll,
-    unnamedEnums: UnnamedEnums.includeAll,
-    macros: Macros.includeAll,
-    globals: Globals.includeAll,
-    typedefs: Typedefs.includeAll,
+    // Restrict to our own C ABI so the committed bindings are stable across
+    // platforms (CLAUDE.md §7 regen check): including system declarations would
+    // make the output differ between a macOS dev box and a Linux CI runner. The
+    // opaque MblMap struct is included explicitly; referenced scalar types
+    // resolve directly to ffi types (Typedefs.useSupportedTypedefs).
+    functions: Functions(include: (d) => d.originalName.startsWith('mbl_')),
+    structs: Structs(include: (d) => d.originalName == 'MblMap'),
+    enums: Enums.excludeAll,
+    unnamedEnums: UnnamedEnums.excludeAll,
+    macros: Macros.excludeAll,
+    globals: Globals.excludeAll,
+    typedefs: Typedefs.excludeAll,
   ).generate(logger: Logger.root);
 }
