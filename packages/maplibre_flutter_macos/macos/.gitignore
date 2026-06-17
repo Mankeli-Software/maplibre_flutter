@@ -1,0 +1,5 @@
+# Local-only SourceKit/SwiftPM editing aid (VS Code): a symlink to the
+# Flutter-generated FlutterFramework SPM package in the example's build output,
+# so `swift package resolve` can resolve the plugin package standalone. Machine-
+# local, never committed (mirror of the iOS package).
+FlutterFramework

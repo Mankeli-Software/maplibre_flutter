@@ -1,10 +1,15 @@
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-/// The macos implementation of `maplibre_flutter`.
+import 'src/maplibre_flutter_macos_controller.dart';
+
+/// The macOS implementation of `maplibre_flutter`.
 ///
-/// Registered automatically via `dartPluginClass` in pubspec.yaml. Native
-/// rendering is wired in this platform's build-order step (CLAUDE.md §8); for
-/// now [createMap] throws so the wiring is unmistakable.
+/// Registered automatically via `dartPluginClass` in pubspec.yaml. macOS is part
+/// of the desktop tier (CLAUDE.md §3): it renders MapLibre Native (`mbgl-core`,
+/// via `maplibre_flutter_core`) off-screen into a Metal texture and composites
+/// through a Flutter `Texture`. The native half of this plugin
+/// (`MaplibreFlutterMacosPlugin`) owns the texture registrar; [createMap]
+/// delegates to [MapLibreFlutterMacosController].
 class MapLibreFlutterMacos extends MapLibreFlutterPlatform {
   /// Called by the Flutter plugin registrant to install this implementation.
   static void registerWith() {
@@ -12,9 +17,6 @@ class MapLibreFlutterMacos extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) {
-    throw UnimplementedError(
-      'maplibre_flutter_macos createMap() is not implemented yet (see CLAUDE.md §8).',
-    );
-  }
+  Future<MapLibreMapController> createMap(MapOptions options) =>
+      MapLibreFlutterMacosController.create(options);
 }
