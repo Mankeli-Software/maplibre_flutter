@@ -1,49 +1,45 @@
 # maplibre_flutter
 
-A new Dart FFI package project.
+> ⚠️ **Work in progress — not usable yet.** Early scaffolding. The public API is taking
+> shape but **no platform renders a map yet** (`createMap()` throws `UnimplementedError`
+> everywhere). Do **not** depend on it. No pub.dev release. APIs will break without
+> notice. Watch/star for progress.
 
-## Getting Started
+A Flutter plugin to render [MapLibre](https://maplibre.org) vector maps **natively on
+every platform** — Android, iOS, macOS, Windows, Linux, and Web.
 
-This project is a starting point for a Flutter
-[FFI package](https://flutter.dev/to/ffi-package),
-a specialized package that includes native code directly invoked with Dart FFI.
+The differentiator versus existing packages (`maplibre_gl`, `maplibre`) is **true native
+rendering on desktop** instead of a `maplibre-gl-js` WebView. On desktop we drive the
+MapLibre Native C++ core (`mbgl-core`) directly and composite through Flutter's texture
+pipeline. **Goal:** become the *stable*, well-tested MapLibre binding for Flutter.
 
-## Project structure
+### Status
 
-This template uses the following structure:
+| Piece                                                         | State                                     |
+| ------------------------------------------------------------- | ----------------------------------------- |
+| Federated monorepo + pub workspace + melos                    | ✅ scaffolded                              |
+| Platform interface + `MapLibreMap` widget                     | ✅ skeleton (resolves / analyzes / tests)  |
+| Per-platform impls (Android, iOS, macOS, Windows, Linux, Web) | 🚧 stubs — `createMap()` unimplemented     |
+| `mbgl-core` submodule + C shim                                | ❌ not started (still template `sum` shim) |
 
-* `src`: Contains the native source code, and a CmakeFile.txt file for building
-  that source code into a dynamic library.
+See [`CLAUDE.md`](CLAUDE.md) for architecture decisions and the decision log.
 
-* `lib`: Contains the Dart code that defines the API of the plugin, and which
-  calls into the native code using `dart:ffi`.
+---
 
-* `bin`: Contains the `build.dart` that performs the external native builds.
+## Publishing
 
-## Building and bundling native code
+All nine federated packages are publishable; only the workspace root and `example` stay
+private. Siblings depend on each other by **version constraint** (`^x.y.z`), not `path:` —
+the pub workspace links them locally for dev, and melos keeps the constraints in lockstep
+on bump. Publish in **dependency order** (platform interface → core → impls → app-facing).
 
-`build.dart` does the building of native components.
+```bash
+# 1. Coordinated version bump (Conventional Commits drive the bump)
+melos version
 
-Bundling is done by Flutter based on the output from `build.dart`.
+# 2. Dry-run `dart pub publish --dry-run` in every non-private package — must be clean
+dart run melos run publish:dry-run
 
-## Binding to native code
-
-To use the native code, bindings in Dart are needed.
-To avoid writing these by hand, they are generated from the header file
-(`src/maplibre_flutter.h`) by `package:ffigen`.
-Regenerate the bindings by running `dart run ffigen --config ffigen.yaml`.
-
-## Invoking native code
-
-Very short-running native functions can be directly invoked from any isolate.
-For example, see `sum` in `lib/maplibre_flutter.dart`.
-
-Longer-running functions should be invoked on a helper isolate to avoid
-dropping frames in Flutter applications.
-For example, see `sumAsync` in `lib/maplibre_flutter.dart`.
-
-## Flutter help
-
-For help getting started with Flutter, view our
-[online documentation](https://docs.flutter.dev), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+# 3. Publish in dependency order
+melos publish
+```

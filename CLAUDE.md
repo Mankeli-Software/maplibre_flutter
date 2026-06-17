@@ -383,8 +383,7 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   folder). Motivation: reduce the naming collision with the upstream MapLibre Native C++
   project and read as the Flutter binding rather than implying it *is* MapLibre Native.
   Applies to the root package and all derived federated package names (`maplibre_flutter_core`,
-  `maplibre_flutter_android`, `maplibre_flutter_ios`, …). Still engage the MapLibre org
-  before publishing.
+  `maplibre_flutter_android`, `maplibre_flutter_ios`, …). 
 - Android = jnigen-SDK (not core) for speed and maturity.
 - iOS = SDK + `UiKitView`; macOS moved to the desktop core+texture tier so both Apple
   platforms are *not* built together — chosen for "best mobile experience first, desktop
