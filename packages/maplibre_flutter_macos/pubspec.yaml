@@ -26,7 +26,9 @@ flutter:
     implements: maplibre_flutter
     platforms:
       macos:
+        # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
+        # implementation; the native plugin owns the Metal/texture registrar
+        # bridge (CLAUDE.md §3 registrar exception). macOS renders mbgl-core via
+        # maplibre_flutter_core, NOT the Apple SDK — sharedDarwinSource is not used.
         dartPluginClass: MapLibreFlutterMacos
-        # Hybrid (dartPluginClass + pluginClass) is added with this platform's
-        # build-order step, when the native view/texture registrar is wired
-        # (CLAUDE.md §3). Dart-only registration keeps pub/analyze green now.
+        pluginClass: MaplibreFlutterMacosPlugin

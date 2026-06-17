@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+# Resolved against the local FlutterFramework symlink — machine-local.
+Package.resolved
