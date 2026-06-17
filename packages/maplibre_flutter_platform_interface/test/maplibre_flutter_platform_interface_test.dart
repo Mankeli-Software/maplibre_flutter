@@ -5,6 +5,8 @@ class _FakeController implements MapLibreMapController {
   @override
   MapLibreRenderHandle get renderHandle => const TextureHandle(textureId: 1);
   @override
+  Future<void> get onReady => Future<void>.value();
+  @override
   Future<MapCamera> getCamera() async => const MapCamera(center: LatLng(0, 0));
   @override
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {}

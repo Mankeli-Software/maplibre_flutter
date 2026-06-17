@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -19,7 +21,9 @@ class MapLibreMap extends StatefulWidget {
   /// Initial style and camera.
   final MapOptions options;
 
-  /// Called once the native map exists and its controller is ready.
+  /// Called as soon as the [MapLibreMapController] exists — which is *before*
+  /// the native map has finished initialising. Await
+  /// [MapLibreMapController.onReady] before driving the camera or style.
   final MapCreatedCallback? onMapCreated;
 
   @override
@@ -75,17 +79,14 @@ class _MapLibreMapState extends State<MapLibreMap> {
     }
   }
 
-  /// Embed a native view. The mobile tier (Android/iOS) reaches here; the
-  /// concrete view factory is registered by the platform package. iOS
-  /// (`UiKitView`) is wired in its build-order step (CLAUDE.md §8).
+  /// Embed a native view. The mobile tier reaches here: Android composites the
+  /// map's `SurfaceView` via Hybrid Composition, iOS embeds `MLNMapView` via
+  /// `UiKitView`. The concrete view factory is registered by each platform
+  /// package.
   Widget _platformView(PlatformViewHandle handle) {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        return AndroidView(
-          viewType: handle.viewType,
-          creationParams: handle.creationParams,
-          creationParamsCodec: const StandardMessageCodec(),
-        );
+        return _androidView(handle);
       case TargetPlatform.iOS:
         return UiKitView(
           viewType: handle.viewType,
@@ -97,6 +98,40 @@ class _MapLibreMapState extends State<MapLibreMap> {
           label: 'platform view "${handle.viewType}" on $defaultTargetPlatform',
         );
     }
+  }
+
+  /// Android embed via **Hybrid Composition** (`PlatformViewLink` +
+  /// `PlatformViewsService.initSurfaceAndroidView`), so the map's `SurfaceView`
+  /// composites directly in the view hierarchy with correct gestures and
+  /// accessibility — unlike the plain `AndroidView` (texture-layer) path, which
+  /// shunts SurfaceViews into a virtual display. On capable devices (Flutter
+  /// 3.44+, Android API 34+, Vulkan) this is transparently upgraded to Hybrid
+  /// Composition Plus (HCPP) when the app manifest sets
+  /// `io.flutter.embedding.android.EnableHcpp`; otherwise it falls back to
+  /// classic Hybrid Composition.
+  Widget _androidView(PlatformViewHandle handle) {
+    return PlatformViewLink(
+      viewType: handle.viewType,
+      surfaceFactory: (context, controller) {
+        return AndroidViewSurface(
+          controller: controller as AndroidViewController,
+          hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+        );
+      },
+      onCreatePlatformView: (params) {
+        return PlatformViewsService.initSurfaceAndroidView(
+            id: params.id,
+            viewType: handle.viewType,
+            layoutDirection: TextDirection.ltr,
+            creationParams: handle.creationParams,
+            creationParamsCodec: const StandardMessageCodec(),
+            onFocus: () => params.onFocusChanged(true),
+          )
+          ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+          ..create();
+      },
+    );
   }
 }
 

@@ -10,6 +10,8 @@ class _FakeController implements MapLibreMapController {
   final MapLibreRenderHandle renderHandle;
   bool disposed = false;
   @override
+  Future<void> get onReady => Future<void>.value();
+  @override
   Future<MapCamera> getCamera() async => const MapCamera(center: LatLng(0, 0));
   @override
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {}
@@ -51,7 +53,7 @@ void main() {
     expect(texture.textureId, 7);
   });
 
-  testWidgets('android PlatformViewHandle renders an AndroidView', (
+  testWidgets('android PlatformViewHandle renders a PlatformViewLink', (
     tester,
   ) async {
     // Reset inline (not addTearDown): the framework's debug-var invariant check
@@ -73,8 +75,10 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final view = tester.widget<AndroidView>(find.byType(AndroidView));
-      expect(view.viewType, 'maplibre_flutter/android');
+      final link = tester.widget<PlatformViewLink>(
+        find.byType(PlatformViewLink),
+      );
+      expect(link.viewType, 'maplibre_flutter/android');
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
