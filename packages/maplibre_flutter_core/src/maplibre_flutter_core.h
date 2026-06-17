@@ -1,30 +1,101 @@
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
+// C ABI shim over MapLibre Native (mbgl-core). Dart FFI cannot bind C++, so this
+// header exposes a plain-C surface (opaque handle + functions) that ffigen binds
+// (CLAUDE.md §5c). It must stay free of any mbgl/C++ includes so ffigen parses it
+// against the bare toolchain. The implementation lives in maplibre_flutter_core.cpp.
+//
+// Threading: each MblMap owns a dedicated render thread that exclusively creates
+// and drives the mbgl Map/RunLoop/HeadlessFrontend (mbgl is single-thread-affine).
+// Commands are marshaled onto that thread; rendered frames are published to an
+// internal buffer and announced via a frame-ready callback. Getters read cached
+// state. All functions below are safe to call from any thread.
+//
+// Generated bindings: lib/src/maplibre_flutter_core_bindings_generated.dart
+// (committed, regenerated with `dart run tool/ffigen.dart`, never hand-edited).
+#ifndef MAPLIBRE_FLUTTER_CORE_H
+#define MAPLIBRE_FLUTTER_CORE_H
 
-#if _WIN32
-#include <windows.h>
-#else
-#include <pthread.h>
-#include <unistd.h>
-#endif
+#include <stddef.h>
+#include <stdint.h>
 
 #if _WIN32
 #define FFI_PLUGIN_EXPORT __declspec(dllexport)
 #else
-#define FFI_PLUGIN_EXPORT
+#define FFI_PLUGIN_EXPORT __attribute__((visibility("default")))
 #endif
 
-// A very short-lived native function.
-//
-// For very short-lived functions, it is fine to call them on the main isolate.
-// They will block the Dart execution while running the native function, so
-// only do this for native functions which are guaranteed to be short-lived.
-FFI_PLUGIN_EXPORT intptr_t sum(intptr_t a, intptr_t b);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// A longer lived native function, which occupies the thread calling it.
-//
-// Do not call these kind of native functions in the main isolate. They will
-// block Dart execution. This will cause dropped frames in Flutter applications.
-// Instead, call these native functions on a separate isolate.
-FFI_PLUGIN_EXPORT intptr_t sum_long_running(intptr_t a, intptr_t b);
+// Opaque handle to one off-screen MapLibre map (owns an mbgl::Map + headless
+// Metal backend + RunLoop on its own render thread). Created/destroyed from Dart.
+typedef struct MblMap MblMap;
+
+// Frame-ready callback, invoked on the render thread after a new frame has been
+// rendered into the internal buffer. `user` is the pointer passed to
+// mbl_map_set_frame_callback. Must be cheap and thread-safe: the macOS plugin
+// uses it to call FlutterTextureRegistry.textureFrameAvailable. Do NOT call back
+// into the map from here.
+typedef void (*MblFrameCallback)(void *user);
+
+// Create an off-screen map of `width`x`height` device pixels at `pixel_ratio`,
+// loading `style_uri` (URL, file path, or inline JSON). Spawns the render thread
+// and starts loading the style. Returns NULL on failure. Does not block on the
+// style load — use mbl_map_await_frame or the frame callback to know when a
+// frame exists.
+FFI_PLUGIN_EXPORT MblMap *mbl_map_create(uint32_t width, uint32_t height,
+                                         float pixel_ratio,
+                                         const char *style_uri);
+
+// Replace the active style (URL, file path, or inline JSON). Triggers a re-render.
+FFI_PLUGIN_EXPORT void mbl_map_set_style(MblMap *map, const char *style_uri);
+
+// Jump the camera and trigger a re-render (no animation in M2; M3 adds duration).
+FFI_PLUGIN_EXPORT void mbl_map_set_camera(MblMap *map, double lat, double lng,
+                                          double zoom, double bearing,
+                                          double pitch);
+
+// Read the last-set camera into the (nullable) out params. Cheap (cached).
+FFI_PLUGIN_EXPORT void mbl_map_get_camera(MblMap *map, double *out_lat,
+                                          double *out_lng, double *out_zoom,
+                                          double *out_bearing,
+                                          double *out_pitch);
+
+// Resize the off-screen surface and trigger a re-render.
+FFI_PLUGIN_EXPORT void mbl_map_resize(MblMap *map, uint32_t width,
+                                      uint32_t height);
+
+// Register (or clear, with NULL) the frame-ready callback. See MblFrameCallback.
+FFI_PLUGIN_EXPORT void mbl_map_set_frame_callback(MblMap *map,
+                                                  MblFrameCallback callback,
+                                                  void *user);
+
+// Block up to `timeout_ms` until at least one frame has been rendered. Returns 1
+// if a frame is available, 0 on timeout. Intended for headless/test use and for
+// an initial readiness wait — not for the per-frame present path.
+FFI_PLUGIN_EXPORT int mbl_map_await_frame(MblMap *map, uint32_t timeout_ms);
+
+// Copy the latest rendered frame as tightly-packed BGRA (premultiplied alpha)
+// into `dst` (capacity `dst_capacity` bytes); non-blocking. BGRA matches the
+// macOS CVPixelBuffer format so the texture bridge needs no swizzle. Writes the
+// frame dimensions/row stride to the (nullable) out params. Returns 1 on success,
+// 0 if no frame yet or the buffer is too small. Safe to call from the raster
+// thread (the plugin calls it from copyPixelBuffer).
+FFI_PLUGIN_EXPORT int mbl_map_copy_frame(MblMap *map, uint8_t *dst,
+                                         size_t dst_capacity,
+                                         uint32_t *out_width,
+                                         uint32_t *out_height,
+                                         uint32_t *out_stride);
+
+// Debug/verification: encode the latest frame to a PNG file at `path` using
+// mbgl's own PNG encoder. Returns 1 on success, 0 if no frame or the write failed.
+FFI_PLUGIN_EXPORT int mbl_map_write_png(MblMap *map, const char *path);
+
+// Stop the render thread and free all resources. The handle is invalid after.
+FFI_PLUGIN_EXPORT void mbl_map_destroy(MblMap *map);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
+#endif // MAPLIBRE_FLUTTER_CORE_H

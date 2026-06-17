@@ -4,18 +4,113 @@
 // ignore_for_file: type=lint, unused_import
 import 'dart:ffi' as ffi;
 
-/// A very short-lived native function.
-///
-/// For very short-lived functions, it is fine to call them on the main isolate.
-/// They will block the Dart execution while running the native function, so
-/// only do this for native functions which are guaranteed to be short-lived.
-@ffi.Native<ffi.IntPtr Function(ffi.IntPtr, ffi.IntPtr)>()
-external int sum(int a, int b);
+@ffi.Native<
+  ffi.Pointer<MblMap> Function(
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Float,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external ffi.Pointer<MblMap> mbl_map_create(
+  int width,
+  int height,
+  double pixel_ratio,
+  ffi.Pointer<ffi.Char> style_uri,
+);
 
-/// A longer lived native function, which occupies the thread calling it.
-///
-/// Do not call these kind of native functions in the main isolate. They will
-/// block Dart execution. This will cause dropped frames in Flutter applications.
-/// Instead, call these native functions on a separate isolate.
-@ffi.Native<ffi.IntPtr Function(ffi.IntPtr, ffi.IntPtr)>()
-external int sum_long_running(int a, int b);
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_set_style(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> style_uri,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+  )
+>()
+external void mbl_map_set_camera(
+  ffi.Pointer<MblMap> map,
+  double lat,
+  double lng,
+  double zoom,
+  double bearing,
+  double pitch,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+  )
+>()
+external void mbl_map_get_camera(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Double> out_lat,
+  ffi.Pointer<ffi.Double> out_lng,
+  ffi.Pointer<ffi.Double> out_zoom,
+  ffi.Pointer<ffi.Double> out_bearing,
+  ffi.Pointer<ffi.Double> out_pitch,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Uint32, ffi.Uint32)>()
+external void mbl_map_resize(ffi.Pointer<MblMap> map, int width, int height);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<
+      ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void> user)>
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_map_set_frame_callback(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void> user)>>
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>, ffi.Uint32)>()
+external int mbl_map_await_frame(ffi.Pointer<MblMap> map, int timeout_ms);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Size,
+    ffi.Pointer<ffi.Uint32>,
+    ffi.Pointer<ffi.Uint32>,
+    ffi.Pointer<ffi.Uint32>,
+  )
+>()
+external int mbl_map_copy_frame(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Uint8> dst,
+  int dst_capacity,
+  ffi.Pointer<ffi.Uint32> out_width,
+  ffi.Pointer<ffi.Uint32> out_height,
+  ffi.Pointer<ffi.Uint32> out_stride,
+);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external int mbl_map_write_png(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> path,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>)>()
+external void mbl_map_destroy(ffi.Pointer<MblMap> map);
+
+final class MblMap extends ffi.Opaque {}
