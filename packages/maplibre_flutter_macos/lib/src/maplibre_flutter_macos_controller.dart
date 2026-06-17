@@ -8,9 +8,9 @@ import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 ///
 /// The one sanctioned platform-channel use (CLAUDE.md §3/§10): the engine's
 /// texture registrar is only reachable from the native plugin, so Dart hands it
-/// the core map's native handle to bind a `Texture` to. Registration only — the
-/// per-frame data path is native + FFI (the core's render thread → the texture's
-/// `copyPixelBuffer`), never this channel.
+/// the core map's native handle (and the core's resolved function addresses) to
+/// bind a `Texture` to. Registration only — the per-frame data path is native +
+/// FFI (the core's render thread → the texture's `copyPixelBuffer`).
 const MethodChannel _registrar = MethodChannel(
   'maplibre_flutter/macos/registrar',
 );
@@ -20,10 +20,12 @@ const MethodChannel _registrar = MethodChannel(
 /// macOS drives `mbgl-core` over FFI (via `maplibre_flutter_core`): the core
 /// renders off-screen on its own thread into a BGRA buffer; the native plugin's
 /// `MapLibreTexture` copies that into a `CVPixelBuffer` for the `Texture`. This
-/// controller creates the core map, registers the texture, and forwards
-/// camera/style. (CLAUDE.md §8 M2.)
+/// controller creates the core map, registers the texture, forwards
+/// camera/style, and resizes the off-screen surface to the widget. (§8 M2–M3.)
 class MapLibreFlutterMacosController implements MapLibreMapController {
-  MapLibreFlutterMacosController._(this._coreMap, this._textureId);
+  MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
+    _pollReady();
+  }
 
   final core.MapLibreCoreMap _coreMap;
   final int _textureId;
@@ -31,20 +33,23 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
   bool _disposed = false;
   final Completer<void> _ready = Completer<void>();
 
-  // Off-screen render size in device pixels. Fixed for M2; M3/M4 resize it to
-  // the widget's real size × devicePixelRatio.
-  static const int _renderWidth = 1024;
-  static const int _renderHeight = 1024;
+  // Initial off-screen size in device pixels; replaced once the widget reports
+  // its real size via [resize]. The texture self-sizes to whatever the core
+  // renders, so this is only the size of the very first frame(s).
+  static const int _initialWidth = 512;
+  static const int _initialHeight = 512;
+  int _renderWidth = _initialWidth;
+  int _renderHeight = _initialHeight;
 
   /// Creates the core map, registers an engine texture bound to it, and returns
-  /// a controller whose [renderHandle] is ready to embed.
+  /// a controller. [onReady] completes once the first frame has rendered.
   static Future<MapLibreFlutterMacosController> create(
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
     final coreMap = core.MapLibreCoreMap.create(
-      width: _renderWidth,
-      height: _renderHeight,
+      width: _initialWidth,
+      height: _initialHeight,
       pixelRatio: 1,
       styleUri: options.styleUri,
     );
@@ -62,18 +67,20 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
           'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
           'setFrameCallbackFn':
               core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
-          'width': _renderWidth,
-          'height': _renderHeight,
         });
 
-    final controller = MapLibreFlutterMacosController._(
-      coreMap,
-      textureId ?? -1,
-    );
-    // M3 will gate readiness on the first rendered frame; for M2 the map exists
-    // and the texture is wired, so report ready immediately.
-    controller._ready.complete();
-    return controller;
+    return MapLibreFlutterMacosController._(coreMap, textureId ?? -1);
+  }
+
+  /// Polls until the first frame has rendered, then completes [onReady] (mirrors
+  /// the mobile controllers' readiness handshake). Stops on dispose.
+  void _pollReady() {
+    if (_disposed || _ready.isCompleted) return;
+    if (_coreMap.awaitFrame(Duration.zero)) {
+      _ready.complete();
+      return;
+    }
+    Future<void>.delayed(const Duration(milliseconds: 50), _pollReady);
   }
 
   @override
@@ -95,6 +102,9 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
 
   @override
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {
+    // Desktop renders on demand (Static mode), so duration is ignored for now:
+    // the camera jumps to the target and a fresh frame is produced. Smooth
+    // animation is a later refinement (CLAUDE.md §8).
     _coreMap.setCamera(
       latitude: camera.center.latitude,
       longitude: camera.center.longitude,
@@ -106,6 +116,17 @@ class MapLibreFlutterMacosController implements MapLibreMapController {
 
   @override
   Future<void> setStyle(String styleUri) async => _coreMap.setStyle(styleUri);
+
+  @override
+  Future<void> resize(Size size, double devicePixelRatio) async {
+    if (_disposed) return;
+    final w = (size.width * devicePixelRatio).round();
+    final h = (size.height * devicePixelRatio).round();
+    if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
+    _renderWidth = w;
+    _renderHeight = h;
+    _coreMap.resize(w, h);
+  }
 
   @override
   Future<void> dispose() async {

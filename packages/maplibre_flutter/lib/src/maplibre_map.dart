@@ -62,16 +62,31 @@ class _MapLibreMapState extends State<MapLibreMap> {
         if (controller == null) {
           return const SizedBox.shrink();
         }
-        return _embed(controller.renderHandle);
+        return _embed(context, controller);
       },
     );
   }
 
   /// The render split (CLAUDE.md §3) is resolved here and nowhere else.
-  Widget _embed(MapLibreRenderHandle handle) {
+  Widget _embed(BuildContext context, MapLibreMapController controller) {
+    final handle = controller.renderHandle;
     switch (handle) {
       case TextureHandle(:final textureId):
-        return Texture(textureId: textureId);
+        // Desktop tier: report the view's size + DPR so the core renders at the
+        // right resolution and aspect ratio (and follows window resizes).
+        // `resize` is idempotent, so reporting on every layout is cheap.
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final size = constraints.biggest;
+            final dpr = MediaQuery.devicePixelRatioOf(context);
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (size.isFinite && !size.isEmpty) {
+                controller.resize(size, dpr);
+              }
+            });
+            return Texture(textureId: textureId);
+          },
+        );
       case PlatformViewHandle():
         return _platformView(handle);
       case ElementViewHandle(:final viewType):

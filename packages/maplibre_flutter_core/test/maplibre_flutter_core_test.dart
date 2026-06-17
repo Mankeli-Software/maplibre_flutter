@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
 import 'package:test/test.dart';
 
@@ -57,5 +59,29 @@ void main() {
     expect(camera.longitude, closeTo(-7.25, 1e-6));
     expect(camera.zoom, closeTo(3, 1e-6));
     expect(camera.bearing, closeTo(45, 1e-6));
+  });
+
+  test('resize re-renders at the new frame size', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.resize(480, 320);
+    // Wait for the render thread to publish the resized (non-square) frame.
+    Uint8List? frame;
+    for (var i = 0; i < 200; i++) {
+      frame = map.copyFrame();
+      if (frame != null && frame.length == 480 * 320 * 4) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    expect(frame, isNotNull);
+    expect(frame!.length, 480 * 320 * 4);
+    expect(map.writePng('/tmp/maplibre_resized.png'), isTrue);
   });
 }

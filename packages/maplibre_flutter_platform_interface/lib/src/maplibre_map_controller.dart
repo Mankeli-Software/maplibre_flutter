@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'camera.dart';
 import 'render_handle.dart';
 
@@ -24,6 +26,13 @@ abstract class MapLibreMapController {
 
   /// Replace the active style (URL, asset path, or inline JSON).
   Future<void> setStyle(String styleUri);
+
+  /// Reports the embedding view's logical [size] and [devicePixelRatio] so the
+  /// platform can size its render surface to match. The platform-view tier
+  /// (mobile) auto-sizes its native view and ignores this; the desktop texture
+  /// tier resizes its off-screen surface so the map fills the widget crisply
+  /// and at the correct aspect ratio. Default: no-op.
+  Future<void> resize(Size size, double devicePixelRatio) async {}
 
   /// Release native resources, callbacks, and the texture/view registration.
   Future<void> dispose();
