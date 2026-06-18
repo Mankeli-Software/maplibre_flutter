@@ -97,7 +97,13 @@ class _MapLibreMapState extends State<MapLibreMap> {
       case PlatformViewHandle():
         return _platformView(handle);
       case ElementViewHandle(:final viewType):
-        return _UnimplementedEmbed(label: 'element view "$viewType"');
+        // Web tier: the maplibre-gl-js map is the host `<div>` registered under
+        // [viewType] by the web controller's view factory. It is the top DOM
+        // element, so it receives pointer/scroll/gesture events natively — no
+        // Dart gesture layer (web mirrors the mobile tier, CLAUDE.md §3).
+        // Flutter widgets drawn *over* the map need `PointerInterceptor`
+        // (handled by the app, e.g. the example's controls), not the map itself.
+        return HtmlElementView(viewType: viewType);
     }
   }
 
