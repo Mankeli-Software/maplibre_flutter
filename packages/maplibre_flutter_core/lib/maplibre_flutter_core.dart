@@ -93,11 +93,17 @@ class MapLibreCoreMap {
 
   /// Creates an off-screen map of [width]x[height] device pixels at
   /// [pixelRatio], loading [styleUri]. Throws if the native map cannot be made.
+  ///
+  /// [continuous] selects the render mode: false (default) renders one complete
+  /// frame per change (Static — simple, blocks on tile loads; used by headless
+  /// tests); true renders partial frames immediately and refines as tiles stream
+  /// in (Continuous — smooth over uncached/detailed tiles, like the mobile SDK).
   static MapLibreCoreMap create({
     required int width,
     required int height,
     required double pixelRatio,
     required String styleUri,
+    bool continuous = false,
   }) {
     final stylePtr = styleUri.toNativeUtf8();
     try {
@@ -106,6 +112,7 @@ class MapLibreCoreMap {
         height,
         pixelRatio,
         stylePtr.cast(),
+        continuous ? 1 : 0,
       );
       if (handle == ffi.nullptr) {
         throw StateError('mbl_map_create failed for style "$styleUri"');

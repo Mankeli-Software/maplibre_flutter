@@ -10,6 +10,7 @@ import 'dart:ffi' as ffi;
     ffi.Uint32,
     ffi.Float,
     ffi.Pointer<ffi.Char>,
+    ffi.Int,
   )
 >()
 external ffi.Pointer<MblMap> mbl_map_create(
@@ -17,6 +18,7 @@ external ffi.Pointer<MblMap> mbl_map_create(
   int height,
   double pixel_ratio,
   ffi.Pointer<ffi.Char> style_uri,
+  int continuous,
 );
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()

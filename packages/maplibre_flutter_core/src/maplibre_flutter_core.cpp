@@ -94,7 +94,23 @@ struct MblMap {
   MblMetalBlitter *blitter = nullptr;
   IOSurfaceRef currentSurface = nullptr;
 
+  // Continuous mode (vs the default Static). In Continuous mode the render
+  // thread runs `renderLoop` (which drives renderFrame on invalidation + tile
+  // loads), and commands are marshaled onto it via RunLoop::invoke instead of
+  // the cv queue. `renderLoop` is set on the render thread and read cross-thread
+  // by post()/destroy (RunLoop::invoke is thread-safe by design).
+  bool continuous = false;
+  mbgl::util::RunLoop *renderLoop = nullptr;
+
   void post(std::function<void()> fn) {
+    if (continuous) {
+      // Marshal onto the render thread's RunLoop (thread-safe). The command
+      // mutates the map, which invalidates → renderFrame → frame published.
+      if (renderLoop != nullptr) {
+        renderLoop->invoke(std::move(fn));
+      }
+      return;
+    }
     {
       std::lock_guard<std::mutex> lk(queueMutex);
       queue.push_back(std::move(fn));
@@ -288,17 +304,105 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
   // map / frontend / loop are destroyed here, on the render thread.
 }
 
+// Render thread (Continuous). Publishes the frame already drawn into mbgl's
+// texture (present + swap have completed by the time the frame observer fires,
+// so the texture is final). Zero-copy blit when enabled, else a CPU readback.
+void publishCurrentFrame(MblMap *m) {
+  if (m->map == nullptr || m->frontend == nullptr) {
+    return;
+  }
+  try {
+    if (m->zeroCopy && m->blitter != nullptr) {
+      auto *backend =
+          static_cast<mbgl::mtl::RendererBackend *>(m->frontend->getBackend());
+      auto *headless = static_cast<mbgl::mtl::HeadlessBackend *>(backend);
+      if (mbl_metal_blitter_blit(m->blitter, (void *)headless->getMetalTexture(),
+                                 (void *)backend->getCommandQueue().get(),
+                                 &blitDone, m) != 0) {
+        return;
+      }
+      m->zeroCopy = false; // blitter unavailable; fall back to CPU readback
+    }
+    auto *headless = static_cast<mbgl::mtl::HeadlessBackend *>(
+        static_cast<mbgl::mtl::RendererBackend *>(m->frontend->getBackend()));
+    publishFrame(m, headless->readStillImage());
+  } catch (const std::exception &e) {
+    fprintf(stderr, "maplibre_flutter_core: publish failed: %s\n", e.what());
+  } catch (...) {
+    fprintf(stderr, "maplibre_flutter_core: publish failed (unknown)\n");
+  }
+}
+
+// Observes the Continuous-mode map; each rendered frame (partial or full) is
+// published, so the texture refines progressively as tiles stream in.
+class FrameObserver final : public mbgl::MapObserver {
+public:
+  explicit FrameObserver(MblMap *map) : m(map) {}
+  void onDidFinishRenderingFrame(const RenderFrameStatus &) override {
+    publishCurrentFrame(m);
+  }
+
+private:
+  MblMap *m;
+};
+
+void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
+                                float pixelRatio, std::string styleUri) {
+  mbgl::util::RunLoop loop;
+  FrameObserver observer(m);
+  // Continuous mode: render partial frames immediately and refine as tiles load
+  // (invalidateOnUpdate drives renderFrame off the loop; Flush per the upstream
+  // headless-continuous convention).
+  mbgl::HeadlessFrontend frontend(
+      mbgl::Size{width, height}, pixelRatio,
+      mbgl::gfx::HeadlessBackend::SwapBehaviour::Flush,
+      mbgl::gfx::ContextMode::Unique, std::nullopt, /*invalidateOnUpdate=*/true);
+  mbgl::Map map(frontend, observer,
+                mbgl::MapOptions()
+                    .withMapMode(mbgl::MapMode::Continuous)
+                    .withSize(mbgl::Size{width, height})
+                    .withPixelRatio(pixelRatio),
+                mbgl::ResourceOptions::Default());
+
+  m->frontend = &frontend;
+  m->map = &map;
+  if (!styleUri.empty()) {
+    map.getStyle().loadURL(styleUri);
+  }
+  m->renderLoop = &loop;
+
+  {
+    std::lock_guard<std::mutex> lk(m->startMutex);
+    m->started = true;
+  }
+  m->startCv.notify_all();
+
+  // Drives renderFrame (on invalidation), async tile loads, and posted commands
+  // until destroy() stops the loop.
+  loop.run();
+
+  m->renderLoop = nullptr;
+  m->map = nullptr;
+  m->frontend = nullptr;
+  if (m->blitter != nullptr) {
+    mbl_metal_blitter_destroy(m->blitter);
+    m->blitter = nullptr;
+  }
+}
+
 } // namespace
 
 MblMap *mbl_map_create(uint32_t width, uint32_t height, float pixel_ratio,
-                       const char *style_uri) {
+                       const char *style_uri, int continuous) {
   if (width == 0 || height == 0) {
     return nullptr;
   }
   auto *m = new MblMap();
+  m->continuous = continuous != 0;
   const std::string style = style_uri != nullptr ? std::string(style_uri) : "";
-  m->thread =
-      std::thread(renderThreadMain, m, width, height, pixel_ratio, style);
+  m->thread = std::thread(
+      m->continuous ? renderThreadMainContinuous : renderThreadMain, m, width,
+      height, pixel_ratio, style);
   {
     std::unique_lock<std::mutex> lk(m->startMutex);
     m->startCv.wait(lk, [m] { return m->started; });
@@ -482,11 +586,19 @@ void mbl_map_destroy(MblMap *m) {
   if (m == nullptr) {
     return;
   }
-  {
-    std::lock_guard<std::mutex> lk(m->queueMutex);
-    m->stop = true;
+  if (m->continuous) {
+    // Stop the render thread's RunLoop (thread-safe — schedules onto it), which
+    // ends loop.run() and lets the thread tear down the map/frontend.
+    if (m->renderLoop != nullptr) {
+      m->renderLoop->stop();
+    }
+  } else {
+    {
+      std::lock_guard<std::mutex> lk(m->queueMutex);
+      m->stop = true;
+    }
+    m->queueCv.notify_all();
   }
-  m->queueCv.notify_all();
   if (m->thread.joinable()) {
     m->thread.join();
   }
