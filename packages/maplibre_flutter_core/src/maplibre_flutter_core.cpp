@@ -12,11 +12,8 @@
 // the latest frame for the present path.
 #include "maplibre_flutter_core.h"
 
-#include "maplibre_flutter_core_metal.h"
-
 #include <mbgl/gfx/backend_scope.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
-#include <mbgl/mtl/headless_backend.hpp>
 #include <mbgl/map/camera.hpp>
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
@@ -38,6 +35,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+// Metal zero-copy present (macOS only). On other platforms the present path is
+// the backend-agnostic CPU readback (mbl_map_copy_frame); the Metal symbols below
+// are absent and the zero-copy entry points become no-ops.
+#if defined(__APPLE__)
+#include "maplibre_flutter_core_metal.h"
+#include <mbgl/mtl/headless_backend.hpp>
+#endif
 
 namespace {
 struct CameraState {
@@ -84,6 +89,7 @@ struct MblMap {
   MblFrameCallback frameCb = nullptr;
   void *frameCbUser = nullptr;
 
+#if defined(__APPLE__)
   // Zero-copy present (macOS Metal). When `zeroCopy` is set, the render thread
   // renders into mbgl's Metal texture and GPU-blits it into an IOSurface via
   // `blitter` instead of the CPU readback path; `currentSurface` is the latest
@@ -93,6 +99,7 @@ struct MblMap {
   bool zeroCopy = false;
   MblMetalBlitter *blitter = nullptr;
   IOSurfaceRef currentSurface = nullptr;
+#endif
 
   // Continuous mode (vs the default Static). In Continuous mode the render
   // thread runs `renderLoop` (which drives renderFrame on invalidation + tile
@@ -153,6 +160,7 @@ void renderCpu(MblMap *m) {
   publishFrame(m, std::move(result.image));
 }
 
+#if defined(__APPLE__)
 // Called (on a Metal-owned thread) when a zero-copy blit's GPU work completes:
 // publish the IOSurface as the current frame and announce it. The map outlives
 // any in-flight blit — destroy drains the blitter on the render thread before
@@ -201,6 +209,7 @@ bool renderZeroCopyInner(MblMap *m) {
              m->blitter, (void *)headless->getMetalTexture(),
              (void *)backend->getCommandQueue().get(), &blitDone, m) != 0;
 }
+#endif // __APPLE__
 
 // Render thread only. Guards against mbgl throwing (e.g. a style/tile load
 // failure surfaces as std::runtime_error during render) so it logs instead of
@@ -210,6 +219,7 @@ void renderNow(MblMap *m) {
     return;
   }
   try {
+#if defined(__APPLE__)
     if (m->zeroCopy && m->blitter != nullptr) {
       if (renderZeroCopyInner(m)) {
         return;
@@ -218,6 +228,7 @@ void renderNow(MblMap *m) {
                       "back to CPU readback.\n");
       m->zeroCopy = false;
     }
+#endif
     renderCpu(m);
   } catch (const std::exception &e) {
     fprintf(stderr, "maplibre_flutter_core: render failed: %s\n", e.what());
@@ -297,10 +308,12 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
 
   m->map = nullptr;
   m->frontend = nullptr;
+#if defined(__APPLE__)
   if (m->blitter != nullptr) {
     mbl_metal_blitter_destroy(m->blitter);
     m->blitter = nullptr;
   }
+#endif
   // map / frontend / loop are destroyed here, on the render thread.
 }
 
@@ -312,6 +325,7 @@ void publishCurrentFrame(MblMap *m) {
     return;
   }
   try {
+#if defined(__APPLE__)
     if (m->zeroCopy && m->blitter != nullptr) {
       auto *backend =
           static_cast<mbgl::mtl::RendererBackend *>(m->frontend->getBackend());
@@ -323,9 +337,9 @@ void publishCurrentFrame(MblMap *m) {
       }
       m->zeroCopy = false; // blitter unavailable; fall back to CPU readback
     }
-    auto *headless = static_cast<mbgl::mtl::HeadlessBackend *>(
-        static_cast<mbgl::mtl::RendererBackend *>(m->frontend->getBackend()));
-    publishFrame(m, headless->readStillImage());
+#endif
+    // Backend-agnostic CPU readback (the only path on GL; the fallback on Metal).
+    publishFrame(m, m->frontend->readStillImage());
   } catch (const std::exception &e) {
     fprintf(stderr, "maplibre_flutter_core: publish failed: %s\n", e.what());
   } catch (...) {
@@ -384,10 +398,12 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
   m->renderLoop = nullptr;
   m->map = nullptr;
   m->frontend = nullptr;
+#if defined(__APPLE__)
   if (m->blitter != nullptr) {
     mbl_metal_blitter_destroy(m->blitter);
     m->blitter = nullptr;
   }
+#endif
 }
 
 } // namespace
@@ -547,6 +563,7 @@ int mbl_map_copy_frame(MblMap *m, uint8_t *dst, size_t dst_capacity,
 }
 
 void mbl_map_set_zero_copy(MblMap *m, int enabled) {
+#if defined(__APPLE__)
   if (m == nullptr) {
     return;
   }
@@ -558,14 +575,25 @@ void mbl_map_set_zero_copy(MblMap *m, int enabled) {
     }
     m->renderRequested = true;
   });
+#else
+  // No zero-copy present off-Apple (GL has no public texture handle); the CPU
+  // mbl_map_copy_frame path is used instead.
+  (void)m;
+  (void)enabled;
+#endif
 }
 
 void *mbl_map_current_iosurface(MblMap *m) {
+#if defined(__APPLE__)
   if (m == nullptr) {
     return nullptr;
   }
   std::lock_guard<std::mutex> lk(m->frameMutex);
   return (void *)m->currentSurface;
+#else
+  (void)m;
+  return nullptr;
+#endif
 }
 
 int mbl_map_write_png(MblMap *m, const char *path) {
