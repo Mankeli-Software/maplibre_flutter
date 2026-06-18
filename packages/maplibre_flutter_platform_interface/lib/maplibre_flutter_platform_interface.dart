@@ -2,6 +2,7 @@
 library;
 
 export 'src/camera.dart';
+export 'src/fly_animation.dart';
 export 'src/gesture_handler.dart';
 export 'src/lat_lng.dart';
 export 'src/maplibre_flutter_platform.dart';

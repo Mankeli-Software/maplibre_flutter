@@ -122,6 +122,9 @@ external int mbl_map_copy_frame(
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int)>()
 external void mbl_map_set_zero_copy(ffi.Pointer<MblMap> map, int enabled);
 
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int)>()
+external void mbl_map_set_pixel_format_bgra(ffi.Pointer<MblMap> map, int bgra);
+
 @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Pointer<MblMap>)>()
 external ffi.Pointer<ffi.Void> mbl_map_current_iosurface(
   ffi.Pointer<MblMap> map,

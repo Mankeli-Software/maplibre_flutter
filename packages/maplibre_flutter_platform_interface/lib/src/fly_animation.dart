@@ -1,15 +1,16 @@
 import 'dart:math' as math;
 
-import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
+import 'camera.dart';
+import 'lat_lng.dart';
 
 /// The camera along an eased fly-to arc at progress [t] in `[0, 1]`.
 ///
-/// The desktop tier renders complete frames on demand (the headless core has no
-/// usable Continuous/native flyTo), so the desktop controller animates
-/// `moveCamera(duration:)` by stepping this curve and rendering each step. The
-/// zoom dips toward a "fit" level mid-flight — a simplified van-Wijk arc — so a
-/// long flight passes through cheap low-zoom tiles (a world/continental view)
-/// instead of fetching high-zoom tiles across the whole path.
+/// The desktop tier renders frames on demand, so the desktop controllers animate
+/// `moveCamera(duration:)` by stepping this curve and rendering each step (shared
+/// by macOS / Linux / Windows). The zoom dips toward a "fit" level mid-flight — a
+/// simplified van-Wijk arc — so a long flight passes through cheap low-zoom tiles
+/// (a world/continental view) instead of fetching high-zoom tiles across the
+/// whole path.
 MapCamera flyCameraAt(MapCamera start, MapCamera target, double t) {
   final clamped = t.clamp(0.0, 1.0);
   final e = clamped * clamped * (3 - 2 * clamped); // smoothstep ease
