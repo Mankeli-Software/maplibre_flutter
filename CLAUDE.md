@@ -86,17 +86,20 @@ is scaffolded vs. still TODO:
     arc live in the shared desktop tier (`maplibre_flutter`). Verified on device: rendering solid,
     smooth gestures/zoom/fly-to, stable when idle. Core **distribution** (prebuilt artifacts + CI)
     is the next focus, on `feat/core-distribution`.
-  - **Linux — core GL render verified; GTK present written, not yet run on hardware.**
+  - **Linux — verified on real hardware (build + GL render + GUI present).**
     `maplibre_flutter_core` has an **OpenGL ES3 + EGL arm** parallel to the macOS Metal arm
     (CMake split by platform; the Metal code is guarded behind `__APPLE__`; `mbl_map_copy_frame`
-    is pixel-format-aware, BGRA/RGBA). The Linux GL core **builds and renders a correct demotiles
-    frame headless under Mesa software GL (llvmpipe) in Docker** — verified on the macOS dev
-    machine via `packages/maplibre_flutter_core/docker/` (Dockerfile + run-render-test.sh + the
-    `MAPLIBRE_FLUTTER_BUILD_HARNESS` render-to-PNG harness). `maplibre_flutter_linux` is hybrid: a
-    GTK plugin presents frames through an `FlPixelBufferTexture` (CPU pixel buffer; zero-copy
-    `FlTextureGL` later), controller mirrors macOS minus IOSurface. **Not yet run on real Linux
-    hardware** — `flutter run -d linux` (present + interaction) is the remaining step. On
-    `feat/desktop-linux-gl`.
+    is pixel-format-aware, BGRA/RGBA). `maplibre_flutter_linux` is hybrid: a GTK plugin presents
+    frames through an `FlPixelBufferTexture` (CPU pixel buffer; zero-copy `FlTextureGL` later),
+    controller mirrors macOS minus IOSurface. First validated headless under Mesa software GL
+    (llvmpipe) in Docker via `packages/maplibre_flutter_core/docker/`; **now confirmed on real
+    Linux hardware** (2026-06-18, Ubuntu 26.04 / Razer Blade): `flutter build linux` builds clean
+    first try, the EGL backend creates a context on the **Intel UHD 630 iGPU** (not llvmpipe), and
+    both demotiles + OpenFreeMap Liberty render correctly; the GUI app presents a **smooth** map on
+    GNOME/Wayland. Remaining Linux follow-ups: **(1)** the curl HTTP source bursts too many
+    concurrent HTTP/2 tile requests in Continuous mode and gets `ENHANCE_YOUR_CALM`-throttled (fix:
+    cap `max-concurrent-requests`); **(2)** zero-copy `FlTextureGL` (EGLImage blit) to replace the
+    CPU pixel-buffer present; **(3)** interaction testing. On `feat/desktop-linux-gl`.
   - **Windows / Web** native sides are still stubs — `createMap()` throws `UnimplementedError`;
     those packages declare only `dartPluginClass` (web: `pluginClass`). Windows will reuse the same
     GL arm via **ANGLE** (EGL-on-D3D) + a `FlutterDesktopPixelBufferTexture`.
@@ -648,5 +651,19 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     `flutter run -d linux` is pending hardware. The GTK plugin/controller were written on macOS
     (unbuildable here). Pixel-format/flip confirmed correct via the Docker PNG (the gotchas the
     plan flagged).
+
+- **2026-06-18 — Linux desktop tier verified on real hardware (§8 step 3, Linux).** Set up a
+  Razer Blade (Ubuntu 26.04, Intel UHD 630) as the Linux build/test box (Flutter 3.44.2; verified
+  26.04 apt deps — note `libstdc++-15-dev` + modern `libgl*/libegl*` Mesa names; recursive
+  mbgl-native submodule) and ran `feat/desktop-linux-gl` on it. `flutter build linux --debug` built
+  **clean on the first try** (mbgl-core GL/EGL arm + GTK `FlPixelBufferTexture` plugin). The EGL
+  headless backend creates a context on the **real Intel iGPU** (not Docker llvmpipe), and the core
+  renders **both** demotiles and OpenFreeMap Liberty correctly (proven by compiling `render_harness`
+  standalone against the already-built `libmaplibre_flutter_core.so` — no mbgl rebuild). The GUI app
+  presents a **smooth** map on GNOME/Wayland (user-confirmed). Two real follow-ups found and being
+  worked next on this branch: the curl HTTP source trips HTTP/2 `ENHANCE_YOUR_CALM` under
+  Continuous-mode burst (cap `max-concurrent-requests`), and zero-copy `FlTextureGL` (EGLImage blit)
+  to replace the CPU pixel-buffer present. Autonomous screenshots on GNOME/Wayland need
+  `gnome-screenshot` (the DBus/portal path is locked down).
 
 _Append new decisions here with date and rationale._
