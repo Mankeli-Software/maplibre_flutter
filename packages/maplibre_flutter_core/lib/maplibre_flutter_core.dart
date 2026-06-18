@@ -91,6 +91,21 @@ class MapLibreCoreMap {
           >(bindings.mbl_map_set_frame_callback)
           .address;
 
+  /// Address of the native `mbl_map_current_gl_image` function. The Linux plugin
+  /// calls it from `FlTextureGL.populate` to get the dmabuf descriptor for the
+  /// latest zero-copy frame (returns 0 when zero-copy is off). See
+  /// [copyFrameFunctionAddress].
+  static int get currentGlImageFunctionAddress =>
+      ffi.Native.addressOf<
+            ffi.NativeFunction<
+              ffi.Int Function(
+                ffi.Pointer<bindings.MblMap>,
+                ffi.Pointer<bindings.MblGlDmabufFrame>,
+              )
+            >
+          >(bindings.mbl_map_current_gl_image)
+          .address;
+
   /// Creates an off-screen map of [width]x[height] device pixels at
   /// [pixelRatio], loading [styleUri]. Throws if the native map cannot be made.
   ///
@@ -123,14 +138,26 @@ class MapLibreCoreMap {
     }
   }
 
-  /// Enables (or disables) zero-copy presentation (macOS Metal). When on, each
-  /// render GPU-blits mbgl's Metal texture into an IOSurface (no CPU readback or
-  /// swizzle), read via [currentIOSurfaceFunctionAddress]. A no-op on platforms
-  /// without the Metal blitter; the CPU [copyFrame] path stays available as a
-  /// fallback. Takes effect on the next render.
+  /// Enables (or disables) zero-copy presentation. When on, each render GPU-blits
+  /// mbgl's frame into a shared texture (no CPU readback): an IOSurface on macOS
+  /// (read via [currentIOSurfaceFunctionAddress]) or an EGLImage on Linux (read via
+  /// [currentGlImageFunctionAddress]). A no-op if the platform helper can't
+  /// initialise; the CPU [copyFrame] path stays available as a fallback. Takes
+  /// effect on the next render (so confirm with [isZeroCopyActive] after a frame).
   void setZeroCopy(bool enabled) {
     _checkAlive();
     bindings.mbl_map_set_zero_copy(_handle, enabled ? 1 : 0);
+  }
+
+  /// Whether the Linux GL zero-copy presenter is live — true once
+  /// [setZeroCopy](true) has been processed on the render thread and the EGLImage
+  /// presenter initialised (its EGLDisplay is then non-null). Lets the Linux
+  /// controller confirm zero-copy actually activated before committing to the
+  /// `FlTextureGL` path, and fall back to the CPU texture otherwise. Always false
+  /// on platforms without the GL presenter (e.g. macOS).
+  bool isZeroCopyActive() {
+    _checkAlive();
+    return bindings.mbl_map_gl_active(_handle) != 0;
   }
 
   /// Selects the byte order [copyFrame] emits: true = BGRA (default; macOS
