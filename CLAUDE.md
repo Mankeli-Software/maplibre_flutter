@@ -670,8 +670,10 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     --platform chrome`. Added a **`web` job to `ci.yml`** (ubuntu, no submodule: `flutter build web`
     + `test:web` + a headless-Chrome `flutter drive` integration test); the workflow stays DISABLED
     (workflow_dispatch only) like the rest. Verified on this Mac: `melos analyze` clean; `melos run
-    test` (VM) + `melos run test:web` (Chrome) + `flutter build web` all green. **Not yet run:** the
-    `flutter drive` integration test locally (needs chromedriver) — wired for CI; an interactive
-    `flutter run -d chrome` frame check is the remaining manual step.
+    test` (VM) + `melos run test:web` (Chrome) + `flutter build web` all green. The **headless-Chrome
+    `flutter drive` integration test passes locally** (chromedriver 149 matched to Chrome 149): a
+    real maplibre-gl-js map loads a style, jumps the camera and reads it back (exercising the
+    `LatLng(lat,lng)` ⇄ `[lng,lat]` round-trip), then swaps styles. Only an interactive
+    `flutter run -d chrome` visual frame check is the remaining manual step.
 
 _Append new decisions here with date and rationale._
