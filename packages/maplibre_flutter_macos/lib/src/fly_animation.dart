@@ -19,12 +19,14 @@ MapCamera flyCameraAt(MapCamera start, MapCamera target, double t) {
       start.center.longitude +
       _shortestDelta(start.center.longitude, target.center.longitude) * e;
 
-  // Dip the zoom toward a level that fits both endpoints, so the mid-flight view
-  // is zoomed out (cheap, mostly-cached tiles). `peak` is the lowest zoom on the
-  // arc; `dip` is how far below the straight zoom interpolation we pull at t=0.5.
+  // Dip the zoom toward a level that fits both endpoints, so a long flight's
+  // mid-view is zoomed out (cheap, mostly-cached tiles). Only dip when fitting
+  // the two centers needs a zoom-out *below* the lower endpoint (`fit` < both);
+  // for an in-place or small zoom change (centers barely move) `fit` is high, so
+  // `dip` is 0 and the zoom interpolates straight — no overshoot or wrong-way
+  // wobble on the +/- buttons.
   final fit = _fitZoom(start.center, target.center);
-  final peak = math.min(math.min(start.zoom, target.zoom), fit);
-  final dip = math.max(0.0, (start.zoom + target.zoom) / 2 - peak);
+  final dip = math.max(0.0, math.min(start.zoom, target.zoom) - fit);
   final zoom =
       _lerp(start.zoom, target.zoom, e) - dip * math.sin(math.pi * clamped);
 
