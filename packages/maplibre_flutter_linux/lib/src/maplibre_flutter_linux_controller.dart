@@ -5,27 +5,28 @@ import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-/// Bootstrap channel for the texture registrar.
-///
-/// The one sanctioned platform-channel use (CLAUDE.md §3/§10): the engine's
-/// texture registrar is only reachable from the native plugin, so Dart hands it
-/// the core map's native handle (and the core's resolved function addresses) to
-/// bind a `Texture` to. Registration only — the per-frame data path is native +
-/// FFI (the core's render thread → the texture's `copyPixelBuffer`).
+/// Bootstrap channel for the texture registrar (the one sanctioned platform-
+/// channel use, CLAUDE.md §3/§10): Dart hands the native GTK plugin the core
+/// map's handle + the core's resolved function addresses to bind an
+/// `FlPixelBufferTexture` to. Registration only — the per-frame data path is
+/// native + FFI (the core's render thread → the texture's `copy_pixels`).
 const MethodChannel _registrar = MethodChannel(
-  'maplibre_flutter/macos/registrar',
+  'maplibre_flutter/linux/registrar',
 );
 
-/// Controller for a map composited through a Flutter `Texture` (desktop tier).
+/// Controller for a map composited through a Flutter `Texture` on Linux.
 ///
-/// macOS drives `mbgl-core` over FFI (via `maplibre_flutter_core`): the core
-/// renders off-screen on its own thread into a BGRA buffer; the native plugin's
-/// `MapLibreTexture` copies that into a `CVPixelBuffer` for the `Texture`. This
-/// controller creates the core map, registers the texture, forwards
-/// camera/style, and resizes the off-screen surface to the widget. (§8 M2–M3.)
-class MapLibreFlutterMacosController
+/// Linux is part of the desktop tier (CLAUDE.md §3): it drives `mbgl-core` over
+/// FFI (via `maplibre_flutter_core`, OpenGL/EGL arm), which renders off-screen on
+/// its own thread; the native GTK plugin's `FlPixelBufferTexture` reads each RGBA
+/// frame (`mbl_map_copy_frame`) into a Flutter `Texture`. Mirrors the macOS
+/// controller minus the Metal/IOSurface zero-copy path (GL has no public texture
+/// handle, so the present is CPU pixel-buffer; zero-copy `FlTextureGL` is later).
+///
+/// NOTE: not yet run on real Linux hardware — see CLAUDE.md §8.
+class MapLibreFlutterLinuxController
     implements MapLibreMapController, MapLibreGestureHandler {
-  MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
+  MapLibreFlutterLinuxController._(this._coreMap, this._textureId) {
     _pollReady();
   }
 
@@ -38,9 +39,6 @@ class MapLibreFlutterMacosController
   int _animToken = 0;
   final Completer<void> _ready = Completer<void>();
 
-  // Initial off-screen size in device pixels; replaced once the widget reports
-  // its real size via [resize]. The texture self-sizes to whatever the core
-  // renders, so this is only the size of the very first frame(s).
   static const int _initialWidth = 512;
   static const int _initialHeight = 512;
   int _renderWidth = _initialWidth;
@@ -48,7 +46,7 @@ class MapLibreFlutterMacosController
 
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
-  static Future<MapLibreFlutterMacosController> create(
+  static Future<MapLibreFlutterLinuxController> create(
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
@@ -58,19 +56,14 @@ class MapLibreFlutterMacosController
       pixelRatio: 1,
       styleUri: options.styleUri,
       // Continuous render (partial frames that refine as tiles load) is on by
-      // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the blocking
-      // Static path for an A/B.
+      // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the Static path.
       continuous: const bool.fromEnvironment(
         'MAPLIBRE_CONTINUOUS',
         defaultValue: true,
       ),
     );
-    // Zero-copy present (GPU blit into an IOSurface) is on by default; flip it
-    // off for an A/B against the CPU-readback path with
-    // `--dart-define=MAPLIBRE_ZEROCOPY=false`.
-    coreMap.setZeroCopy(
-      const bool.fromEnvironment('MAPLIBRE_ZEROCOPY', defaultValue: true),
-    );
+    // FlPixelBufferTexture expects RGBA (macOS's CVPixelBuffer uses BGRA).
+    coreMap.setPixelFormatBgra(false);
     coreMap.setCamera(
       latitude: camera.center.latitude,
       longitude: camera.center.longitude,
@@ -85,15 +78,12 @@ class MapLibreFlutterMacosController
           'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
           'setFrameCallbackFn':
               core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
-          'currentIOSurfaceFn':
-              core.MapLibreCoreMap.currentIOSurfaceFunctionAddress,
         });
 
-    return MapLibreFlutterMacosController._(coreMap, textureId ?? -1);
+    return MapLibreFlutterLinuxController._(coreMap, textureId ?? -1);
   }
 
-  /// Polls until the first frame has rendered, then completes [onReady] (mirrors
-  /// the mobile controllers' readiness handshake). Stops on dispose.
+  /// Polls until the first frame has rendered, then completes [onReady].
   void _pollReady() {
     if (_disposed || _ready.isCompleted) return;
     if (_coreMap.awaitFrame(Duration.zero)) {
@@ -128,9 +118,8 @@ class MapLibreFlutterMacosController
       _applyCamera(camera);
       return;
     }
-    // Desktop has no usable native flyTo, so step an eased arc and render each
-    // frame on the working (complete-frame) Static path. ~30fps; the core's
-    // render thread paces the actual frames.
+    // Step an eased arc and render each frame; the core's render thread paces
+    // the actual frames (shared desktop behaviour).
     final start = await getCamera();
     if (_disposed || token != _animToken) return;
     const frameMs = 33;
@@ -172,7 +161,6 @@ class MapLibreFlutterMacosController
   void moveBy(double dx, double dy) {
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
-    // Gesture deltas are logical pixels; the core renders in device pixels.
     _coreMap.moveBy(dx * _devicePixelRatio, dy * _devicePixelRatio);
   }
 
@@ -191,8 +179,6 @@ class MapLibreFlutterMacosController
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    // Unregister first (clears the native frame callback and stops the engine
-    // pulling frames), then destroy the core map (joins its render thread).
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);
     _coreMap.dispose();
   }

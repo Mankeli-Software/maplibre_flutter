@@ -1,10 +1,17 @@
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-/// The linux implementation of `maplibre_flutter`.
+import 'src/maplibre_flutter_linux_controller.dart';
+
+/// The Linux implementation of `maplibre_flutter`.
 ///
-/// Registered automatically via `dartPluginClass` in pubspec.yaml. Native
-/// rendering is wired in this platform's build-order step (CLAUDE.md §8); for
-/// now [createMap] throws so the wiring is unmistakable.
+/// Registered automatically via `dartPluginClass` in pubspec.yaml. Linux is part
+/// of the desktop tier (CLAUDE.md §3): it renders MapLibre Native (`mbgl-core`,
+/// via `maplibre_flutter_core`'s OpenGL/EGL arm) off-screen and composites
+/// through a Flutter `Texture`. The native half (`maplibre_flutter_linux_plugin`,
+/// GTK) owns the texture registrar; [createMap] delegates to
+/// [MapLibreFlutterLinuxController].
+///
+/// NOTE: not yet run on real Linux hardware — see CLAUDE.md §8.
 class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
   /// Called by the Flutter plugin registrant to install this implementation.
   static void registerWith() {
@@ -12,9 +19,6 @@ class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) {
-    throw UnimplementedError(
-      'maplibre_flutter_linux createMap() is not implemented yet (see CLAUDE.md §8).',
-    );
-  }
+  Future<MapLibreMapController> createMap(MapOptions options) =>
+      MapLibreFlutterLinuxController.create(options);
 }

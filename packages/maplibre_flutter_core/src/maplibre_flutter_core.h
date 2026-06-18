@@ -114,6 +114,12 @@ FFI_PLUGIN_EXPORT int mbl_map_copy_frame(MblMap *map, uint8_t *dst,
 // or during use; takes effect on the next render.
 FFI_PLUGIN_EXPORT void mbl_map_set_zero_copy(MblMap *map, int enabled);
 
+// Select the byte order mbl_map_copy_frame writes: 1 = BGRA (default; matches the
+// macOS CVPixelBuffer), 0 = RGBA (e.g. Linux FlPixelBufferTexture). mbgl renders
+// RGBA, so BGRA costs a per-pixel swizzle and RGBA is a straight copy. Set once at
+// setup; does not affect the zero-copy/IOSurface path (always BGRA).
+FFI_PLUGIN_EXPORT void mbl_map_set_pixel_format_bgra(MblMap *map, int bgra);
+
 // Return the IOSurface (as an opaque pointer; an IOSurfaceRef on macOS) backing
 // the latest zero-copy frame, or NULL if zero-copy is off or no frame exists yet.
 // The macOS plugin wraps it in a CVPixelBuffer for the texture with no copy. The

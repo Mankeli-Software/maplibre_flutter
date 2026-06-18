@@ -80,6 +80,10 @@ struct MblMap {
   mbgl::PremultipliedImage frame;
   uint64_t frameCount = 0;
 
+  // Byte order mbl_map_copy_frame emits: true = BGRA (macOS CVPixelBuffer),
+  // false = RGBA (Linux FlPixelBufferTexture). Guarded by frameMutex.
+  bool outputBgra = true;
+
   // Cached camera (set-through, read by the getter without touching the map).
   std::mutex cameraMutex;
   CameraState camera;
@@ -551,15 +555,28 @@ int mbl_map_copy_frame(MblMap *m, uint8_t *dst, size_t dst_capacity,
   if (dst_capacity < static_cast<size_t>(stride) * h) {
     return 0;
   }
-  // mbgl yields RGBA; swizzle to BGRA for the macOS CVPixelBuffer.
   const uint8_t *src = m->frame.data.get();
-  for (uint32_t i = 0; i < w * h; ++i) {
-    dst[i * 4 + 0] = src[i * 4 + 2]; // B
-    dst[i * 4 + 1] = src[i * 4 + 1]; // G
-    dst[i * 4 + 2] = src[i * 4 + 0]; // R
-    dst[i * 4 + 3] = src[i * 4 + 3]; // A
+  if (m->outputBgra) {
+    // mbgl yields RGBA; swizzle to BGRA for the macOS CVPixelBuffer.
+    for (uint32_t i = 0; i < w * h; ++i) {
+      dst[i * 4 + 0] = src[i * 4 + 2]; // B
+      dst[i * 4 + 1] = src[i * 4 + 1]; // G
+      dst[i * 4 + 2] = src[i * 4 + 0]; // R
+      dst[i * 4 + 3] = src[i * 4 + 3]; // A
+    }
+  } else {
+    // RGBA straight through (Linux FlPixelBufferTexture).
+    std::memcpy(dst, src, static_cast<size_t>(w) * h * 4);
   }
   return 1;
+}
+
+void mbl_map_set_pixel_format_bgra(MblMap *m, int bgra) {
+  if (m == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  m->outputBgra = bgra != 0;
 }
 
 void mbl_map_set_zero_copy(MblMap *m, int enabled) {

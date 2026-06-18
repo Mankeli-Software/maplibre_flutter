@@ -133,6 +133,14 @@ class MapLibreCoreMap {
     bindings.mbl_map_set_zero_copy(_handle, enabled ? 1 : 0);
   }
 
+  /// Selects the byte order [copyFrame] emits: true = BGRA (default; macOS
+  /// CVPixelBuffer), false = RGBA (Linux `FlPixelBufferTexture`). No effect on
+  /// the zero-copy IOSurface path. Set once at setup.
+  void setPixelFormatBgra(bool bgra) {
+    _checkAlive();
+    bindings.mbl_map_set_pixel_format_bgra(_handle, bgra ? 1 : 0);
+  }
+
   /// Replaces the active style (URL, file path, or inline JSON).
   void setStyle(String styleUri) {
     _checkAlive();
