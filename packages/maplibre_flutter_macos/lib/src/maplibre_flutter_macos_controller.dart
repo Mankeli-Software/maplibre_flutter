@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
+
+import 'fly_animation.dart';
 
 /// Bootstrap channel for the texture registrar.
 ///
@@ -33,6 +36,8 @@ class MapLibreFlutterMacosController
 
   bool _disposed = false;
   double _devicePixelRatio = 1;
+  // Bumped to supersede a running fly-to animation (a new move or a gesture).
+  int _animToken = 0;
   final Completer<void> _ready = Completer<void>();
 
   // Initial off-screen size in device pixels; replaced once the widget reports
@@ -104,9 +109,28 @@ class MapLibreFlutterMacosController
 
   @override
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {
-    // Desktop renders on demand (Static mode), so duration is ignored for now:
-    // the camera jumps to the target and a fresh frame is produced. Smooth
-    // animation is a later refinement (CLAUDE.md §8).
+    final token = ++_animToken; // supersede any running animation
+    final ms = duration?.inMilliseconds ?? 0;
+    if (_disposed || ms <= 0) {
+      _applyCamera(camera);
+      return;
+    }
+    // Desktop has no usable native flyTo, so step an eased arc and render each
+    // frame on the working (complete-frame) Static path. ~30fps; the core's
+    // render thread paces the actual frames.
+    final start = await getCamera();
+    if (_disposed || token != _animToken) return;
+    const frameMs = 33;
+    final steps = math.max(1, (ms / frameMs).round());
+    for (var i = 1; i <= steps; i++) {
+      if (_disposed || token != _animToken) return;
+      _applyCamera(flyCameraAt(start, camera, i / steps));
+      await Future<void>.delayed(const Duration(milliseconds: frameMs));
+    }
+    if (!_disposed && token == _animToken) _applyCamera(camera);
+  }
+
+  void _applyCamera(MapCamera camera) {
     _coreMap.setCamera(
       latitude: camera.center.latitude,
       longitude: camera.center.longitude,
@@ -134,6 +158,7 @@ class MapLibreFlutterMacosController
   @override
   void moveBy(double dx, double dy) {
     if (_disposed) return;
+    _animToken++; // a gesture supersedes any running fly-to
     // Gesture deltas are logical pixels; the core renders in device pixels.
     _coreMap.moveBy(dx * _devicePixelRatio, dy * _devicePixelRatio);
   }
@@ -141,6 +166,7 @@ class MapLibreFlutterMacosController
   @override
   void scaleBy(double scale, double anchorX, double anchorY) {
     if (_disposed) return;
+    _animToken++; // a gesture supersedes any running fly-to
     _coreMap.scaleBy(
       scale,
       anchorX * _devicePixelRatio,
