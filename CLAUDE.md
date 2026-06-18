@@ -96,10 +96,16 @@ is scaffolded vs. still TODO:
     Linux hardware** (2026-06-18, Ubuntu 26.04 / Razer Blade): `flutter build linux` builds clean
     first try, the EGL backend creates a context on the **Intel UHD 630 iGPU** (not llvmpipe), and
     both demotiles + OpenFreeMap Liberty render correctly; the GUI app presents a **smooth** map on
-    GNOME/Wayland. Remaining Linux follow-ups: **(1)** the curl HTTP source bursts too many
-    concurrent HTTP/2 tile requests in Continuous mode and gets `ENHANCE_YOUR_CALM`-throttled (fix:
-    cap `max-concurrent-requests`); **(2)** zero-copy `FlTextureGL` (EGLImage blit) to replace the
-    CPU pixel-buffer present; **(3)** interaction testing. On `feat/desktop-linux-gl`.
+    GNOME/Wayland. **HTTP/2 throttling fixed** (cap the curl source's `max-concurrent-requests`,
+    §below) and **zero-copy present added via dmabuf** (opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true`;
+    CPU `FlPixelBufferTexture` stays the default + fallback). **Key gotcha:** mbgl's render context
+    and Flutter's raster context use **different EGLDisplays**, so an `EGLImageKHR` (display-scoped)
+    cannot be shared between them — the first EGLImage-blit attempt went white. The fix is a **Linux
+    dmabuf** (a kernel buffer fd, cross-display): the core blits into a ring of RGBA8 textures and
+    exports each as a dmabuf (`EGL_MESA_image_dma_buf_export`); the GTK plugin imports it into an
+    `FlTextureGL` via `EGL_LINUX_DMA_BUF_EXT`. Runtime-validated on device (zero-copy activates,
+    dmabuf imports with zero errors, app stable); on-screen visual A/B still TODO. Remaining Linux:
+    **interaction testing**. On `feat/desktop-linux-gl`.
   - **Windows / Web** native sides are still stubs — `createMap()` throws `UnimplementedError`;
     those packages declare only `dartPluginClass` (web: `pluginClass`). Windows will reuse the same
     GL arm via **ANGLE** (EGL-on-D3D) + a `FlutterDesktopPixelBufferTexture`.
@@ -665,5 +671,34 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   Continuous-mode burst (cap `max-concurrent-requests`), and zero-copy `FlTextureGL` (EGLImage blit)
   to replace the CPU pixel-buffer present. Autonomous screenshots on GNOME/Wayland need
   `gnome-screenshot` (the DBus/portal path is locked down).
+
+- **2026-06-19 — Linux HTTP/2 throttle fix + zero-copy via dmabuf (on `feat/desktop-linux-gl`).**
+  Two follow-ups from the hardware bring-up:
+  - **HTTP fix (`fix(core)`):** the non-Apple core's curl HTTP source multiplexed mbgl's default 20
+    concurrent tile requests onto one HTTP/2 connection and tile servers answered with
+    `ENHANCE_YOUR_CALM`. Cap the Network `OnlineFileSource`'s `max-concurrent-requests` to 6 (env
+    `MAPLIBRE_MAX_CONCURRENT_REQUESTS`) from the render thread after map creation, non-Apple only
+    (macOS uses the NSURLSession source). `FileSourceManager::getFileSource` keys the shared source
+    by `baseURL|apiKey|cachePath|ctx`, so requesting it with the same `ResourceOptions::Default()`
+    the Map uses returns that instance. Verified the cap throttles (cap=1 serializes, ~0.95s vs
+    ~0.58s at cap=20) and the map still renders.
+  - **Zero-copy via dmabuf, NOT EGLImage (`feat`):** the first cut shared the rendered GL texture
+    cross-context with an `EGLImageKHR` (mirroring the macOS IOSurface path). It went **white** on
+    device — root cause: **mbgl's render context and Flutter's GTK raster context use different
+    EGLDisplays**, and an EGLImage handle is EGLDisplay-scoped, so it can't cross. An adversarial
+    design review had flagged exactly this. Fix: share via a **Linux dmabuf** (a kernel fd, not
+    display-scoped). The core (`maplibre_flutter_core_gl.cpp`) blits mbgl's color FBO into a ring of
+    3 RGBA8 textures and exports each as a dmabuf (`EGL_MESA_image_dma_buf_export`, persistent per
+    slot); the GTK plugin imports it into an `FlTextureGL` (`EGL_LINUX_DMA_BUF_EXT`), re-importing
+    only on the generation bump a resize triggers. Correctness details the review forced (all in the
+    code): the source FBO is taken from mbgl's renderable `bind()` (NOT a guessed
+    `GL_DRAW_FRAMEBUFFER_BINDING`), every helper brackets its GL work with save/restore so mbgl's
+    `State<>` bind cache stays truthful, the ring is generation-keyed with deferred destroy (dmabuf
+    fds aren't refcounted), and a single vertical flip in the blit matches the CPU path. Gated
+    **off** by default (`--dart-define=MAPLIBRE_ZEROCOPY=true`); the CPU `FlPixelBufferTexture` path
+    is unchanged and the fallback. Runtime-validated on device: zero-copy activates, dmabuf imports
+    with **zero** errors (vs the EGLImage flood of "mismatch"), app stable. **On-screen visual A/B
+    still pending** (couldn't screenshot the Wayland window non-interactively — `gnome-screenshot`
+    blocks on a portal dialog; never call it from an automated shell).
 
 _Append new decisions here with date and rationale._

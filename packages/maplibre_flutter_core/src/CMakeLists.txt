@@ -255,6 +255,10 @@ if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
   list(APPEND _shim_sources maplibre_flutter_core_metal.mm)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
+  # EGLImage-backed texture ring) — Linux/desktop-GL.
+  list(APPEND _shim_sources maplibre_flutter_core_gl.cpp)
 endif()
 
 add_library(maplibre_flutter_core SHARED ${_shim_sources})
@@ -271,6 +275,12 @@ if(APPLE)
     "-framework Metal"
     "-framework IOSurface"
     "-framework CoreVideo")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # mbgl links OpenGL::EGL PRIVATEly, so the shim needs its own EGL + GLES symbols
+  # for the zero-copy EGLImage present (maplibre_flutter_core_gl.cpp). OpenGL::EGL is
+  # already found above (find_package(OpenGL REQUIRED EGL)).
+  find_library(GLESV2_LIBRARY NAMES GLESv2)
+  target_link_libraries(maplibre_flutter_core PRIVATE OpenGL::EGL ${GLESV2_LIBRARY})
 endif()
 
 # Hide everything but the FFI_PLUGIN_EXPORT-annotated C symbols.

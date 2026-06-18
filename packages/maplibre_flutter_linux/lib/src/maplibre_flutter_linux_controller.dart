@@ -62,8 +62,6 @@ class MapLibreFlutterLinuxController
         defaultValue: true,
       ),
     );
-    // FlPixelBufferTexture expects RGBA (macOS's CVPixelBuffer uses BGRA).
-    coreMap.setPixelFormatBgra(false);
     coreMap.setCamera(
       latitude: camera.center.latitude,
       longitude: camera.center.longitude,
@@ -72,15 +70,56 @@ class MapLibreFlutterLinuxController
       pitch: camera.pitch,
     );
 
-    final textureId = await _registrar
-        .invokeMethod<int>('registerTexture', <String, Object?>{
-          'mapHandle': coreMap.nativeAddress,
-          'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
-          'setFrameCallbackFn':
-              core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
-        });
+    // Zero-copy GL present (EGLImage → FlTextureGL) is opt-in until hardware-proven:
+    // --dart-define=MAPLIBRE_ZEROCOPY=true. We only commit to the GL texture once the
+    // native presenter confirms it initialised ([isZeroCopyActive]); otherwise (or
+    // if registration fails) we fall back to the CPU FlPixelBufferTexture path.
+    const wantZeroCopy = bool.fromEnvironment(
+      'MAPLIBRE_ZEROCOPY',
+      defaultValue: false,
+    );
+    int? textureId;
+    if (wantZeroCopy) {
+      coreMap.setZeroCopy(true);
+      if (await _confirmZeroCopyActive(coreMap)) {
+        textureId = await _registrar
+            .invokeMethod<int>('registerTextureGl', <String, Object?>{
+              'mapHandle': coreMap.nativeAddress,
+              'currentGlImageFn':
+                  core.MapLibreCoreMap.currentGlImageFunctionAddress,
+              'setFrameCallbackFn':
+                  core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+            });
+      }
+      if (textureId == null || textureId < 0) {
+        coreMap.setZeroCopy(false); // unsupported / failed → CPU fallback
+      }
+    }
+
+    if (textureId == null || textureId < 0) {
+      // CPU FlPixelBufferTexture path (default + zero-copy fallback). RGBA (macOS's
+      // CVPixelBuffer uses BGRA).
+      coreMap.setPixelFormatBgra(false);
+      textureId = await _registrar
+          .invokeMethod<int>('registerTexture', <String, Object?>{
+            'mapHandle': coreMap.nativeAddress,
+            'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
+            'setFrameCallbackFn':
+                core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+          });
+    }
 
     return MapLibreFlutterLinuxController._(coreMap, textureId ?? -1);
+  }
+
+  /// Polls (up to ~1s) for the native GL presenter to come up after
+  /// [setZeroCopy](true) is processed on the render thread.
+  static Future<bool> _confirmZeroCopyActive(core.MapLibreCoreMap coreMap) async {
+    for (var i = 0; i < 20; i++) {
+      if (coreMap.isZeroCopyActive()) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    return false;
   }
 
   /// Polls until the first frame has rendered, then completes [onReady].

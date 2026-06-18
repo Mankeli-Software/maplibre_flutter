@@ -95,6 +95,8 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core.h'),
       src.resolve('maplibre_flutter_core_metal.h'),
       src.resolve('maplibre_flutter_core_metal.mm'),
+      src.resolve('maplibre_flutter_core_gl.h'),
+      src.resolve('maplibre_flutter_core_gl.cpp'),
       src.resolve('CMakeLists.txt'),
     ]);
   });

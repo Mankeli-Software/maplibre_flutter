@@ -15,6 +15,13 @@
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 
+// For the zero-copy GL present path: import the core's EGLImage frame into a
+// Flutter-context texture (GLES3 core first, then the extension header).
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -26,6 +33,25 @@ typedef int (*MblCopyFrameFn)(void* map, uint8_t* dst, size_t cap, uint32_t* w,
 typedef void (*MblFrameCallback)(void* user);
 typedef void (*MblSetFrameCallbackFn)(void* map, MblFrameCallback cb,
                                       void* user);
+// Zero-copy GL present: the latest frame as a Linux dmabuf descriptor (shareable
+// across mbgl's and Flutter's distinct EGLDisplays). Layout MUST match
+// MblGlDmabufFrame in maplibre_flutter_core.h.
+struct MblGlDmabufFrame {
+  int32_t fd;
+  uint32_t fourcc;
+  uint32_t stride;
+  uint32_t offset;
+  uint64_t modifier;
+  uint64_t generation;
+  uint32_t ring_index;
+  uint32_t width;
+  uint32_t height;
+};
+typedef int (*MblCurrentGlImageFn)(void* map, MblGlDmabufFrame* out);
+
+#ifndef DRM_FORMAT_MOD_INVALID
+#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
+#endif
 
 // ===== FlPixelBufferTexture subclass: reads the latest RGBA frame =====
 G_DECLARE_FINAL_TYPE(MaplibreFlutterLinuxTexture,
@@ -114,6 +140,150 @@ static void on_frame_ready(void* user) {
   g_idle_add(mark_frame_available, g_object_ref(self));
 }
 
+// ===== FlTextureGL subclass: zero-copy present of the core's dmabuf frame =====
+// The core (maplibre_flutter_core's GL arm) blits each frame into a ring of textures
+// and exports each as a dmabuf fd. Here we import that dmabuf into Flutter's raster
+// GL context via EGL_LINUX_DMA_BUF_EXT (no CPU readback). A dmabuf is a kernel buffer
+// fd, so it crosses the distinct EGLDisplays mbgl and Flutter use (an EGLImage handle
+// could not). populate() runs on the raster thread with Flutter's GL context current.
+// We cache one imported EGLImage + texture per ring slot, re-importing only when a
+// slot's generation changes (a resize gives new dmabufs).
+G_DECLARE_FINAL_TYPE(MaplibreFlutterLinuxGlTexture,
+                     maplibre_flutter_linux_gl_texture, MAPLIBRE_FLUTTER_LINUX,
+                     GL_TEXTURE, FlTextureGL)
+
+#define MFL_GL_RING 3
+
+struct _MaplibreFlutterLinuxGlTexture {
+  FlTextureGL parent_instance;
+  void* map_handle;
+  MblCurrentGlImageFn current_gl_image;
+  MblSetFrameCallbackFn set_frame_callback;
+  FlTextureRegistrar* registrar;  // borrowed
+  PFNEGLCREATEIMAGEKHRPROC create_image;
+  PFNEGLDESTROYIMAGEKHRPROC destroy_image;
+  PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target_texture;
+  GLuint tex[MFL_GL_RING];
+  EGLImageKHR image[MFL_GL_RING];
+  guint64 generation[MFL_GL_RING];
+};
+
+G_DEFINE_TYPE(MaplibreFlutterLinuxGlTexture, maplibre_flutter_linux_gl_texture,
+              fl_texture_gl_get_type())
+
+static gboolean maplibre_flutter_linux_gl_texture_populate(
+    FlTextureGL* texture, uint32_t* target, uint32_t* name, uint32_t* width,
+    uint32_t* height, GError** error) {
+  MaplibreFlutterLinuxGlTexture* self =
+      MAPLIBRE_FLUTTER_LINUX_GL_TEXTURE(texture);
+  MblGlDmabufFrame f;
+  if (self->current_gl_image(self->map_handle, &f) == 0 || f.fd < 0 ||
+      f.ring_index >= MFL_GL_RING) {
+    g_set_error(error, g_quark_from_static_string("maplibre_flutter_linux"), 0,
+                "no zero-copy GL frame available");
+    return FALSE;
+  }
+  const uint32_t ring = f.ring_index;
+  EGLDisplay dpy = eglGetCurrentDisplay();  // Flutter's raster display
+
+  if (self->tex[ring] == 0) {
+    glGenTextures(1, &self->tex[ring]);
+  }
+  glBindTexture(GL_TEXTURE_2D, self->tex[ring]);
+
+  // (Re)import the dmabuf into an EGLImage on Flutter's display when this slot's
+  // generation changes (a resize swaps the dmabuf fds); steady-state frames reuse
+  // the cached image since the producer re-blits the same buffer in place.
+  if (self->image[ring] == EGL_NO_IMAGE_KHR ||
+      self->generation[ring] != f.generation) {
+    if (self->image[ring] != EGL_NO_IMAGE_KHR) {
+      self->destroy_image(dpy, self->image[ring]);
+      self->image[ring] = EGL_NO_IMAGE_KHR;
+    }
+    EGLint attrs[32];
+    int n = 0;
+    attrs[n++] = EGL_WIDTH;                     attrs[n++] = (EGLint)f.width;
+    attrs[n++] = EGL_HEIGHT;                    attrs[n++] = (EGLint)f.height;
+    attrs[n++] = EGL_LINUX_DRM_FOURCC_EXT;      attrs[n++] = (EGLint)f.fourcc;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_FD_EXT;     attrs[n++] = f.fd;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT; attrs[n++] = (EGLint)f.offset;
+    attrs[n++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;  attrs[n++] = (EGLint)f.stride;
+    if (f.modifier != DRM_FORMAT_MOD_INVALID) {
+      attrs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+      attrs[n++] = (EGLint)(f.modifier & 0xFFFFFFFF);
+      attrs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+      attrs[n++] = (EGLint)(f.modifier >> 32);
+    }
+    attrs[n++] = EGL_NONE;
+    self->image[ring] = self->create_image(dpy, EGL_NO_CONTEXT,
+                                           EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
+    if (self->image[ring] == EGL_NO_IMAGE_KHR) {
+      g_set_error(error, g_quark_from_static_string("maplibre_flutter_linux"), 0,
+                  "failed to import dmabuf as EGLImage (0x%x)", eglGetError());
+      return FALSE;
+    }
+    self->image_target_texture(GL_TEXTURE_2D,
+                               static_cast<GLeglImageOES>(self->image[ring]));
+    self->generation[ring] = f.generation;
+  }
+
+  // Sampler params live on the consumer texture (the import carries none; an
+  // unfiltered/mip-incomplete texture samples black).
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+  *target = GL_TEXTURE_2D;
+  *name = self->tex[ring];
+  *width = f.width;
+  *height = f.height;
+  return TRUE;
+}
+
+static void maplibre_flutter_linux_gl_texture_dispose(GObject* object) {
+  MaplibreFlutterLinuxGlTexture* self =
+      MAPLIBRE_FLUTTER_LINUX_GL_TEXTURE(object);
+  if (self->set_frame_callback != nullptr && self->map_handle != nullptr) {
+    self->set_frame_callback(self->map_handle, nullptr, nullptr);
+    self->set_frame_callback = nullptr;
+  }
+  // The imported texture names live in Flutter's raster GL context, which is not
+  // current here, so they cannot be glDeleteTextures'd — a small, bounded leak per
+  // map dispose (acceptable for the experimental zero-copy path).
+  G_OBJECT_CLASS(maplibre_flutter_linux_gl_texture_parent_class)->dispose(object);
+}
+
+static void maplibre_flutter_linux_gl_texture_class_init(
+    MaplibreFlutterLinuxGlTextureClass* klass) {
+  FL_TEXTURE_GL_CLASS(klass)->populate =
+      maplibre_flutter_linux_gl_texture_populate;
+  G_OBJECT_CLASS(klass)->dispose = maplibre_flutter_linux_gl_texture_dispose;
+}
+
+static void maplibre_flutter_linux_gl_texture_init(
+    MaplibreFlutterLinuxGlTexture* self) {
+  for (int i = 0; i < MFL_GL_RING; i++) {
+    self->image[i] = EGL_NO_IMAGE_KHR;
+  }
+}
+
+static gboolean mark_frame_available_gl(gpointer user_data) {
+  MaplibreFlutterLinuxGlTexture* self =
+      MAPLIBRE_FLUTTER_LINUX_GL_TEXTURE(user_data);
+  if (self->registrar != nullptr) {
+    fl_texture_registrar_mark_texture_frame_available(self->registrar,
+                                                      FL_TEXTURE(self));
+  }
+  g_object_unref(self);
+  return G_SOURCE_REMOVE;
+}
+
+static void on_frame_ready_gl(void* user) {
+  auto* self = MAPLIBRE_FLUTTER_LINUX_GL_TEXTURE(user);
+  g_idle_add(mark_frame_available_gl, g_object_ref(self));
+}
+
 // ===== The plugin =====
 G_DECLARE_FINAL_TYPE(MaplibreFlutterLinuxPlugin, maplibre_flutter_linux_plugin,
                      MAPLIBRE_FLUTTER_LINUX, PLUGIN, GObject)
@@ -121,7 +291,9 @@ G_DECLARE_FINAL_TYPE(MaplibreFlutterLinuxPlugin, maplibre_flutter_linux_plugin,
 struct _MaplibreFlutterLinuxPlugin {
   GObject parent_instance;
   FlTextureRegistrar* registrar;  // borrowed (engine-lifetime)
-  std::map<int64_t, MaplibreFlutterLinuxTexture*>* textures;
+  // Owning refs to registered textures (CPU FlPixelBufferTexture or zero-copy
+  // FlTextureGL — held as the common base so both kinds coexist).
+  std::map<int64_t, FlTexture*>* textures;
 };
 
 G_DEFINE_TYPE(MaplibreFlutterLinuxPlugin, maplibre_flutter_linux_plugin,
@@ -159,11 +331,57 @@ static void handle_method_call(MaplibreFlutterLinuxPlugin* self,
       fl_texture_registrar_register_texture(self->registrar,
                                             FL_TEXTURE(texture));
       const int64_t id = fl_texture_get_id(FL_TEXTURE(texture));
-      (*self->textures)[id] = texture;  // our owning ref
+      (*self->textures)[id] = FL_TEXTURE(texture);  // our owning ref
       texture->set_frame_callback(texture->map_handle, on_frame_ready, texture);
       g_autoptr(FlValue) result = fl_value_new_int(id);
       response =
           FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+    }
+  } else if (strcmp(method, "registerTextureGl") == 0) {
+    // Zero-copy GL present: bind an FlTextureGL that imports the core map's dmabuf
+    // ring into Flutter's raster context.
+    const int64_t map_handle = arg_int(args, "mapHandle");
+    const int64_t cur_fn = arg_int(args, "currentGlImageFn");
+    const int64_t set_cb_fn = arg_int(args, "setFrameCallbackFn");
+    auto create_image = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(
+        eglGetProcAddress("eglCreateImageKHR"));
+    auto destroy_image = reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(
+        eglGetProcAddress("eglDestroyImageKHR"));
+    auto image_target = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+        eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+    const char* egl_exts = eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS);
+    const bool dmabuf_import =
+        egl_exts != nullptr &&
+        strstr(egl_exts, "EGL_EXT_image_dma_buf_import") != nullptr;
+    if (map_handle == 0 || cur_fn == 0 || set_cb_fn == 0 ||
+        create_image == nullptr || destroy_image == nullptr ||
+        image_target == nullptr || !dmabuf_import) {
+      // Missing entry points / dmabuf-import support → Dart falls back to the CPU
+      // texture.
+      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+          "bad_args",
+          "registerTextureGl requires dmabuf import + EGLImage entry points",
+          nullptr));
+    } else {
+      auto* texture = MAPLIBRE_FLUTTER_LINUX_GL_TEXTURE(g_object_new(
+          maplibre_flutter_linux_gl_texture_get_type(), nullptr));
+      texture->map_handle = reinterpret_cast<void*>(map_handle);
+      texture->current_gl_image =
+          reinterpret_cast<MblCurrentGlImageFn>(cur_fn);
+      texture->set_frame_callback =
+          reinterpret_cast<MblSetFrameCallbackFn>(set_cb_fn);
+      texture->registrar = self->registrar;
+      texture->create_image = create_image;
+      texture->destroy_image = destroy_image;
+      texture->image_target_texture = image_target;
+      fl_texture_registrar_register_texture(self->registrar,
+                                            FL_TEXTURE(texture));
+      const int64_t id = fl_texture_get_id(FL_TEXTURE(texture));
+      (*self->textures)[id] = FL_TEXTURE(texture);  // our owning ref
+      texture->set_frame_callback(texture->map_handle, on_frame_ready_gl,
+                                  texture);
+      g_autoptr(FlValue) result = fl_value_new_int(id);
+      response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
     }
   } else if (strcmp(method, "unregisterTexture") == 0) {
     const int64_t id = (args != nullptr &&
@@ -204,7 +422,7 @@ static void maplibre_flutter_linux_plugin_class_init(
 
 static void maplibre_flutter_linux_plugin_init(
     MaplibreFlutterLinuxPlugin* self) {
-  self->textures = new std::map<int64_t, MaplibreFlutterLinuxTexture*>();
+  self->textures = new std::map<int64_t, FlTexture*>();
 }
 
 void maplibre_flutter_linux_plugin_register_with_registrar(
