@@ -41,6 +41,11 @@ final class MapLibreTexture: NSObject, FlutterTexture {
   // Reused IOSurface-backed buffer pool (recreated only on size change) so we
   // don't allocate a fresh CVPixelBuffer every frame; the pool recycles buffers
   // freed by the engine, which also avoids tearing. (CLAUDE.md §8 M5.)
+  //
+  // TODO(zero-copy): this is NOT true zero-copy yet — `copyPixelBuffer` still
+  // CPU-copies the frame out of the core via `copyFrameFn`. True zero-copy =
+  // hand the core one IOSurface-backed Metal texture and have its renderer draw
+  // straight into it (no readback). Deferred; see CLAUDE.md §12 (2026-06-18).
   private var pool: CVPixelBufferPool?
   private var poolWidth = 0
   private var poolHeight = 0
