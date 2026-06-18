@@ -17,9 +17,14 @@ dependencies:
   maplibre_flutter:
     path: ../
   cupertino_icons: ^1.0.8
+  # Web: stops taps on the controls drawn over the map from leaking through to
+  # the maplibre-gl-js DOM element. No-op on non-web platforms.
+  pointer_interceptor: ^0.10.1+2
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 

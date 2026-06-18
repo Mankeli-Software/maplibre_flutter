@@ -62,7 +62,7 @@ melos:
         concurrency: 4
 
     test:
-      description: Run widget/unit tests in the Flutter packages.
+      description: Run widget/unit tests in the Flutter packages (VM).
       run: flutter test
       exec:
         concurrency: 1
@@ -70,6 +70,21 @@ melos:
       packageFilters:
         flutter: true
         dirExists: test
+        # maplibre_flutter_web's tests are browser-only (@TestOn('browser') —
+        # the impl imports dart:ui_web/js_interop), so a VM `flutter test`
+        # finds none and errors. Run them via `test:web` instead.
+        ignore:
+          - maplibre_flutter_web
+
+    test:web:
+      description: Run the web package's tests in headless Chrome.
+      run: flutter test --platform chrome
+      exec:
+        concurrency: 1
+        failFast: true
+      packageFilters:
+        scope:
+          - maplibre_flutter_web
 
     test:native:
       description: >-
