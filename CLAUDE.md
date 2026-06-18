@@ -72,15 +72,20 @@ is scaffolded vs. still TODO:
     see the MapLibre framework (Section 5b). Bindings committed at
     `lib/src/maplibre_flutter_ios_bindings.g.dart` (`tool/swiftgen.dart`). Example buttons work
     on iOS unchanged. SPM **and** CocoaPods example builds green; device frame pending a sim run.
-  - **macOS — desktop tier done (M0–M5).** `maplibre_flutter_core` now drives `mbgl-core`
+  - **macOS — desktop tier complete; smooth on device.** `maplibre_flutter_core` drives `mbgl-core`
     (vendored submodule, pinned `MBGL_CORE_VERSION`) over a C-shim + ffigen, built via
-    `native_toolchain_cmake` in `hook/build.dart`; it renders headless on a dedicated render
-    thread into BGRA. `maplibre_flutter_macos` is a hybrid Swift plugin whose `MapLibreTexture`
-    feeds those frames into a Flutter `Texture` (M5 = reused IOSurface-backed `CVPixelBufferPool`;
-    **true IOSurface-shared zero-copy still TODO**, §12 2026-06-18). Control mirrors the mobile
-    controllers over FFI (camera/style/onReady/resize); gestures live in `maplibre_flutter` (shared
-    desktop tier). `flutter run -d macos` builds + launches clean. Fly-to animation + core
-    distribution (prebuilt artifacts + CI) land on their own branches.
+    `native_toolchain_cmake` in `hook/build.dart`, on a dedicated render thread. Two perf wins make
+    it production-smooth: **(1) zero-copy present** — the render thread GPU-blits mbgl's Metal
+    texture into an IOSurface-backed BGRA texture (compute swizzle, async on mbgl's command queue),
+    which `maplibre_flutter_macos`'s hybrid Swift plugin wraps in a CVPixelBuffer for a Flutter
+    `Texture` with no CPU readback; **(2) Continuous render mode** — partial frames publish
+    immediately and refine as tiles stream in (no per-frame network stall), so fly-to is smooth even
+    over detailed/uncached tiles. Both default on, each with a CPU/Static fallback behind a
+    `--dart-define` (`MAPLIBRE_ZEROCOPY`, `MAPLIBRE_CONTINUOUS`); Static + CPU-readback stay the
+    headless-test path. Control mirrors the mobile controllers over FFI; gestures + the eased fly-to
+    arc live in the shared desktop tier (`maplibre_flutter`). Verified on device: rendering solid,
+    smooth gestures/zoom/fly-to, stable when idle. Core **distribution** (prebuilt artifacts + CI)
+    is the next focus, on `feat/core-distribution`.
   - **Windows / Linux / Web** native sides are still stubs — `createMap()` throws
     `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
     Windows/Linux will reuse `maplibre_flutter_core`'s `mbgl-core` integration with a
@@ -551,5 +556,39 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     through the Metal `FlutterTexture` path. Marked at `MapLibreTexture.swift` (`TODO(zero-copy)`).
     Revisit before/with the Windows (ANGLE) + Linux (`FlTextureGL`) surfaces, which share the same
     backend question.
+
+- **2026-06-18 — macOS desktop made production-smooth (supersedes the zero-copy TODO above).**
+  Four changes, all merged to `main`, took the macOS map from "renders, but janky zoom/fly-to" to
+  smooth on device:
+  - **Coalesce renders (`perf(core)`):** the render thread drains the whole command queue then
+    renders once at the latest state, instead of one render per command — a burst of camera updates
+    (fly-to / gesture stream) drops stale intermediate frames rather than falling behind.
+  - **Zero-copy present (`feat(macos)`):** replaced the per-frame GPU→CPU `readStillImage` + CPU
+    BGRA swizzle with a GPU compute blit of mbgl's rendered texture into an IOSurface-backed BGRA
+    texture (swizzle implicit in the pixel-format conversion). The blit runs on **mbgl's own command
+    queue** (GPU-ordered after the render, before the next — no race on mbgl's single internal
+    texture) and is **async** (completion handler publishes; no CPU `waitUntilCompleted` stall). A
+    3-deep IOSurface ring + Swift CVPixelBuffer cache avoid per-frame alloc. Code:
+    `maplibre_flutter_core_metal.{h,mm}`. NOTE: a first cut that waited synchronously on a *separate*
+    queue was **slower** than the CPU path — the async + same-queue design is what made it a win.
+    This is "true-enough" zero-copy (one GPU blit, no CPU copy); patching mbgl to render straight
+    into the IOSurface (no blit) was evaluated and parked — the async blit is cheap and avoids
+    forking the submodule.
+  - **Continuous render mode (`feat(core)`):** the real fix for fly-to over detailed/uncached tiles.
+    A second render-thread main runs an mbgl `RunLoop` with `MapMode::Continuous` +
+    `HeadlessFrontend(invalidateOnUpdate=true)` and a `MapObserver::onDidFinishRenderingFrame` that
+    publishes each frame (partial → refines as tiles stream in). Commands marshal via
+    `RunLoop::invoke`; `destroy` stops the loop. Verified that `present()`+`swap()` (commit +
+    waitUntilCompleted) run **before** the observer fires, so the texture is final when we blit.
+    **This is the path that went blank twice before** — the prior failures were Continuous driven
+    wrong (no proper loop / `invalidateOnUpdate` off / reading partial too early), not Continuous
+    itself. Selected per map via `mbl_map_create`'s `continuous` flag; **Static stays the default**
+    (headless tests rely on its synchronous complete frame).
+  - **Fly-to dip fix (`fix(macos)`):** the eased arc only dips zoom below the lower endpoint when
+    fitting the two centers actually needs it (`fit < min(start,target)`) — kills the +/- button
+    overshoot while keeping the zoom-out arc for real long flights.
+  Both perf paths default **on** (`--dart-define=MAPLIBRE_ZEROCOPY` / `MAPLIBRE_CONTINUOUS` flip to
+  the CPU/Static fallbacks for A/B). The macOS-tier work branches were squashed into `main` via
+  fast-forward and deleted; `feat/core-distribution` remains the next focus.
 
 _Append new decisions here with date and rationale._
