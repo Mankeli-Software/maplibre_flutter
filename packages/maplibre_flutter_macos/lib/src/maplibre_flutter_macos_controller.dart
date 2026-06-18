@@ -59,6 +59,13 @@ class MapLibreFlutterMacosController
       height: _initialHeight,
       pixelRatio: 1,
       styleUri: options.styleUri,
+      // Continuous render (partial frames that refine as tiles load) is on by
+      // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the blocking
+      // Static path for an A/B.
+      continuous: const bool.fromEnvironment(
+        'MAPLIBRE_CONTINUOUS',
+        defaultValue: true,
+      ),
     );
     // Zero-copy present (GPU blit into an IOSurface) is on by default; flip it
     // off for an A/B against the CPU-readback path with

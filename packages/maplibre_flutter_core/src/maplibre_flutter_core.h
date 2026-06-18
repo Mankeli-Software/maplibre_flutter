@@ -43,9 +43,15 @@ typedef void (*MblFrameCallback)(void *user);
 // and starts loading the style. Returns NULL on failure. Does not block on the
 // style load — use mbl_map_await_frame or the frame callback to know when a
 // frame exists.
+//
+// `continuous`: 0 = Static mode (each camera/style change renders one complete
+// frame, blocking until all its tiles load — simple, used by headless/tests);
+// 1 = Continuous mode (render partial frames immediately and refine as tiles
+// stream in, like the mobile SDK — smooth interaction over uncached/detailed
+// tiles, no per-frame network stall). The public API is identical either way.
 FFI_PLUGIN_EXPORT MblMap *mbl_map_create(uint32_t width, uint32_t height,
                                          float pixel_ratio,
-                                         const char *style_uri);
+                                         const char *style_uri, int continuous);
 
 // Replace the active style (URL, file path, or inline JSON). Triggers a re-render.
 FFI_PLUGIN_EXPORT void mbl_map_set_style(MblMap *map, const char *style_uri);
