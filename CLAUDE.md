@@ -86,10 +86,24 @@ is scaffolded vs. still TODO:
     arc live in the shared desktop tier (`maplibre_flutter`). Verified on device: rendering solid,
     smooth gestures/zoom/fly-to, stable when idle. Core **distribution** (prebuilt artifacts + CI)
     is the next focus, on `feat/core-distribution`.
-  - **Windows / Linux / Web** native sides are still stubs — `createMap()` throws
-    `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
-    Windows/Linux will reuse `maplibre_flutter_core`'s `mbgl-core` integration with a
-    platform-specific surface.
+  - **Web — done (A visible map + B control); builds + tests pass on this machine.**
+    `maplibre_flutter_web` renders with **maplibre-gl-js** (the global `maplibregl`, pinned
+    `5.24.0`) in an `HtmlElementView`, bound via **`dart:js_interop` + `package:web`** (no
+    `package:js`, WASM-safe). The script + (required) CSS are **injected into `document.head` at
+    runtime** (idempotent/memoised; reuses a consumer-provided global for CSP-locked apps — no
+    `index.html` edit needed). Web mirrors the **mobile** tier: maplibre-gl-js owns gestures
+    natively, so the controller implements `MapLibreMapController` only (no `MapLibreGestureHandler`,
+    no Dart gesture layer). The JS map is built in the platform-view factory; `onReady` completes on
+    the JS `'load'` event; camera/style/resize/dispose forward over interop (`LatLng(lat,lng)` ⇄
+    maplibre `[lng,lat]` flipped at every boundary; `map.remove()` frees the WebGL context on
+    dispose; the `'load'` callback is field-held against GC, §5d). The app widget's `ElementViewHandle`
+    branch renders `HtmlElementView`; **`pointer_interceptor` wraps overlay widgets drawn over the
+    map** (the example's controls), *not* the map itself. Verified on this Mac: `flutter build web`
+    green; browser unit tests (`melos run test:web`, headless Chrome) + the chrome integration test
+    pass. On `feat/web-maplibre-gl-js`.
+  - **Windows / Linux** native sides are still stubs — `createMap()` throws `UnimplementedError`;
+    those packages declare only `dartPluginClass`. Windows/Linux will reuse `maplibre_flutter_core`'s
+    `mbgl-core` integration with a platform-specific surface.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -346,7 +360,9 @@ Build the base architecture first, then implement platforms in this order. Keep 
    surface) → **macOS** (Metal). Start with CPU readback (pixel-buffer) for correctness, then
    optimise to zero-copy GPU texture sharing. The **Linux GL-context/threading** integration
    is the single biggest risk — budget for it.
-4. **Web** — maplibre-gl-js JS interop, `HtmlElementView` + `pointer_interceptor`.
+4. **Web** — maplibre-gl-js JS interop, `HtmlElementView` + `pointer_interceptor`. *Done (A
+   visible map + B control); `flutter build web` + browser unit/integration tests green on this
+   machine. Buildable + runnable here (`flutter run -d chrome`), unlike Linux/Windows.*
 
 Do not start a platform before the platform interface can express what it needs; extend the
 interface deliberately, not per-platform.
@@ -613,5 +629,49 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   on GitHub until the cost is reviewed; re-enable by uncommenting the `push`/`pull_request`/`tags`
   blocks (marked DISABLED in each file).** Verified: analyze 10/10; `test:native` source-builds and
   passes (fallback intact). The workflows run only on GitHub (not locally executable).
+
+- **2026-06-18 — Web tier shipped (§8 step 4; on `feat/web-maplibre-gl-js`, off `main`, not yet
+  merged).** `maplibre_flutter_web` now renders maplibre-gl-js in an `HtmlElementView`. Built on
+  this Mac in parallel with Linux/Windows (which need real hardware) because web is the one
+  platform fully buildable **and** runnable here (`flutter run -d chrome`). Decisions made:
+  - **Interop = `dart:js_interop` + `package:web` only** (extension types over `JSObject`; no
+    `package:js`/`dart:js` — those are discontinued and break under WASM). Three files:
+    `maplibre_gl_interop.dart` (extension types for the `maplibregl.Map` ctor + setStyle / jumpTo /
+    easeTo / flyTo / getters / resize / remove / on / off), `maplibre_gl_loader.dart`,
+    `maplibre_flutter_web_controller.dart`. Only `web: ^1.1.1` added as a dep (`dart:js_interop`,
+    `dart:ui_web` ship with the SDK).
+  - **Web is the *mobile* tier model, not the desktop tier.** maplibre-gl-js owns
+    gestures/inertia natively, so the controller implements `MapLibreMapController` **only** — *not*
+    `MapLibreGestureHandler`. The widget's `_DesktopMapGestures` layer was already gated on a
+    `MapLibreGestureHandler` controller, so it correctly skips web. No interface change was needed —
+    `ElementViewHandle` + the widget branch already existed; the branch just swapped its
+    `_UnimplementedEmbed` stub for `HtmlElementView(viewType:)`.
+  - **JS map built in the platform-view factory, not in `createMap`.** The host `<div>` doesn't
+    exist until the `HtmlElementView` mounts (after `createMap` returns), so the factory builds
+    `new maplibregl.Map({container: div, ...})` and `onReady` completes on the JS `'load'` event —
+    mirroring how the desktop controllers return before the first frame.
+  - **Runtime script/CSS injection is the default** (zero-config DX), with detect-and-skip if a
+    consumer pre-loaded the global via `index.html` (the CSP escape hatch). Both existing MapLibre
+    Flutter web packages require manual `index.html`; we inject + fall back. The **CSS is mandatory**
+    (controls/markers break without it). maplibre-gl-js pinned to exactly **`5.24.0`** (5.x stable;
+    6.x is prerelease) in the CDN URLs — a unit test guards it stays `5.x`.
+  - **Gotchas captured in code:** `LatLng(lat,lng)` ⇄ maplibre `[lng,lat]` flipped at every
+    boundary (#1 bug source); `map.remove()` on dispose (browsers cap ~16 WebGL contexts); the JS
+    `'load'` callback is held in a field against GC (§5d); `flyTo` is passed an explicit `duration`
+    + `essential: true` so it matches the other tiers' fixed-duration fly-to and animates under
+    prefers-reduced-motion; per-map unique `viewType`.
+  - **`pointer_interceptor` is for OVERLAYS, not the map.** The map *is* the top DOM element and
+    receives pointer/scroll natively; `PointerInterceptor` wraps Flutter controls drawn *over* it
+    (the example's FAB column) so their taps don't leak through. Added to the **example** (+
+    `integration_test`) deps — *not* the app-facing package.
+  - **Tooling:** the web package's tests are `@TestOn('browser')` (the impl imports
+    `dart:ui_web`/`js_interop`), so a VM `flutter test` errors with "no tests found". Split the melos
+    lanes: **`test` now `ignore`s `maplibre_flutter_web`**; new **`test:web`** runs `flutter test
+    --platform chrome`. Added a **`web` job to `ci.yml`** (ubuntu, no submodule: `flutter build web`
+    + `test:web` + a headless-Chrome `flutter drive` integration test); the workflow stays DISABLED
+    (workflow_dispatch only) like the rest. Verified on this Mac: `melos analyze` clean; `melos run
+    test` (VM) + `melos run test:web` (Chrome) + `flutter build web` all green. **Not yet run:** the
+    `flutter drive` integration test locally (needs chromedriver) — wired for CI; an interactive
+    `flutter run -d chrome` frame check is the remaining manual step.
 
 _Append new decisions here with date and rationale._
