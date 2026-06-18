@@ -63,6 +63,18 @@ class MapLibreCoreMap {
           >(bindings.mbl_map_copy_frame)
           .address;
 
+  /// Address of the native `mbl_map_current_iosurface` function. The macOS
+  /// plugin calls it from `copyPixelBuffer` to get the IOSurface backing the
+  /// latest zero-copy frame (null when zero-copy is off), wrapping it in a
+  /// CVPixelBuffer with no copy. See [copyFrameFunctionAddress].
+  static int get currentIOSurfaceFunctionAddress =>
+      ffi.Native.addressOf<
+            ffi.NativeFunction<
+              ffi.Pointer<ffi.Void> Function(ffi.Pointer<bindings.MblMap>)
+            >
+          >(bindings.mbl_map_current_iosurface)
+          .address;
+
   /// Address of the native `mbl_map_set_frame_callback` function (see
   /// [copyFrameFunctionAddress]).
   static int get setFrameCallbackFunctionAddress =>
@@ -102,6 +114,16 @@ class MapLibreCoreMap {
     } finally {
       malloc.free(stylePtr);
     }
+  }
+
+  /// Enables (or disables) zero-copy presentation (macOS Metal). When on, each
+  /// render GPU-blits mbgl's Metal texture into an IOSurface (no CPU readback or
+  /// swizzle), read via [currentIOSurfaceFunctionAddress]. A no-op on platforms
+  /// without the Metal blitter; the CPU [copyFrame] path stays available as a
+  /// fallback. Takes effect on the next render.
+  void setZeroCopy(bool enabled) {
+    _checkAlive();
+    bindings.mbl_map_set_zero_copy(_handle, enabled ? 1 : 0);
   }
 
   /// Replaces the active style (URL, file path, or inline JSON).

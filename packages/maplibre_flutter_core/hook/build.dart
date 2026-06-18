@@ -89,6 +89,8 @@ void main(List<String> args) async {
     output.dependencies.addAll([
       src.resolve('maplibre_flutter_core.cpp'),
       src.resolve('maplibre_flutter_core.h'),
+      src.resolve('maplibre_flutter_core_metal.h'),
+      src.resolve('maplibre_flutter_core_metal.mm'),
       src.resolve('CMakeLists.txt'),
     ]);
   });

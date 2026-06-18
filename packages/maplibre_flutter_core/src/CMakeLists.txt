@@ -132,9 +132,25 @@ target_link_libraries(mbgl-core PRIVATE
 )
 
 # ---- The C ABI shim ----
-add_library(maplibre_flutter_core SHARED maplibre_flutter_core.cpp)
-target_include_directories(maplibre_flutter_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(maplibre_flutter_core PRIVATE mbgl-core mbgl-compiler-options)
+# maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (the GPU
+# blit into an IOSurface); it needs Metal/IOSurface/CoreVideo, which mbgl-core
+# links only PRIVATEly, so link them on the shim directly.
+add_library(maplibre_flutter_core SHARED
+  maplibre_flutter_core.cpp
+  maplibre_flutter_core_metal.mm)
+# The shim includes mbgl's mtl headless-backend header (for getMetalTexture()),
+# which pulls in metal-cpp (NS::SharedPtr etc.); mbgl-core links it PRIVATEly, so
+# add metal-cpp to the shim's include path too.
+target_include_directories(maplibre_flutter_core PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${MLN_ROOT}/vendor/metal-cpp")
+target_link_libraries(maplibre_flutter_core PRIVATE
+  mbgl-core
+  mbgl-compiler-options
+  "-framework Foundation"
+  "-framework Metal"
+  "-framework IOSurface"
+  "-framework CoreVideo")
 
 # Hide everything but the FFI_PLUGIN_EXPORT-annotated C symbols.
 set_target_properties(maplibre_flutter_core PROPERTIES
