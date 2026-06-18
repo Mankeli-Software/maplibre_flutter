@@ -1,0 +1,58 @@
+# Quality gate for the maplibre_flutter workspace. Currently exercises the
+# macOS desktop tier end to end (the implemented platform); Android/iOS/Linux/
+# Windows runners are added as those platforms come online (CLAUDE.md §7 layer 6).
+name: CI
+
+# DISABLED: automatic triggers are commented out so NOTHING runs on GitHub yet
+# (CI cost is being reviewed first). Only manual `workflow_dispatch` is active.
+# To enable, uncomment the push + pull_request blocks below.
+on:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-14
+    env:
+      # Build mbgl-core from the vendored submodule (don't fetch a prebuilt).
+      MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # vendors mbgl-core at the pinned core-<sha>
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable # must satisfy the pubspec floor (Flutter >= 3.41)
+
+      - run: brew install cmake ninja ccache
+
+      # mbgl-core is large; cache ccache across runs (keyed on the pinned core sha).
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-macos-${{ hashFiles('packages/maplibre_flutter_core/MBGL_CORE_VERSION') }}
+          restore-keys: ccache-macos-
+      - run: |
+          ccache --set-config=hash_dir=false
+          ccache --set-config=max_size=3G
+
+      - run: flutter pub get
+
+      - run: dart run melos run format
+      - run: dart run melos run analyze
+      - run: dart run melos run test --no-select
+      - run: dart run melos run test:native --no-select # builds mbgl-core
+
+      - name: Generated ffigen bindings are up to date
+        working-directory: packages/maplibre_flutter_core
+        run: |
+          dart run tool/ffigen.dart
+          git diff --exit-code lib/src/maplibre_flutter_core_bindings_generated.dart

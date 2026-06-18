@@ -591,4 +591,27 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   the CPU/Static fallbacks for A/B). The macOS-tier work branches were squashed into `main` via
   fast-forward and deleted; `feat/core-distribution` remains the next focus.
 
+- **2026-06-18 — Core distribution: prebuilt artifacts + source fallback + CI (extends the
+  2026-06-17 "all nine publishable" decision).** `hook/build.dart` now resolves the native
+  library two ways: app consumers (no submodule, the pub.dev archive — `third_party/` is
+  `.pubignore`d) **download a prebuilt per-`(os,arch)` binary** from the GitHub release matching
+  the package version (`maplibre_flutter_core-v<version>`); developers/CI (submodule vendored)
+  **build from the pinned `MBGL_CORE_VERSION` source** via `native_toolchain_cmake`. The branch is
+  `if (!vendored) { tryPrebuilt unless MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE=1, else warn } else
+  source-build`; both paths end at the same ffigen `@Native` asset id
+  (`src/maplibre_flutter_core_bindings_generated.dart`). Local dev is unaffected — the submodule is
+  vendored, so it always source-builds. Prebuilt integrity rests on HTTPS to the trusted release
+  host; download failure falls back to the warning (FFI fails loudly at call time, never silently
+  mis-renders). Asset name `<os>-<arch>-<dylibFileName>` (e.g.
+  `macos-arm64-libmaplibre_flutter_core.dylib`) matches what `_tryPrebuilt()` requests. Two CI
+  workflows added: **`.github/workflows/ci.yml`** (macOS quality gate — format/analyze/test/
+  test:native with `MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE=1` + recursive submodule + ccache cache +
+  ffigen-regen `git diff --exit-code`, §7 layer 6) and **`.github/workflows/build-core.yml`** (on
+  a `maplibre_flutter_core-v*` tag: cmake-build the dylib for arm64 + x64, upload to the release).
+  Linux/Windows arms join both workflows when those platforms land. **Both workflows are committed
+  with their automatic triggers commented out — `on:` is `workflow_dispatch` only — so nothing runs
+  on GitHub until the cost is reviewed; re-enable by uncommenting the `push`/`pull_request`/`tags`
+  blocks (marked DISABLED in each file).** Verified: analyze 10/10; `test:native` source-builds and
+  passes (fallback intact). The workflows run only on GitHub (not locally executable).
+
 _Append new decisions here with date and rationale._

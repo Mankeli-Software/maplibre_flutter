@@ -42,20 +42,24 @@ void main(List<String> args) async {
       packageRoot.resolve('third_party/maplibre-native/'),
     );
     final vendored = submodule.existsSync() && submodule.listSync().isNotEmpty;
+    final buildFromSource =
+        Platform.environment['MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE'] == '1';
+
+    // Distribution (CLAUDE.md §12). Developers and CI build from the vendored
+    // mbgl-core submodule (no network); app consumers (no submodule) download a
+    // prebuilt per-(os,arch) binary published by the `build-core` CI workflow.
+    // MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE=1 keeps the source path even without a
+    // submodule (and is set by the artifact-producing CI).
     if (!vendored) {
-      // Build deferred (CLAUDE.md §8 M1 / §12): no vendored source and no
-      // prebuilt wired yet. Skip the native build so analyze, ffigen, and the
-      // example app stay usable; any FFI call into the core fails at runtime
-      // until the build runs. Vendor the source once, pinned to
-      // MBGL_CORE_VERSION:
-      //   git submodule add https://github.com/maplibre/maplibre-native.git \
-      //       packages/maplibre_flutter_core/third_party/maplibre-native
-      //   ( cd packages/maplibre_flutter_core/third_party/maplibre-native \
-      //     && git checkout "$(cat ../../MBGL_CORE_VERSION)" \
-      //     && git submodule update --init --recursive )
+      if (!buildFromSource && await _tryPrebuilt(input, output, logger)) {
+        return;
+      }
       logger.warning(
-        'maplibre_flutter_core: mbgl-core not vendored at ${submodule.path}; '
-        'skipping native build (deferred — see hook comments, CLAUDE.md §8 M1).',
+        'maplibre_flutter_core: mbgl-core not vendored at ${submodule.path} and '
+        'no prebuilt binary available; skipping the native build (FFI calls into '
+        'the core will fail at runtime). Vendor the source once, pinned to '
+        'MBGL_CORE_VERSION:\n'
+        '  git submodule update --init --recursive',
       );
       return;
     }
@@ -94,4 +98,76 @@ void main(List<String> args) async {
       src.resolve('CMakeLists.txt'),
     ]);
   });
+}
+
+/// GitHub release that hosts the prebuilt core binaries, keyed by package
+/// version (published by the `build-core` CI workflow).
+const _releaseBaseUrl =
+    'https://github.com/Mankeli-Software/maplibre_flutter/releases/download';
+
+/// Tries to download + register a prebuilt core binary for the target os/arch.
+/// Returns true if a prebuilt was used; false (or on any error) to fall back to
+/// a source build. Integrity rests on HTTPS to the trusted release host.
+Future<bool> _tryPrebuilt(
+  BuildInput input,
+  BuildOutputBuilder output,
+  Logger logger,
+) async {
+  try {
+    final version = _packageVersion(input.packageRoot);
+    if (version == null) return false;
+    final os = input.config.code.targetOS;
+    final arch = input.config.code.targetArchitecture;
+    final libName = os.dylibFileName(input.packageName);
+    final asset = '${os.name}-${arch.name}-$libName';
+    final url = Uri.parse(
+      '$_releaseBaseUrl/maplibre_flutter_core-v$version/$asset',
+    );
+    final dest = File.fromUri(input.outputDirectory.resolve(libName));
+    if (!await _download(url, dest)) return false;
+
+    output.assets.code.add(
+      CodeAsset(
+        package: input.packageName,
+        name: 'src/${input.packageName}_bindings_generated.dart',
+        linkMode: DynamicLoadingBundled(),
+        file: dest.uri,
+      ),
+    );
+    logger.info('maplibre_flutter_core: using prebuilt binary $url');
+    return true;
+  } catch (e) {
+    logger.info(
+      'maplibre_flutter_core: no prebuilt ($e); building from source.',
+    );
+    return false;
+  }
+}
+
+/// GETs [url] into [dest] (following redirects). Returns false on a non-200.
+Future<bool> _download(Uri url, File dest) async {
+  final client = HttpClient();
+  try {
+    final response = await (await client.getUrl(url)).close();
+    if (response.statusCode != 200) {
+      await response.drain<void>();
+      return false;
+    }
+    await dest.parent.create(recursive: true);
+    await response.pipe(dest.openWrite());
+    return true;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Reads `version:` from the package's pubspec.yaml.
+String? _packageVersion(Uri packageRoot) {
+  final pubspec = File.fromUri(packageRoot.resolve('pubspec.yaml'));
+  if (!pubspec.existsSync()) return null;
+  for (final line in pubspec.readAsLinesSync()) {
+    final m = RegExp(r'^version:\s*(\S+)').firstMatch(line);
+    if (m != null) return m.group(1);
+  }
+  return null;
 }
