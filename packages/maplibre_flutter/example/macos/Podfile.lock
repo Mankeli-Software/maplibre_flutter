@@ -1,0 +1,22 @@
+PODS:
+  - FlutterMacOS (1.0.0)
+  - maplibre_flutter_macos (0.0.2):
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - FlutterMacOS (from `Flutter/ephemeral`)
+  - maplibre_flutter_macos (from `Flutter/ephemeral/.symlinks/plugins/maplibre_flutter_macos/macos`)
+
+EXTERNAL SOURCES:
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+  maplibre_flutter_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/maplibre_flutter_macos/macos
+
+SPEC CHECKSUMS:
+  FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
+  maplibre_flutter_macos: a0a6877dab07fbea74a12414ca1448eaa9f2c121
+
+PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
+
+COCOAPODS: 1.16.2
