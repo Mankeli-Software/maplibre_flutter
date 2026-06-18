@@ -1,6 +1,7 @@
-# Quality gate for the maplibre_flutter workspace. Currently exercises the
-# macOS desktop tier end to end (the implemented platform); Android/iOS/Linux/
-# Windows runners are added as those platforms come online (CLAUDE.md §7 layer 6).
+# Quality gate for the maplibre_flutter workspace. Exercises the macOS desktop
+# tier and the Web tier end to end (the implemented platforms); Android/iOS/
+# Linux/Windows runners are added as those platforms come online (CLAUDE.md §7
+# layer 6).
 name: CI
 
 # DISABLED: automatic triggers are commented out so NOTHING runs on GitHub yet
@@ -56,3 +57,38 @@ jobs:
         run: |
           dart run tool/ffigen.dart
           git diff --exit-code lib/src/maplibre_flutter_core_bindings_generated.dart
+
+  # Web tier: pure Dart + maplibre-gl-js (no native toolchain, no submodule),
+  # so it runs on the cheapest runner. Builds the example for the web and runs
+  # the browser tests + the real-browser integration test.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # no submodules — the web tier has no native code
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable # must satisfy the pubspec floor (Flutter >= 3.41)
+
+      - run: flutter pub get
+
+      # Compile gate: the whole web tier (js_interop + package:web + dart:ui_web)
+      # must build.
+      - run: flutter build web
+        working-directory: packages/maplibre_flutter/example
+
+      # Browser unit tests (flutter test --platform chrome).
+      - run: dart run melos run test:web --no-select
+
+      # End-to-end: a real maplibre-gl-js map in headless Chrome (CLAUDE.md §7
+      # layer 5). Needs a chromedriver on :4444.
+      - uses: nanasess/setup-chromedriver@v2
+      - name: Web integration test (headless Chrome)
+        working-directory: packages/maplibre_flutter/example
+        run: |
+          chromedriver --port=4444 &
+          sleep 2
+          flutter drive \
+            --driver=test_driver/integration_test.dart \
+            --target=integration_test/web_map_test.dart \
+            -d web-server --browser-name=chrome --headless
