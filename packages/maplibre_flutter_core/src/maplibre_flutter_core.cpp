@@ -18,8 +18,10 @@
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/map/map_options.hpp>
+#include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/resource_options.hpp>
 #include <mbgl/style/style.hpp>
+#include <mbgl/util/client_options.hpp>
 #include <mbgl/util/geo.hpp>
 #include <mbgl/util/image.hpp>
 #include <mbgl/util/run_loop.hpp>
@@ -28,6 +30,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -255,6 +258,32 @@ void updateCameraCache(MblMap *m) {
   if (cam.pitch) m->camera.pitch = *cam.pitch;
 }
 
+// Cap the desktop core's online tile-request concurrency. The non-Apple core uses
+// the curl HTTP source, which multiplexes mbgl's default 20 concurrent requests
+// onto one HTTP/2 connection; community tile servers (demotiles, OpenFreeMap)
+// answer that burst with HTTP/2 ENHANCE_YOUR_CALM and drop tiles. A lower cap
+// keeps tile loading well-behaved at a small cost to cold-load speed. The Network
+// OnlineFileSource is shared by id (baseURL|apiKey|cachePath|ctx), so requesting
+// it with the same ResourceOptions::Default() the render-thread Map uses returns
+// that very instance. Tunable via MAPLIBRE_MAX_CONCURRENT_REQUESTS (default 6).
+// Apple uses the NSURLSession HTTP source and doesn't hit this, so it's a no-op.
+void capDesktopRequestConcurrency() {
+#if !defined(__APPLE__)
+  uint32_t maxRequests = 6;
+  if (const char *env = std::getenv("MAPLIBRE_MAX_CONCURRENT_REQUESTS")) {
+    const int parsed = std::atoi(env);
+    if (parsed > 0) {
+      maxRequests = static_cast<uint32_t>(parsed);
+    }
+  }
+  if (auto fs = mbgl::FileSourceManager::get()->getFileSource(
+          mbgl::FileSourceType::Network, mbgl::ResourceOptions::Default(),
+          mbgl::ClientOptions())) {
+    fs->setProperty(mbgl::MAX_CONCURRENT_REQUESTS_KEY, maxRequests);
+  }
+#endif
+}
+
 void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                       float pixelRatio, std::string styleUri) {
   mbgl::util::RunLoop loop;
@@ -268,6 +297,7 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
 
   m->frontend = &frontend;
   m->map = &map;
+  capDesktopRequestConcurrency();
   if (!styleUri.empty()) {
     map.getStyle().loadURL(styleUri);
   }
@@ -384,6 +414,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
 
   m->frontend = &frontend;
   m->map = &map;
+  capDesktopRequestConcurrency();
   if (!styleUri.empty()) {
     map.getStyle().loadURL(styleUri);
   }
