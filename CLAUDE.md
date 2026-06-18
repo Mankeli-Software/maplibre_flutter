@@ -86,10 +86,20 @@ is scaffolded vs. still TODO:
     arc live in the shared desktop tier (`maplibre_flutter`). Verified on device: rendering solid,
     smooth gestures/zoom/fly-to, stable when idle. Core **distribution** (prebuilt artifacts + CI)
     is the next focus, on `feat/core-distribution`.
-  - **Windows / Linux / Web** native sides are still stubs — `createMap()` throws
-    `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
-    Windows/Linux will reuse `maplibre_flutter_core`'s `mbgl-core` integration with a
-    platform-specific surface.
+  - **Linux — core GL render verified; GTK present written, not yet run on hardware.**
+    `maplibre_flutter_core` has an **OpenGL ES3 + EGL arm** parallel to the macOS Metal arm
+    (CMake split by platform; the Metal code is guarded behind `__APPLE__`; `mbl_map_copy_frame`
+    is pixel-format-aware, BGRA/RGBA). The Linux GL core **builds and renders a correct demotiles
+    frame headless under Mesa software GL (llvmpipe) in Docker** — verified on the macOS dev
+    machine via `packages/maplibre_flutter_core/docker/` (Dockerfile + run-render-test.sh + the
+    `MAPLIBRE_FLUTTER_BUILD_HARNESS` render-to-PNG harness). `maplibre_flutter_linux` is hybrid: a
+    GTK plugin presents frames through an `FlPixelBufferTexture` (CPU pixel buffer; zero-copy
+    `FlTextureGL` later), controller mirrors macOS minus IOSurface. **Not yet run on real Linux
+    hardware** — `flutter run -d linux` (present + interaction) is the remaining step. On
+    `feat/desktop-linux-gl`.
+  - **Windows / Web** native sides are still stubs — `createMap()` throws `UnimplementedError`;
+    those packages declare only `dartPluginClass` (web: `pluginClass`). Windows will reuse the same
+    GL arm via **ANGLE** (EGL-on-D3D) + a `FlutterDesktopPixelBufferTexture`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -613,5 +623,30 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   on GitHub until the cost is reviewed; re-enable by uncommenting the `push`/`pull_request`/`tags`
   blocks (marked DISABLED in each file).** Verified: analyze 10/10; `test:native` source-builds and
   passes (fallback intact). The workflows run only on GitHub (not locally executable).
+
+- **2026-06-18 — Linux desktop: OpenGL/EGL core arm + GTK plugin (§8 step 3, part 2; on
+  `feat/desktop-linux-gl`, not yet merged).** Added a GL (ES3 + EGL) arm to `maplibre_flutter_core`
+  parallel to the macOS Metal arm. Key CMake finding: on non-Apple there's **no bazel/SDK problem**
+  (that's Darwin-only), but `CORE_ONLY=OFF` drags in glfw + the unconditional `test`/`benchmark`/
+  `render-test` subdirs — so we keep **`CORE_ONLY=ON` on Linux too** (mbgl's root CMake `return()`s
+  early) and **hand-attach** the default platform + `gl/headless_backend` + `linux/headless_backend_egl`
+  + `gl_functions` + libuv/curl/png/jpeg/webp/ICU, mirroring `linux.cmake`. `cmake/opengl.cmake`
+  (included before the `CORE_ONLY return()`, line ~997) compiles the GL renderer. The Metal
+  zero-copy code is guarded behind `__APPLE__`; off-Apple `mbl_map_set_zero_copy`/`current_iosurface`
+  are no-ops and the CPU `mbl_map_copy_frame` path is used. **Present:** GL has **no public texture
+  handle** (unlike Metal's `getMetalTexture()`), so Linux uses a **CPU pixel-buffer**
+  `FlPixelBufferTexture` (RGBA — added `mbl_map_set_pixel_format_bgra`, BGRA for macOS); zero-copy
+  `FlTextureGL` (shared GL context — the §8 "biggest risk") is deferred. `flyCameraAt` moved to the
+  shared platform interface (macOS + Linux + Windows share it).
+  - **Mac-side verification via Docker (key enabler):** mbgl's EGL **pbuffer/surfaceless** backend
+    runs under **Mesa llvmpipe** in a headless container, so the Linux GL core was built + rendered
+    (a correct demotiles PNG, right-side-up, correct colours) **on the macOS dev machine before any
+    Linux hardware**. `packages/maplibre_flutter_core/docker/` holds the Dockerfile + run script; a
+    CI Linux job can reuse them. Verified: macOS analyze 10/10 + Flutter/native tests green (Metal
+    path unchanged); Linux GL core builds + renders in Docker.
+  - **NOT yet verified:** the GTK present (`FlPixelBufferTexture`) + interaction on real Linux —
+    `flutter run -d linux` is pending hardware. The GTK plugin/controller were written on macOS
+    (unbuildable here). Pixel-format/flip confirmed correct via the Docker PNG (the gotchas the
+    plan flagged).
 
 _Append new decisions here with date and rationale._
