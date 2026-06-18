@@ -1,0 +1,59 @@
+# Builds the prebuilt mbgl-core shim binaries that app consumers download (so
+# they don't compile mbgl-core). Triggered by a `maplibre_flutter_core-v<version>`
+# tag; uploads per-(os,arch) dylibs to that release. The asset names match what
+# hook/build.dart's _tryPrebuilt() requests: `<os>-<arch>-<dylibFileName>`.
+# Linux/Windows arms are added when those platforms land. (CLAUDE.md §12.)
+name: build-core
+
+# DISABLED: the release-tag trigger is commented out so a `maplibre_flutter_core-v*`
+# tag does NOT auto-build/upload core binaries yet (CI cost is being reviewed).
+# Only manual `workflow_dispatch` is active. To enable, uncomment the push/tags block.
+on:
+  # push:
+  #   tags: ['maplibre_flutter_core-v*']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - { osxarch: arm64, assetarch: arm64 }
+          - { osxarch: x86_64, assetarch: x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - run: brew install cmake ninja ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-buildcore-${{ matrix.assetarch }}-${{ hashFiles('packages/maplibre_flutter_core/MBGL_CORE_VERSION') }}
+          restore-keys: ccache-buildcore-${{ matrix.assetarch }}-
+      - run: |
+          ccache --set-config=hash_dir=false
+          ccache --set-config=max_size=3G
+
+      - name: Build core dylib
+        working-directory: packages/maplibre_flutter_core
+        run: |
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.osxarch }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_OBJC_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --target maplibre_flutter_core
+          mkdir -p artifacts
+          cp build/libmaplibre_flutter_core.dylib \
+            "artifacts/macos-${{ matrix.assetarch }}-libmaplibre_flutter_core.dylib"
+
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/maplibre_flutter_core/artifacts/macos-${{ matrix.assetarch }}-libmaplibre_flutter_core.dylib
