@@ -16,6 +16,10 @@ dependencies:
   flutter_web_plugins:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
+  # DOM bindings for dart:js_interop (replaces dart:html, WASM-safe). The
+  # interop with maplibre-gl-js itself uses dart:js_interop / dart:ui_web, which
+  # ship with the SDK and need no dependency (CLAUDE.md §5).
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_lints: ^6.0.0
