@@ -72,9 +72,19 @@ is scaffolded vs. still TODO:
     see the MapLibre framework (Section 5b). Bindings committed at
     `lib/src/maplibre_flutter_ios_bindings.g.dart` (`tool/swiftgen.dart`). Example buttons work
     on iOS unchanged. SPM **and** CocoaPods example builds green; device frame pending a sim run.
-  - **macOS / Windows / Linux / Web** native sides are still stubs — `createMap()` throws
+  - **macOS — desktop tier done (M0–M5).** `maplibre_flutter_core` now drives `mbgl-core`
+    (vendored submodule, pinned `MBGL_CORE_VERSION`) over a C-shim + ffigen, built via
+    `native_toolchain_cmake` in `hook/build.dart`; it renders headless on a dedicated render
+    thread into BGRA. `maplibre_flutter_macos` is a hybrid Swift plugin whose `MapLibreTexture`
+    feeds those frames into a Flutter `Texture` (M5 = reused IOSurface-backed `CVPixelBufferPool`;
+    **true IOSurface-shared zero-copy still TODO**, §12 2026-06-18). Control mirrors the mobile
+    controllers over FFI (camera/style/onReady/resize); gestures live in `maplibre_flutter` (shared
+    desktop tier). `flutter run -d macos` builds + launches clean. Fly-to animation + core
+    distribution (prebuilt artifacts + CI) land on their own branches.
+  - **Windows / Linux / Web** native sides are still stubs — `createMap()` throws
     `UnimplementedError`; those packages declare only `dartPluginClass` (web: `pluginClass`).
-    No `mbgl-core` submodule yet; the core shim is still the template `sum`/`sum_long_running`.
+    Windows/Linux will reuse `maplibre_flutter_core`'s `mbgl-core` integration with a
+    platform-specific surface.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -522,5 +532,24 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   at build time, nothing to commit. Verified: `melos analyze`(`--fatal-infos`)/`test`/`format`
   green; example builds on the simulator via **both** SPM and CocoaPods. Device-sim frame + button
   behaviour still need a manual run.
+
+- **2026-06-18 — macOS desktop tier (M0–M5) merged to main (§8 step 3, part 1).** mbgl-core via
+  CMake-in-build-hook (`native_toolchain_cmake`) + C-shim + ffigen in `maplibre_flutter_core`;
+  a dedicated render thread renders headless into BGRA; `maplibre_flutter_macos` is a hybrid Swift
+  plugin feeding frames into a Flutter `Texture`; control mirrors the mobile controllers over FFI;
+  gestures shared in Dart (`maplibre_flutter`). Verified: `flutter run -d macos` builds + launches
+  clean, no runtime errors. Decisions reaffirmed during the build: render via `HeadlessFrontend`
+  (Static mode — `renderFrame()`/`readStillImage()`, not the Static-only `render()`); a **Continuous
+  render loop was tried and reverted twice** (it produced blank/partial frames — `invalidateOnUpdate`
+  suppressed tile-load repaints), so animation is Dart-stepped on the working Static render; keep
+  `code_assets ^1.0.0` / `hooks ^1.0.0` (do not bump — breaks the `objective_c <9.4.1` cap chain);
+  macOS sandbox needs `com.apple.security.network.client`.
+  - **TODO — true zero-copy deferred.** M5 ships a reused **IOSurface-backed `CVPixelBufferPool`**
+    (no per-frame alloc, no tearing), but `copyPixelBuffer` still **CPU-copies** the frame out of
+    the core via `copyFrameFn`. True zero-copy = give the core one IOSurface-backed Metal texture
+    and have its `RendererBackend` draw straight into it (no readback), then present that surface
+    through the Metal `FlutterTexture` path. Marked at `MapLibreTexture.swift` (`TODO(zero-copy)`).
+    Revisit before/with the Windows (ANGLE) + Linux (`FlTextureGL`) surfaces, which share the same
+    backend question.
 
 _Append new decisions here with date and rationale._
