@@ -53,6 +53,13 @@ struct MblMap {
   mbgl::HeadlessFrontend *frontend = nullptr;
   mbgl::Map *map = nullptr;
 
+  // Render-thread-only: set by commands that mutate the map (camera/style/size)
+  // instead of rendering inline, so the loop can drain a burst of commands and
+  // render once at the latest state. Coalescing means a fast camera animation
+  // (or gesture stream) drops stale intermediate frames rather than rendering —
+  // and falling behind on — every one.
+  bool renderRequested = false;
+
   // Construction handshake (create() returns once the map is built).
   std::mutex startMutex;
   std::condition_variable startCv;
@@ -160,17 +167,33 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
   renderNow(m); // initial frame
 
   for (;;) {
-    std::function<void()> cmd;
     {
       std::unique_lock<std::mutex> lk(m->queueMutex);
       m->queueCv.wait(lk, [m] { return m->stop || !m->queue.empty(); });
       if (m->stop && m->queue.empty()) {
         break;
       }
-      cmd = std::move(m->queue.front());
-      m->queue.pop_front();
     }
-    cmd();
+    // Drain every command currently queued before rendering. A burst of camera
+    // updates thus applies all the (cheap) jumpTo/scaleBy mutations and then
+    // renders a single frame at the latest state — coalescing instead of
+    // rendering each intermediate camera and falling behind.
+    for (;;) {
+      std::function<void()> cmd;
+      {
+        std::lock_guard<std::mutex> lk(m->queueMutex);
+        if (m->queue.empty()) {
+          break;
+        }
+        cmd = std::move(m->queue.front());
+        m->queue.pop_front();
+      }
+      cmd();
+    }
+    if (m->renderRequested) {
+      m->renderRequested = false;
+      renderNow(m);
+    }
   }
 
   m->map = nullptr;
@@ -203,7 +226,7 @@ void mbl_map_set_style(MblMap *m, const char *style_uri) {
   const std::string style(style_uri);
   m->post([m, style] {
     m->map->getStyle().loadURL(style);
-    renderNow(m);
+    m->renderRequested = true;
   });
 }
 
@@ -222,7 +245,7 @@ void mbl_map_set_camera(MblMap *m, double lat, double lng, double zoom,
                        .withZoom(zoom)
                        .withBearing(bearing)
                        .withPitch(pitch));
-    renderNow(m);
+    m->renderRequested = true;
   });
 }
 
@@ -247,7 +270,7 @@ void mbl_map_resize(MblMap *m, uint32_t width, uint32_t height) {
   m->post([m, width, height] {
     m->frontend->setSize(mbgl::Size{width, height});
     m->map->setSize(mbgl::Size{width, height});
-    renderNow(m);
+    m->renderRequested = true;
   });
 }
 
@@ -258,7 +281,7 @@ void mbl_map_move_by(MblMap *m, double dx, double dy) {
   m->post([m, dx, dy] {
     m->map->moveBy(mbgl::ScreenCoordinate{dx, dy});
     updateCameraCache(m);
-    renderNow(m);
+    m->renderRequested = true;
   });
 }
 
@@ -270,7 +293,7 @@ void mbl_map_scale_by(MblMap *m, double scale, double anchor_x,
   m->post([m, scale, anchor_x, anchor_y] {
     m->map->scaleBy(scale, mbgl::ScreenCoordinate{anchor_x, anchor_y});
     updateCameraCache(m);
-    renderNow(m);
+    m->renderRequested = true;
   });
 }
 
