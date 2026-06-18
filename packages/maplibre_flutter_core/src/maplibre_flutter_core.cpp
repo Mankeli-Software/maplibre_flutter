@@ -12,7 +12,11 @@
 // the latest frame for the present path.
 #include "maplibre_flutter_core.h"
 
+#include "maplibre_flutter_core_metal.h"
+
+#include <mbgl/gfx/backend_scope.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
+#include <mbgl/mtl/headless_backend.hpp>
 #include <mbgl/map/camera.hpp>
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
@@ -80,6 +84,16 @@ struct MblMap {
   MblFrameCallback frameCb = nullptr;
   void *frameCbUser = nullptr;
 
+  // Zero-copy present (macOS Metal). When `zeroCopy` is set, the render thread
+  // renders into mbgl's Metal texture and GPU-blits it into an IOSurface via
+  // `blitter` instead of the CPU readback path; `currentSurface` is the latest
+  // IOSurface. `blitter`/`currentSurface` are touched only on the render thread,
+  // except `currentSurface` is also read under `frameMutex` by the IOSurface
+  // getter. `zeroCopy` is flipped via a posted command (so it changes on-thread).
+  bool zeroCopy = false;
+  MblMetalBlitter *blitter = nullptr;
+  IOSurfaceRef currentSurface = nullptr;
+
   void post(std::function<void()> fn) {
     {
       std::lock_guard<std::mutex> lk(queueMutex);
@@ -91,12 +105,9 @@ struct MblMap {
 
 namespace {
 
-void publishFrame(MblMap *m, mbgl::PremultipliedImage img) {
-  {
-    std::lock_guard<std::mutex> lk(m->frameMutex);
-    m->frame = std::move(img);
-    ++m->frameCount;
-  }
+// Render thread. Notifies waiters and invokes the frame-ready callback after a
+// new frame (CPU image or zero-copy IOSurface) has been published.
+void announceFrame(MblMap *m) {
   m->frameCv.notify_all();
   MblFrameCallback cb = nullptr;
   void *user = nullptr;
@@ -110,6 +121,71 @@ void publishFrame(MblMap *m, mbgl::PremultipliedImage img) {
   }
 }
 
+void publishFrame(MblMap *m, mbgl::PremultipliedImage img) {
+  {
+    std::lock_guard<std::mutex> lk(m->frameMutex);
+    m->frame = std::move(img);
+    ++m->frameCount;
+  }
+  announceFrame(m);
+}
+
+// Render thread only. CPU readback path: render and copy the frame back to a
+// CPU image (the default, and the fallback when zero-copy is unavailable).
+void renderCpu(MblMap *m) {
+  auto result = m->frontend->render(*m->map);
+  publishFrame(m, std::move(result.image));
+}
+
+// Called (on a Metal-owned thread) when a zero-copy blit's GPU work completes:
+// publish the IOSurface as the current frame and announce it. The map outlives
+// any in-flight blit — destroy drains the blitter on the render thread before
+// the map is freed.
+void blitDone(void *user, IOSurfaceRef surface) {
+  auto *m = static_cast<MblMap *>(user);
+  {
+    std::lock_guard<std::mutex> lk(m->frameMutex);
+    m->currentSurface = surface;
+    ++m->frameCount;
+  }
+  announceFrame(m);
+}
+
+// Render thread only. Zero-copy path (macOS Metal): render into mbgl's offscreen
+// Metal texture WITHOUT the GPU->CPU readback (mirrors HeadlessFrontend::render
+// minus readStillImage — same renderStill, so frames stay complete), then GPU-
+// blit that texture into an IOSurface on mbgl's own command queue. The blit is
+// async (no CPU stall); blitDone publishes the frame on GPU completion. Returns
+// false if the blit could not be committed, so the caller can fall back to CPU.
+bool renderZeroCopyInner(MblMap *m) {
+  {
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    bool done = false;
+    std::exception_ptr error;
+    m->map->renderStill([&](const std::exception_ptr &e) {
+      if (e) {
+        error = e;
+      } else {
+        done = true;
+      }
+    });
+    while (!done && !error) {
+      mbgl::util::RunLoop::Get()->runOnce();
+    }
+    if (error) {
+      std::rethrow_exception(error);
+    }
+  }
+  // The concrete backend is the mtl HeadlessBackend; getMetalTexture() exposes
+  // the texture renderStill just drew into, and getCommandQueue() its queue.
+  auto *backend =
+      static_cast<mbgl::mtl::RendererBackend *>(m->frontend->getBackend());
+  auto *headless = static_cast<mbgl::mtl::HeadlessBackend *>(backend);
+  return mbl_metal_blitter_blit(
+             m->blitter, (void *)headless->getMetalTexture(),
+             (void *)backend->getCommandQueue().get(), &blitDone, m) != 0;
+}
+
 // Render thread only. Guards against mbgl throwing (e.g. a style/tile load
 // failure surfaces as std::runtime_error during render) so it logs instead of
 // terminating the host process.
@@ -118,8 +194,15 @@ void renderNow(MblMap *m) {
     return;
   }
   try {
-    auto result = m->frontend->render(*m->map);
-    publishFrame(m, std::move(result.image));
+    if (m->zeroCopy && m->blitter != nullptr) {
+      if (renderZeroCopyInner(m)) {
+        return;
+      }
+      fprintf(stderr, "maplibre_flutter_core: zero-copy blit failed; falling "
+                      "back to CPU readback.\n");
+      m->zeroCopy = false;
+    }
+    renderCpu(m);
   } catch (const std::exception &e) {
     fprintf(stderr, "maplibre_flutter_core: render failed: %s\n", e.what());
   } catch (...) {
@@ -198,6 +281,10 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
 
   m->map = nullptr;
   m->frontend = nullptr;
+  if (m->blitter != nullptr) {
+    mbl_metal_blitter_destroy(m->blitter);
+    m->blitter = nullptr;
+  }
   // map / frontend / loop are destroyed here, on the render thread.
 }
 
@@ -353,6 +440,28 @@ int mbl_map_copy_frame(MblMap *m, uint8_t *dst, size_t dst_capacity,
     dst[i * 4 + 3] = src[i * 4 + 3]; // A
   }
   return 1;
+}
+
+void mbl_map_set_zero_copy(MblMap *m, int enabled) {
+  if (m == nullptr) {
+    return;
+  }
+  const bool on = enabled != 0;
+  m->post([m, on] {
+    m->zeroCopy = on;
+    if (on && m->blitter == nullptr) {
+      m->blitter = mbl_metal_blitter_create();
+    }
+    m->renderRequested = true;
+  });
+}
+
+void *mbl_map_current_iosurface(MblMap *m) {
+  if (m == nullptr) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  return (void *)m->currentSurface;
 }
 
 int mbl_map_write_png(MblMap *m, const char *path) {

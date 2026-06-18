@@ -100,6 +100,21 @@ FFI_PLUGIN_EXPORT int mbl_map_copy_frame(MblMap *map, uint8_t *dst,
                                          uint32_t *out_height,
                                          uint32_t *out_stride);
 
+// Enable (1) or disable (0) zero-copy presentation. When enabled, each render
+// copies mbgl's rendered Metal texture — on the GPU — into an IOSurface-backed
+// BGRA texture (no CPU readback or swizzle), exposed via mbl_map_current_iosurface.
+// macOS only; a no-op (and the CPU mbl_map_copy_frame path stays in use) on other
+// platforms or if the Metal blitter can't initialise. Off by default. Call before
+// or during use; takes effect on the next render.
+FFI_PLUGIN_EXPORT void mbl_map_set_zero_copy(MblMap *map, int enabled);
+
+// Return the IOSurface (as an opaque pointer; an IOSurfaceRef on macOS) backing
+// the latest zero-copy frame, or NULL if zero-copy is off or no frame exists yet.
+// The macOS plugin wraps it in a CVPixelBuffer for the texture with no copy. The
+// surface is owned by the map and reused across frames (a small ring), so read it
+// promptly from the present path. Safe to call from the raster thread.
+FFI_PLUGIN_EXPORT void *mbl_map_current_iosurface(MblMap *map);
+
 // Debug/verification: encode the latest frame to a PNG file at `path` using
 // mbgl's own PNG encoder. Returns 1 on success, 0 if no frame or the write failed.
 FFI_PLUGIN_EXPORT int mbl_map_write_png(MblMap *map, const char *path);

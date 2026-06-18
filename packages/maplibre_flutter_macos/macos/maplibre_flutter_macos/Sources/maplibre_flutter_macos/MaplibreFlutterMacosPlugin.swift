@@ -48,9 +48,13 @@ public class MaplibreFlutterMacosPlugin: NSObject, FlutterPlugin {
             details: nil))
         return
       }
+      // Optional: the zero-copy IOSurface accessor. Absent/0 → CPU readback only.
+      let iosurfaceAddr =
+        (args?["currentIOSurfaceFn"] as? NSNumber)?.int64Value ?? 0
       let texture = MapLibreTexture(
         mapHandle: mapHandle, copyFrameAddress: Int(copyFrameAddr),
-        setFrameCallbackAddress: Int(setCallbackAddr), registry: textures)
+        setFrameCallbackAddress: Int(setCallbackAddr),
+        currentIOSurfaceAddress: Int(iosurfaceAddr), registry: textures)
       let textureId = texture.register()
       registered[textureId] = texture
       result(NSNumber(value: textureId))

@@ -60,6 +60,12 @@ class MapLibreFlutterMacosController
       pixelRatio: 1,
       styleUri: options.styleUri,
     );
+    // Zero-copy present (GPU blit into an IOSurface) is on by default; flip it
+    // off for an A/B against the CPU-readback path with
+    // `--dart-define=MAPLIBRE_ZEROCOPY=false`.
+    coreMap.setZeroCopy(
+      const bool.fromEnvironment('MAPLIBRE_ZEROCOPY', defaultValue: true),
+    );
     coreMap.setCamera(
       latitude: camera.center.latitude,
       longitude: camera.center.longitude,
@@ -74,6 +80,8 @@ class MapLibreFlutterMacosController
           'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
           'setFrameCallbackFn':
               core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+          'currentIOSurfaceFn':
+              core.MapLibreCoreMap.currentIOSurfaceFunctionAddress,
         });
 
     return MapLibreFlutterMacosController._(coreMap, textureId ?? -1);
