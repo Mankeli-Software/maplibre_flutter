@@ -65,14 +65,26 @@ void main(List<String> args) async {
     }
 
     // Build the shim target; it pulls in mbgl-core. The CMakeLists wires
-    // CORE_ONLY + the Metal headless platform attach and uses ccache when
+    // CORE_ONLY + the per-platform headless backend attach and uses ccache when
     // present, so repeat builds (and CI) are cheap after the first.
     final src = packageRoot.resolve('src/');
+    final targetOS = input.config.code.targetOS;
+
+    // Windows: mbgl-core's deps (ANGLE for EGL/GLES, curl, libpng/jpeg/webp, libuv,
+    // dlfcn-win32) come from vcpkg. Provision them and hand CMake the vcpkg toolchain
+    // file (CLAUDE.md §9). macOS uses system frameworks and Linux uses pkg-config /
+    // system packages, so this provisioning is Windows-only.
+    final defines = <String, String?>{};
+    if (targetOS == OS.windows) {
+      await _provisionWindowsVcpkg(input, src, logger, defines);
+    }
+
     final builder = CMakeBuilder.create(
       name: input.packageName,
       sourceDir: src,
       generator: Generator.ninja,
       targets: ['maplibre_flutter_core'],
+      defines: defines,
     );
     await builder.run(input: input, output: output, logger: logger);
 
@@ -100,6 +112,103 @@ void main(List<String> args) async {
       src.resolve('CMakeLists.txt'),
     ]);
   });
+}
+
+/// Maps a Dart [Architecture] to the vcpkg Windows triplet name (matches the
+/// custom overlay triplets under src/vcpkg-triplets/).
+String _windowsTriplet(Architecture arch) => switch (arch) {
+  Architecture.x64 => 'x64-windows',
+  Architecture.arm64 => 'arm64-windows',
+  _ => throw UnsupportedError(
+    'maplibre_flutter_core: unsupported Windows architecture: $arch',
+  ),
+};
+
+/// Resolves the vcpkg root: `$VCPKG_ROOT` if set, else `C:\vcpkg`.
+Uri _vcpkgRoot() {
+  final env = Platform.environment['VCPKG_ROOT'];
+  if (env != null && env.trim().isNotEmpty) {
+    return Directory(env.trim()).uri;
+  }
+  return Directory(r'C:\vcpkg').uri;
+}
+
+/// Ensures mbgl-core's native dependencies are installed via vcpkg (classic mode)
+/// and populates [defines] with the vcpkg toolchain file + triplet so the CMake
+/// configure resolves them. Idempotent: the (slow) install is skipped once ANGLE's
+/// vcpkg config is present. The ANGLE runtime DLLs are bundled beside the app by
+/// maplibre_flutter_windows's windows/CMakeLists.txt (bundled_libraries).
+Future<void> _provisionWindowsVcpkg(
+  BuildInput input,
+  Uri src,
+  Logger logger,
+  Map<String, String?> defines,
+) async {
+  final vcpkgRoot = _vcpkgRoot();
+  final vcpkgExe = File.fromUri(vcpkgRoot.resolve('vcpkg.exe'));
+  if (!vcpkgExe.existsSync()) {
+    throw Exception(
+      'maplibre_flutter_core: vcpkg not found at ${vcpkgExe.path}. Install it and '
+      'set VCPKG_ROOT (git clone https://github.com/microsoft/vcpkg C:\\vcpkg && '
+      'C:\\vcpkg\\bootstrap-vcpkg.bat).',
+    );
+  }
+  final triplet = _windowsTriplet(input.config.code.targetArchitecture);
+  final overlayTriplets = src.resolve('vcpkg-triplets/');
+  final toolchain = vcpkgRoot.resolve('scripts/buildsystems/vcpkg.cmake');
+
+  // `egl` pulls in `angle` (the EGL/GLES implementation, which provides the
+  // unofficial-angle CMake config our CMakeLists find_package()s); the rest mirror
+  // mbgl's Get-VendorPackages.ps1. ICU is the vendored builtin (vendor/icu.cmake),
+  // so it is intentionally not installed here.
+  final angleConfig = File.fromUri(
+    vcpkgRoot.resolve(
+      'installed/$triplet/share/unofficial-angle/unofficial-angle-config.cmake',
+    ),
+  );
+  if (!angleConfig.existsSync()) {
+    const ports = [
+      'curl',
+      'dlfcn-win32',
+      'libuv',
+      'libjpeg-turbo',
+      'libpng',
+      'libwebp',
+      'egl',
+      'opengl-registry',
+    ];
+    logger.info(
+      'maplibre_flutter_core: installing vcpkg deps ($triplet) — the first build '
+      'compiles ANGLE and can take many minutes: ${ports.join(' ')}',
+    );
+    final result = await Process.run(vcpkgExe.path, [
+      'install',
+      ...ports,
+      '--triplet',
+      triplet,
+      '--overlay-triplets=${overlayTriplets.toFilePath()}',
+      '--clean-after-build',
+      '--disable-metrics',
+    ], workingDirectory: vcpkgRoot.toFilePath());
+    if (result.exitCode != 0) {
+      logger.severe(result.stdout.toString());
+      logger.severe(result.stderr.toString());
+      throw Exception(
+        'maplibre_flutter_core: vcpkg install failed (exit ${result.exitCode}).',
+      );
+    }
+  } else {
+    logger.info(
+      'maplibre_flutter_core: vcpkg deps already present ($triplet); skipping install.',
+    );
+  }
+
+  defines['CMAKE_TOOLCHAIN_FILE'] = toolchain.toFilePath();
+  defines['VCPKG_TARGET_TRIPLET'] = triplet;
+  defines['VCPKG_MANIFEST_MODE'] = 'OFF';
+  // (VCPKG_OVERLAY_TRIPLETS is only needed at `vcpkg install` time, above — the
+  // classic-mode toolchain reads the already-installed tree at configure, so passing
+  // it to CMake just warns "manually-specified variable not used".)
 }
 
 /// GitHub release that hosts the prebuilt core binaries, keyed by package
