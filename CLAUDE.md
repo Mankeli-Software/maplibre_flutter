@@ -877,4 +877,53 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     Linux dmabuf); a visual `flutter run -d windows` frame check (integration test already renders);
     arm64-windows (triplet + path exist, untested); prebuilt-core distribution + a Windows CI arm.
 
+- **2026-06-19 — Windows map was blank: curl's DNS resolver hangs; fixed via OS-resolver +
+  CURLOPT_RESOLVE (on `feat/desktop-windows-angle`).** The Windows tier built + the integration
+  test passed, but the GUI map rendered **blank** — because the integration test only asserts that
+  *a* frame of the right size comes back (`onReady` + camera round-trip), never that the frame has
+  map content. Root-caused with the headless `render_harness` (built standalone against the core
+  DLL, `-DMAPLIBRE_FLUTTER_BUILD_HARNESS=ON`): mbgl-core itself produced a blank frame, so the
+  present path was **not** the bug. Tracing into mbgl's curl http_file_source (temporary `fprintf`
+  instrumentation, reverted) showed: requests reach `curl_multi_add_handle`, the timer backs off
+  (0→1→…→200 ms) forever, but `handleSocket` is **never called** → curl never opens a socket → zero
+  TCP connections, zero errors, blank map. **curl's async DNS resolver never completes under our
+  libuv-driven curl multi-socket loop on Windows.** Confirmed it's *only* DNS: pre-seeding the IP
+  via `CURLOPT_RESOLVE` made curl connect → TLS (Schannel) → `GET`→`200` → tiles → the harness PNG
+  rendered the full world map (1.9 KB blank → 184 KB real). Ruled out (all verified on-device):
+  `getaddrinfo` works in-process **and** on a worker thread (curl's exact threaded-resolver
+  pattern), IPv6, SSL (curl has Schannel), the CURLSH share handle (shares nothing), `iphlpapi`
+  linkage, and our event-loop wiring (run_loop/timer/async/thread sources **match upstream
+  windows.cmake** exactly). Tried c-ares (`vcpkg curl[c-ares]`): it integrates with the loop
+  (`handleSocket` fires, resolution completes) but **fails to discover the system DNS servers** on
+  Windows ("Could not contact DNS servers"; works only with an explicit `CURLOPT_DNS_SERVERS`) — a
+  curl-8.20 ↔ c-ares-1.34 sysconfig gap (`nslookup` proves a process *can* send UDP:53 directly, so
+  not a firewall).
+  - **Fix (primary):** resolve through the **OS resolver** (`getaddrinfo` — always reflects current
+    system DNS, handles IPv4/IPv6 + network changes) and pre-seed curl's address cache via
+    `CURLOPT_RESOLVE` in mbgl's curl `http_file_source.cpp` (Windows-only `#ifdef`, no-op on
+    Linux/macOS), which makes curl skip its own (broken) resolver entirely. mbgl is a **pinned
+    vendored submodule with no patch mechanism**, so the change ships as a committed patch
+    (`packages/maplibre_flutter_core/patches/windows-dns-os-resolve.patch`) applied **idempotently
+    by the build hook** (`_applySubmodulePatches` in `hook/build.dart`: marker-presence check →
+    `git apply --ignore-whitespace` → verify marker, fail loud). Validated end-to-end: pristine
+    submodule → `flutter build windows` → hook auto-applies the patch → green.
+  - **Fix (fallback):** build curl with the **c-ares** feature (`curl[core,non-http,ssl,c-ares]` in
+    the build hook's vcpkg install, gated by `share/c-ares/c-ares-config.cmake`, `--recurse`). The
+    OS-resolver patch is the working path; c-ares matters only if `getaddrinfo` ever fails — then
+    curl falls back to c-ares which **fails fast** instead of the default threaded resolver, which
+    would **hang the request slot** (and could jam the file source on a transient DNS hiccup).
+  - **Verified on device (user-confirmed):** the map renders and is interactive (fly-to works).
+  - **General rule:** an integration test that only checks "a frame came back" does **not** prove
+    the map is visible — assert real content (or do a visual/PNG check). The §7 Windows test should
+    gain a non-blank-pixel assertion.
+  - **Known follow-ups (NOT fixed):** (1) **janky pan/zoom + fly-to** — the CPU pixel-buffer present
+    does an ANGLE D3D11 GPU→CPU readback **every frame**, and Continuous mode renders on every map
+    update, so the costly readback runs constantly; the real fix is the deferred **D3D11
+    shared-texture zero-copy** present (Static mode `--dart-define=MAPLIBRE_CONTINUOUS=false`
+    coalesces renders and is a lighter stopgap). (2) **crash on fast movement** — a native
+    **0xC0000005 access violation** under rapid rendering (logged `Invalid geometry in line layer`
+    just before; no WER dump — HKCU LocalDumps doesn't take, needs HKLM/elevation); not reproducible
+    via synthetic SendInput, so it needs a debugger (cdb/WinDbg) on a user-reproduced run to get a
+    stack. Both are present-path/stability items, separate from the (now fixed) DNS blank-map bug.
+
 _Append new decisions here with date and rationale._

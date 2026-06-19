@@ -71,19 +71,63 @@ class MapLibreFlutterWindowsController
       pitch: camera.pitch,
     );
 
-    // CPU pixel-buffer present: the core emits RGBA (the plugin's
-    // FlutterDesktopPixelBuffer is RGBA), and the native plugin reads each frame
-    // over FFI via `mbl_map_copy_frame`.
-    coreMap.setPixelFormatBgra(false);
-    final textureId = await _registrar
-        .invokeMethod<int>('registerTexture', <String, Object?>{
-          'mapHandle': coreMap.nativeAddress,
-          'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
-          'setFrameCallbackFn':
-              core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
-        });
+    // Zero-copy D3D11 present (the core blits into a shared D3D11 texture ring;
+    // the plugin presents it as a Flutter GpuSurfaceTexture via a DXGI shared
+    // handle — no CPU readback) is opt-in: --dart-define=MAPLIBRE_ZEROCOPY=true.
+    // We commit to the GPU texture only once the native presenter confirms it
+    // initialised ([isZeroCopyActive]); otherwise (or if registration fails) we
+    // fall back to the CPU PixelBufferTexture path.
+    const wantZeroCopy = bool.fromEnvironment(
+      'MAPLIBRE_ZEROCOPY',
+      defaultValue: false,
+    );
+    int? textureId;
+    if (wantZeroCopy) {
+      coreMap.setZeroCopy(true);
+      if (await _confirmZeroCopyActive(coreMap)) {
+        try {
+          textureId = await _registrar
+              .invokeMethod<int>('registerTextureGpu', <String, Object?>{
+                'mapHandle': coreMap.nativeAddress,
+                'currentD3dHandleFn':
+                    core.MapLibreCoreMap.currentD3dHandleFunctionAddress,
+                'setFrameCallbackFn':
+                    core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+              });
+        } catch (_) {
+          textureId = null;
+        }
+      }
+      if (textureId == null || textureId < 0) {
+        coreMap.setZeroCopy(false); // unavailable / failed → CPU fallback
+      }
+    }
+
+    if (textureId == null || textureId < 0) {
+      // CPU pixel-buffer present (default + zero-copy fallback): the core emits
+      // RGBA (the plugin's FlutterDesktopPixelBuffer is RGBA), and the native
+      // plugin reads each frame over FFI via `mbl_map_copy_frame`.
+      coreMap.setPixelFormatBgra(false);
+      textureId = await _registrar
+          .invokeMethod<int>('registerTexture', <String, Object?>{
+            'mapHandle': coreMap.nativeAddress,
+            'copyFrameFn': core.MapLibreCoreMap.copyFrameFunctionAddress,
+            'setFrameCallbackFn':
+                core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+          });
+    }
 
     return MapLibreFlutterWindowsController._(coreMap, textureId ?? -1);
+  }
+
+  /// Polls (up to ~1s) for the native D3D presenter to come up after
+  /// [setZeroCopy](true) is processed on the render thread.
+  static Future<bool> _confirmZeroCopyActive(core.MapLibreCoreMap coreMap) async {
+    for (var i = 0; i < 20; i++) {
+      if (coreMap.isZeroCopyActive()) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    return false;
   }
 
   /// Polls until the first frame has rendered, then completes [onReady].

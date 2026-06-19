@@ -23,7 +23,66 @@
 #include <mutex>
 #include <vector>
 
+// DIAG (temporary): crash-stack dumper for the fly-to/fast-pan access violation.
+#include <windows.h>
+#include <dbghelp.h>
+#include <cstdio>
+#include <cstring>
+
 namespace {
+
+// DIAG: walk + print the faulting thread's stack on an unhandled exception (the
+// 0xC0000005 under heavy movement). Uses dbghelp + the x64 .pdata unwind info, so
+// it works on optimized builds; mbgl frames show as maplibre_flutter_core.dll+RVA
+// (resolve via the linker .map), our plugin/runner frames resolve to names.
+LONG WINAPI MblCrashFilter(EXCEPTION_POINTERS* ep) {
+  HANDLE proc = GetCurrentProcess();
+  SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+  SymInitialize(proc, nullptr, TRUE);
+  fprintf(stderr, "[mbl-crash] code=0x%08lx addr=%p\n",
+          ep->ExceptionRecord->ExceptionCode,
+          ep->ExceptionRecord->ExceptionAddress);
+  fflush(stderr);
+  CONTEXT ctx = *ep->ContextRecord;
+  char symBuf[sizeof(SYMBOL_INFO) + 512] = {};
+  auto* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
+  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  sym->MaxNameLen = 511;
+  for (int i = 0; i < 48 && ctx.Rip != 0; i++) {
+    const DWORD64 pc = ctx.Rip;
+    HMODULE hmod = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(pc), &hmod);
+    char modPath[MAX_PATH] = "?";
+    if (hmod) GetModuleFileNameA(hmod, modPath, MAX_PATH);
+    const char* mod = strrchr(modPath, '\\');
+    mod = mod ? mod + 1 : modPath;
+    const DWORD64 rva = hmod ? (pc - reinterpret_cast<DWORD64>(hmod)) : 0;
+    DWORD64 disp = 0;
+    if (SymFromAddr(proc, pc, &disp, sym)) {
+      fprintf(stderr, "[mbl-crash] #%02d %s!%s+0x%llx (rva 0x%llx)\n", i, mod,
+              sym->Name, disp, rva);
+    } else {
+      fprintf(stderr, "[mbl-crash] #%02d %s+0x%llx\n", i, mod, rva);
+    }
+    fflush(stderr);
+    // Manual x64 unwind via in-memory .pdata (no PDB needed; reliable on /O2).
+    DWORD64 imageBase = 0;
+    PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(pc, &imageBase, nullptr);
+    if (rf == nullptr) {
+      if (ctx.Rsp == 0) break; // leaf: return addr at [Rsp]
+      ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
+      ctx.Rsp += 8;
+    } else {
+      void* handlerData = nullptr;
+      DWORD64 establisher = 0;
+      RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, pc, rf, &ctx, &handlerData,
+                       &establisher, nullptr);
+    }
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
@@ -37,6 +96,10 @@ typedef int (*MblCopyFrameFn)(void* map, uint8_t* dst, size_t cap, uint32_t* w,
 typedef void (*MblFrameCallback)(void* user);
 typedef void (*MblSetFrameCallbackFn)(void* map, MblFrameCallback cb,
                                       void* user);
+// Zero-copy: returns the latest frame's DXGI shared handle + size
+// (mbl_map_current_d3d_handle). Returns 0 if no zero-copy frame is available.
+typedef int (*MblCurrentD3dHandleFn)(void* map, void** out_handle, uint32_t* w,
+                                     uint32_t* h);
 
 int64_t ArgInt(const EncodableMap& m, const char* key) {
   auto it = m.find(EncodableValue(std::string(key)));
@@ -61,6 +124,10 @@ struct MapTexture {
   std::mutex mutex;
   std::vector<uint8_t> buffer;  // RGBA; lives until the next copy
   FlutterDesktopPixelBuffer pb{};
+  // Zero-copy (GpuSurfaceTexture) path: the D3D handle getter + the descriptor we
+  // hand back. A map uses either the pixel-buffer or the GPU-surface path, not both.
+  MblCurrentD3dHandleFn current_d3d = nullptr;
+  FlutterDesktopGpuSurfaceDescriptor gpu_desc{};
   std::unique_ptr<flutter::TextureVariant> variant;
 };
 
@@ -78,6 +145,11 @@ class MaplibreFlutterWindowsPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(
       flutter::PluginRegistrarWindows* registrar) {
+    static bool s_crashFilterInstalled = false;
+    if (!s_crashFilterInstalled) {
+      s_crashFilterInstalled = true;
+      SetUnhandledExceptionFilter(MblCrashFilter);  // DIAG: dump crash stack
+    }
     auto plugin = std::make_unique<MaplibreFlutterWindowsPlugin>(registrar);
     auto channel = std::make_unique<flutter::MethodChannel<EncodableValue>>(
         registrar->messenger(), "maplibre_flutter/windows/registrar",
@@ -156,6 +228,62 @@ class MaplibreFlutterWindowsPlugin : public flutter::Plugin {
       const int64_t id = textures_->RegisterTexture(t->variant.get());
       t->texture_id = id;  // set before wiring the callback so the first frame
                            // marks a valid id
+      tp->set_frame_callback(tp->map_handle, OnFrameReady, tp);
+      registered_[id] = std::move(t);
+      result->Success(EncodableValue(id));
+    } else if (method == "registerTextureGpu") {
+      // Zero-copy: present mbgl's frame as a Flutter GpuSurfaceTexture backed by a
+      // DXGI shared handle (the core blits into a shared D3D11 texture ring). The
+      // descriptor callback runs on the raster thread; it reads the current handle
+      // from the core (mbl_map_current_d3d_handle, by address) — no D3D/GL calls.
+      const auto* args = std::get_if<EncodableMap>(call.arguments());
+      if (args == nullptr) {
+        result->Error("bad_args", "registerTextureGpu requires a map");
+        return;
+      }
+      const int64_t map_handle = ArgInt(*args, "mapHandle");
+      const int64_t cur_fn = ArgInt(*args, "currentD3dHandleFn");
+      const int64_t set_cb_fn = ArgInt(*args, "setFrameCallbackFn");
+      if (map_handle == 0 || cur_fn == 0 || set_cb_fn == 0) {
+        result->Error("bad_args",
+                      "registerTextureGpu requires mapHandle + function addresses");
+        return;
+      }
+
+      auto t = std::make_unique<MapTexture>();
+      t->map_handle = reinterpret_cast<void*>(map_handle);
+      t->current_d3d = reinterpret_cast<MblCurrentD3dHandleFn>(cur_fn);
+      t->set_frame_callback = reinterpret_cast<MblSetFrameCallbackFn>(set_cb_fn);
+      t->registrar = textures_;
+      MapTexture* tp = t.get();
+
+      t->variant = std::make_unique<flutter::TextureVariant>(
+          flutter::GpuSurfaceTexture(
+              kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle,
+              // Runs on the raster thread when the engine pulls a frame.
+              [tp](size_t /*width*/, size_t /*height*/)
+                  -> const FlutterDesktopGpuSurfaceDescriptor* {
+                void* handle = nullptr;
+                uint32_t w = 0, h = 0;
+                if (tp->current_d3d(tp->map_handle, &handle, &w, &h) == 0 ||
+                    handle == nullptr) {
+                  return nullptr;
+                }
+                tp->gpu_desc.struct_size =
+                    sizeof(FlutterDesktopGpuSurfaceDescriptor);
+                tp->gpu_desc.handle = handle;  // owned by the core's texture ring
+                tp->gpu_desc.width = w;
+                tp->gpu_desc.height = h;
+                tp->gpu_desc.visible_width = w;
+                tp->gpu_desc.visible_height = h;
+                tp->gpu_desc.format = kFlutterDesktopPixelFormatRGBA8888;
+                tp->gpu_desc.release_callback = nullptr;
+                tp->gpu_desc.release_context = nullptr;
+                return &tp->gpu_desc;
+              }));
+
+      const int64_t id = textures_->RegisterTexture(t->variant.get());
+      t->texture_id = id;
       tp->set_frame_callback(tp->map_handle, OnFrameReady, tp);
       registered_[id] = std::move(t);
       result->Success(EncodableValue(id));

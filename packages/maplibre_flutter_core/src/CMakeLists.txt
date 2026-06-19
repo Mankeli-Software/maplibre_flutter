@@ -412,12 +412,16 @@ if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
   list(APPEND _shim_sources maplibre_flutter_core_metal.mm)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
-  # EGLImage-backed texture ring) — Linux/desktop-GL. On Windows it compiles to no-op
-  # presenter stubs (CPU pixel-buffer present only for now) so the shared non-Apple
-  # shim links; the dmabuf implementation is Linux-only (see the file's _WIN32 guard).
+  # EGLImage-backed texture ring exported as a dmabuf) — Linux/desktop-GL only.
   list(APPEND _shim_sources maplibre_flutter_core_gl.cpp)
+elseif(WIN32)
+  # maplibre_flutter_core_d3d.cpp is the Windows zero-copy present helper (GPU blit
+  # into a ring of shared D3D11 textures, published as DXGI shared handles for a
+  # Flutter GpuSurfaceTexture). The shim's Windows arm uses it in place of the
+  # GL/dmabuf presenter (which is Linux-kernel-specific).
+  list(APPEND _shim_sources maplibre_flutter_core_d3d.cpp)
 endif()
 
 add_library(maplibre_flutter_core SHARED ${_shim_sources})
@@ -440,6 +444,28 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # already found above (find_package(OpenGL REQUIRED EGL)).
   find_library(GLESV2_LIBRARY NAMES GLESv2)
   target_link_libraries(maplibre_flutter_core PRIVATE OpenGL::EGL ${GLESV2_LIBRARY})
+elseif(WIN32)
+  # The shim's D3D zero-copy present (maplibre_flutter_core_d3d.cpp) calls ANGLE
+  # EGL/GLES directly (mbgl links them PRIVATEly, so they don't propagate) plus the
+  # system D3D11/DXGI for the shared-texture ring.
+  target_link_libraries(maplibre_flutter_core PRIVATE
+    unofficial::angle::libEGL
+    unofficial::angle::libGLESv2
+    d3d11
+    dxgi)
+  # ANGLE's EGL/GLES headers come from vcpkg; mbgl links the angle targets PRIVATEly,
+  # so their include dir does not propagate to the shim — resolve it explicitly
+  # (find_path searches vcpkg's installed include dir via CMAKE_PREFIX_PATH).
+  find_path(MBL_EGL_INCLUDE_DIR EGL/egl.h REQUIRED)
+  target_include_directories(maplibre_flutter_core PRIVATE ${MBL_EGL_INCLUDE_DIR})
+  # ANGLE is linked statically (custom static triplet), so the EGL/GLES headers must
+  # declare their entry points without __declspec(dllimport) — otherwise the shim's
+  # egl*/gl* calls expect an import lib that doesn't exist. (mbgl-core defines this
+  # for its own sources; the shim is a separate target and doesn't inherit it.)
+  target_compile_definitions(maplibre_flutter_core PRIVATE KHRONOS_STATIC NOMINMAX)
+  # DIAG (temporary): emit a linker .map so crash-stack RVAs in this DLL can be
+  # resolved to functions (the plugin's MblCrashFilter prints module+RVA).
+  target_link_options(maplibre_flutter_core PRIVATE /MAP)
 endif()
 
 # Hide everything but the FFI_PLUGIN_EXPORT-annotated C symbols.

@@ -64,6 +64,11 @@ void main(List<String> args) async {
       return;
     }
 
+    // Apply our committed patches to the vendored mbgl-native submodule before
+    // building (idempotent). Currently a single Windows-only DNS workaround in
+    // mbgl's curl http_file_source — see _applySubmodulePatches.
+    await _applySubmodulePatches(packageRoot, submodule, logger);
+
     // Build the shim target; it pulls in mbgl-core. The CMakeLists wires
     // CORE_ONLY + the per-platform headless backend attach and uses ccache when
     // present, so repeat builds (and CI) are cheap after the first.
@@ -109,9 +114,65 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core_metal.mm'),
       src.resolve('maplibre_flutter_core_gl.h'),
       src.resolve('maplibre_flutter_core_gl.cpp'),
+      src.resolve('maplibre_flutter_core_d3d.h'),
+      src.resolve('maplibre_flutter_core_d3d.cpp'),
       src.resolve('CMakeLists.txt'),
     ]);
   });
+}
+
+/// Applies our committed patches to the vendored mbgl-native submodule.
+///
+/// Idempotent: each patch is skipped when its marker string is already present
+/// (so re-builds and a dev's already-patched tree are no-ops). Fails loudly if a
+/// patch is missing or cannot be applied, so a source build never silently
+/// produces a core without the fix.
+///
+/// `windows-dns-os-resolve.patch`: curl's asynchronous DNS resolvers do not work
+/// under our libuv-driven curl multi-socket loop on Windows (the threaded
+/// resolver never delivers completion; c-ares can't discover the system
+/// nameservers), so tile/style requests never resolve and the map stays blank.
+/// The patch resolves through the OS resolver and pre-seeds curl's address cache
+/// via CURLOPT_RESOLVE (Windows-only `#ifdef`, a no-op on other platforms).
+Future<void> _applySubmodulePatches(
+  Uri packageRoot,
+  Directory submodule,
+  Logger logger,
+) async {
+  const patches = [
+    (
+      file: 'platform/default/src/mbgl/storage/http_file_source.cpp',
+      marker: 'resolveHostViaOS',
+      patch: 'patches/windows-dns-os-resolve.patch',
+    ),
+  ];
+  for (final p in patches) {
+    final target = File.fromUri(submodule.uri.resolve(p.file));
+    if (target.existsSync() && target.readAsStringSync().contains(p.marker)) {
+      continue; // already applied
+    }
+    final patchFile = File.fromUri(packageRoot.resolve(p.patch));
+    if (!patchFile.existsSync()) {
+      throw Exception(
+        'maplibre_flutter_core: missing patch ${patchFile.path}.',
+      );
+    }
+    final result = await Process.run(
+      'git',
+      ['apply', '--ignore-whitespace', patchFile.path],
+      workingDirectory: submodule.path,
+    );
+    if (result.exitCode != 0 ||
+        !target.readAsStringSync().contains(p.marker)) {
+      logger.severe(result.stdout.toString());
+      logger.severe(result.stderr.toString());
+      throw Exception(
+        'maplibre_flutter_core: failed to apply ${p.patch} to the mbgl-native '
+        'submodule (exit ${result.exitCode}).',
+      );
+    }
+    logger.info('maplibre_flutter_core: applied ${p.patch}.');
+  }
 }
 
 /// Maps a Dart [Architecture] to the vcpkg Windows triplet name (matches the
@@ -166,9 +227,19 @@ Future<void> _provisionWindowsVcpkg(
       'installed/$triplet/share/unofficial-angle/unofficial-angle-config.cmake',
     ),
   );
-  if (!angleConfig.existsSync()) {
+  // curl is built with the c-ares feature: its default threaded DNS resolver
+  // hangs under our libuv-driven curl multi-socket loop on Windows. (The
+  // OS-resolver patch in _applySubmodulePatches is the primary fix; c-ares is
+  // the fallback resolver — it fails a request fast instead of hanging the slot
+  // if getaddrinfo ever fails.) c-ares's config also gates the (slow) install.
+  final caresConfig = File.fromUri(
+    vcpkgRoot.resolve('installed/$triplet/share/c-ares/c-ares-config.cmake'),
+  );
+  if (!angleConfig.existsSync() || !caresConfig.existsSync()) {
     const ports = [
-      'curl',
+      // ssl -> schannel on Windows (uses the Windows cert store); c-ares -> a
+      // socket-based async resolver that integrates with our event loop.
+      'curl[core,non-http,ssl,c-ares]',
       'dlfcn-win32',
       'libuv',
       'libjpeg-turbo',
@@ -187,6 +258,9 @@ Future<void> _provisionWindowsVcpkg(
       '--triplet',
       triplet,
       '--overlay-triplets=${overlayTriplets.toFilePath()}',
+      // --recurse: allow rebuilding curl when its feature set changes (e.g. an
+      // existing install predating the c-ares feature).
+      '--recurse',
       '--clean-after-build',
       '--disable-metrics',
     ], workingDirectory: vcpkgRoot.toFilePath());
