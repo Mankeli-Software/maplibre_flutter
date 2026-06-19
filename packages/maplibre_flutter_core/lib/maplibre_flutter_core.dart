@@ -106,6 +106,23 @@ class MapLibreCoreMap {
           >(bindings.mbl_map_current_gl_image)
           .address;
 
+  /// Address of the native `mbl_map_current_d3d_handle` function. The Windows
+  /// plugin calls it from its `GpuSurfaceTexture` descriptor callback to get the
+  /// DXGI shared handle for the latest zero-copy frame (returns 0 when zero-copy
+  /// is off). See [copyFrameFunctionAddress].
+  static int get currentD3dHandleFunctionAddress =>
+      ffi.Native.addressOf<
+            ffi.NativeFunction<
+              ffi.Int Function(
+                ffi.Pointer<bindings.MblMap>,
+                ffi.Pointer<ffi.Pointer<ffi.Void>>,
+                ffi.Pointer<ffi.Uint32>,
+                ffi.Pointer<ffi.Uint32>,
+              )
+            >
+          >(bindings.mbl_map_current_d3d_handle)
+          .address;
+
   /// Creates an off-screen map of [width]x[height] device pixels at
   /// [pixelRatio], loading [styleUri]. Throws if the native map cannot be made.
   ///
@@ -157,7 +174,10 @@ class MapLibreCoreMap {
   /// on platforms without the GL presenter (e.g. macOS).
   bool isZeroCopyActive() {
     _checkAlive();
-    return bindings.mbl_map_gl_active(_handle) != 0;
+    // Linux reports via the GL presenter, Windows via the D3D presenter; the
+    // other returns 0 on each platform, so OR-ing them is correct everywhere.
+    return bindings.mbl_map_gl_active(_handle) != 0 ||
+        bindings.mbl_map_d3d_active(_handle) != 0;
   }
 
   /// Selects the byte order [copyFrame] emits: true = BGRA (default; macOS
