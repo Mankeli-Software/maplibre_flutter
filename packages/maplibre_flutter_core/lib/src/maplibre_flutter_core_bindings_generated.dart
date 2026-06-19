@@ -122,10 +122,24 @@ external int mbl_map_copy_frame(
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int)>()
 external void mbl_map_set_zero_copy(ffi.Pointer<MblMap> map, int enabled);
 
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int)>()
+external void mbl_map_set_pixel_format_bgra(ffi.Pointer<MblMap> map, int bgra);
+
 @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Pointer<MblMap>)>()
 external ffi.Pointer<ffi.Void> mbl_map_current_iosurface(
   ffi.Pointer<MblMap> map,
 );
+
+@ffi.Native<
+  ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<MblGlDmabufFrame>)
+>()
+external int mbl_map_current_gl_image(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblGlDmabufFrame> out,
+);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_gl_active(ffi.Pointer<MblMap> map);
 
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
 external int mbl_map_write_png(
@@ -137,3 +151,5 @@ external int mbl_map_write_png(
 external void mbl_map_destroy(ffi.Pointer<MblMap> map);
 
 final class MblMap extends ffi.Opaque {}
+
+final class MblGlDmabufFrame extends ffi.Opaque {}

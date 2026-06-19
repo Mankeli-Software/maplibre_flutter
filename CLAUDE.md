@@ -101,9 +101,38 @@ is scaffolded vs. still TODO:
     map** (the example's controls), *not* the map itself. Verified on this Mac: `flutter build web`
     green; browser unit tests (`melos run test:web`, headless Chrome) + the chrome integration test
     pass. On `feat/web-maplibre-gl-js`.
-  - **Windows / Linux** native sides are still stubs — `createMap()` throws `UnimplementedError`;
-    those packages declare only `dartPluginClass`. Windows/Linux will reuse `maplibre_flutter_core`'s
-    `mbgl-core` integration with a platform-specific surface.
+  - **Linux — verified on real hardware (build + GL render + GUI present).**
+    `maplibre_flutter_core` has an **OpenGL ES3 + EGL arm** parallel to the macOS Metal arm
+    (CMake split by platform; the Metal code is guarded behind `__APPLE__`; `mbl_map_copy_frame`
+    is pixel-format-aware, BGRA/RGBA). `maplibre_flutter_linux` is hybrid: a GTK plugin presents
+    frames through an `FlPixelBufferTexture` (CPU pixel buffer; zero-copy `FlTextureGL` later),
+    controller mirrors macOS minus IOSurface. First validated headless under Mesa software GL
+    (llvmpipe) in Docker via `packages/maplibre_flutter_core/docker/`; **now confirmed on real
+    Linux hardware** (2026-06-18, Ubuntu 26.04 / Razer Blade): `flutter build linux` builds clean
+    first try, the EGL backend creates a context on the **Intel UHD 630 iGPU** (not llvmpipe), and
+    both demotiles + OpenFreeMap Liberty render correctly; the GUI app presents a **smooth** map on
+    GNOME/Wayland. **HTTP/2 throttling fixed** (cap the curl source's `max-concurrent-requests`,
+    §below) and **zero-copy present added via dmabuf** (opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true`;
+    CPU `FlPixelBufferTexture` stays the default + fallback). **Key gotcha:** mbgl's render context
+    and Flutter's raster context use **different EGLDisplays**, so an `EGLImageKHR` (display-scoped)
+    cannot be shared between them — the first EGLImage-blit attempt went white. The fix is a **Linux
+    dmabuf** (a kernel buffer fd, cross-display): the core blits into a ring of RGBA8 textures and
+    exports each as a dmabuf (`EGL_MESA_image_dma_buf_export`); the GTK plugin imports it into an
+    `FlTextureGL` via `EGL_LINUX_DMA_BUF_EXT`. Sync is `glFlush` + the dmabuf's **implicit kernel
+    fence** (cross-display-safe; a `glFinish` or an EGLSync handle would stall / can't cross
+    displays). **Confirmed working on device** (2026-06-19): renders correctly, interaction
+    (pan/zoom/fly-to/style) works, no white screen. The white-screen bug en route: the
+    `registerTextureGl` channel handler ran EGL calls on the **platform thread (no current
+    context)** → false failure → uncaught `PlatformException` crashed `createMap`; fixed by doing
+    all EGL work in the raster-thread `populate` (general rule: **never call EGL/GL on the platform
+    thread in a Flutter Linux plugin**). Perf A/B on the **iGPU** is ~parity with the CPU path —
+    expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
+    zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
+    currently version-mismatched). On `feat/desktop-linux-gl`.
+  - **Windows** native side is still a stub — `createMap()` throws `UnimplementedError`; the package
+    declares only `dartPluginClass`. Windows will reuse `maplibre_flutter_core`'s `mbgl-core`
+    integration via the same GL arm through **ANGLE** (EGL-on-D3D) + a
+    `FlutterDesktopPixelBufferTexture`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -675,5 +704,92 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     real maplibre-gl-js map loads a style, jumps the camera and reads it back (exercising the
     `LatLng(lat,lng)` ⇄ `[lng,lat]` round-trip), then swaps styles. Only an interactive
     `flutter run -d chrome` visual frame check is the remaining manual step.
+- **2026-06-18 — Linux desktop: OpenGL/EGL core arm + GTK plugin (§8 step 3, part 2; on
+  `feat/desktop-linux-gl`, not yet merged).** Added a GL (ES3 + EGL) arm to `maplibre_flutter_core`
+  parallel to the macOS Metal arm. Key CMake finding: on non-Apple there's **no bazel/SDK problem**
+  (that's Darwin-only), but `CORE_ONLY=OFF` drags in glfw + the unconditional `test`/`benchmark`/
+  `render-test` subdirs — so we keep **`CORE_ONLY=ON` on Linux too** (mbgl's root CMake `return()`s
+  early) and **hand-attach** the default platform + `gl/headless_backend` + `linux/headless_backend_egl`
+  + `gl_functions` + libuv/curl/png/jpeg/webp/ICU, mirroring `linux.cmake`. `cmake/opengl.cmake`
+  (included before the `CORE_ONLY return()`, line ~997) compiles the GL renderer. The Metal
+  zero-copy code is guarded behind `__APPLE__`; off-Apple `mbl_map_set_zero_copy`/`current_iosurface`
+  are no-ops and the CPU `mbl_map_copy_frame` path is used. **Present:** GL has **no public texture
+  handle** (unlike Metal's `getMetalTexture()`), so Linux uses a **CPU pixel-buffer**
+  `FlPixelBufferTexture` (RGBA — added `mbl_map_set_pixel_format_bgra`, BGRA for macOS); zero-copy
+  `FlTextureGL` (shared GL context — the §8 "biggest risk") is deferred. `flyCameraAt` moved to the
+  shared platform interface (macOS + Linux + Windows share it).
+  - **Mac-side verification via Docker (key enabler):** mbgl's EGL **pbuffer/surfaceless** backend
+    runs under **Mesa llvmpipe** in a headless container, so the Linux GL core was built + rendered
+    (a correct demotiles PNG, right-side-up, correct colours) **on the macOS dev machine before any
+    Linux hardware**. `packages/maplibre_flutter_core/docker/` holds the Dockerfile + run script; a
+    CI Linux job can reuse them. Verified: macOS analyze 10/10 + Flutter/native tests green (Metal
+    path unchanged); Linux GL core builds + renders in Docker.
+  - **NOT yet verified:** the GTK present (`FlPixelBufferTexture`) + interaction on real Linux —
+    `flutter run -d linux` is pending hardware. The GTK plugin/controller were written on macOS
+    (unbuildable here). Pixel-format/flip confirmed correct via the Docker PNG (the gotchas the
+    plan flagged).
+
+- **2026-06-18 — Linux desktop tier verified on real hardware (§8 step 3, Linux).** Set up a
+  Razer Blade (Ubuntu 26.04, Intel UHD 630) as the Linux build/test box (Flutter 3.44.2; verified
+  26.04 apt deps — note `libstdc++-15-dev` + modern `libgl*/libegl*` Mesa names; recursive
+  mbgl-native submodule) and ran `feat/desktop-linux-gl` on it. `flutter build linux --debug` built
+  **clean on the first try** (mbgl-core GL/EGL arm + GTK `FlPixelBufferTexture` plugin). The EGL
+  headless backend creates a context on the **real Intel iGPU** (not Docker llvmpipe), and the core
+  renders **both** demotiles and OpenFreeMap Liberty correctly (proven by compiling `render_harness`
+  standalone against the already-built `libmaplibre_flutter_core.so` — no mbgl rebuild). The GUI app
+  presents a **smooth** map on GNOME/Wayland (user-confirmed). Two real follow-ups found and being
+  worked next on this branch: the curl HTTP source trips HTTP/2 `ENHANCE_YOUR_CALM` under
+  Continuous-mode burst (cap `max-concurrent-requests`), and zero-copy `FlTextureGL` (EGLImage blit)
+  to replace the CPU pixel-buffer present. Autonomous screenshots on GNOME/Wayland need
+  `gnome-screenshot` (the DBus/portal path is locked down).
+
+- **2026-06-19 — Linux HTTP/2 throttle fix + zero-copy via dmabuf (on `feat/desktop-linux-gl`).**
+  Two follow-ups from the hardware bring-up:
+  - **HTTP fix (`fix(core)`):** the non-Apple core's curl HTTP source multiplexed mbgl's default 20
+    concurrent tile requests onto one HTTP/2 connection and tile servers answered with
+    `ENHANCE_YOUR_CALM`. Cap the Network `OnlineFileSource`'s `max-concurrent-requests` to 6 (env
+    `MAPLIBRE_MAX_CONCURRENT_REQUESTS`) from the render thread after map creation, non-Apple only
+    (macOS uses the NSURLSession source). `FileSourceManager::getFileSource` keys the shared source
+    by `baseURL|apiKey|cachePath|ctx`, so requesting it with the same `ResourceOptions::Default()`
+    the Map uses returns that instance. Verified the cap throttles (cap=1 serializes, ~0.95s vs
+    ~0.58s at cap=20) and the map still renders.
+  - **Zero-copy via dmabuf, NOT EGLImage (`feat`):** the first cut shared the rendered GL texture
+    cross-context with an `EGLImageKHR` (mirroring the macOS IOSurface path). It went **white** on
+    device — root cause: **mbgl's render context and Flutter's GTK raster context use different
+    EGLDisplays**, and an EGLImage handle is EGLDisplay-scoped, so it can't cross. An adversarial
+    design review had flagged exactly this. Fix: share via a **Linux dmabuf** (a kernel fd, not
+    display-scoped). The core (`maplibre_flutter_core_gl.cpp`) blits mbgl's color FBO into a ring of
+    3 RGBA8 textures and exports each as a dmabuf (`EGL_MESA_image_dma_buf_export`, persistent per
+    slot); the GTK plugin imports it into an `FlTextureGL` (`EGL_LINUX_DMA_BUF_EXT`), re-importing
+    only on the generation bump a resize triggers. Correctness details the review forced (all in the
+    code): the source FBO is taken from mbgl's renderable `bind()` (NOT a guessed
+    `GL_DRAW_FRAMEBUFFER_BINDING`), every helper brackets its GL work with save/restore so mbgl's
+    `State<>` bind cache stays truthful, the ring is generation-keyed with deferred destroy (dmabuf
+    fds aren't refcounted), and a single vertical flip in the blit matches the CPU path. Gated
+    **off** by default (`--dart-define=MAPLIBRE_ZEROCOPY=true`); the CPU `FlPixelBufferTexture` path
+    is unchanged and the fallback. Runtime-validated on device: zero-copy activates, dmabuf imports
+    with **zero** errors (vs the EGLImage flood of "mismatch"), app stable. **On-screen visual A/B
+    still pending** (couldn't screenshot the Wayland window non-interactively — `gnome-screenshot`
+    blocks on a portal dialog; never call it from an automated shell).
+
+- **2026-06-19 — Linux zero-copy confirmed working on device; white-screen fix + v2 sync + perf
+  note.** The dmabuf `FlTextureGL` rendered white on first hardware run. Root cause: the
+  `registerTextureGl` method-channel handler ran its EGL probing on the **platform thread, which has
+  no current EGL context**, so `eglGetCurrentDisplay()` was `EGL_NO_DISPLAY`, the dmabuf-support
+  check failed, and the resulting `PlatformException` (no Dart guard) crashed `createMap()`. Fix
+  (commit `88996bd`): all EGL entry-point resolution + dmabuf-support detection happens lazily in the
+  first `populate()` (raster thread, context current); the handler only registers; the Dart
+  controller guards the channel call and falls back to CPU on failure. **General rule: never call
+  EGL/GL on the platform thread in a Flutter Linux plugin — only on the raster thread (populate /
+  texture callbacks).** **v2 sync:** the per-frame `glFinish` stall was replaced with `glFlush` +
+  the dmabuf's **implicit kernel fence** (the producer's write fence on the buffer's dma_resv; the
+  consumer's sample auto-waits cross-context). An EGLSync handle was NOT used — it is EGLDisplay-
+  scoped like the EGLImage, so it can't cross the mbgl/Flutter display boundary; the explicit
+  fallback (if a driver lacks implicit dma-buf sync) is an `EGL_ANDROID_native_fence_sync` fd passed
+  beside the dmabuf fd. **Perf:** A/B on the Intel **iGPU** was ~parity with the CPU
+  `FlPixelBufferTexture` path — expected, since unified memory makes the avoided CPU readback a cheap
+  same-RAM memcpy, not a PCIe transfer; zero-copy's real win is on discrete GPUs. This box is a
+  hybrid-graphics laptop (iGPU + NVIDIA GTX 1070 Mobile, Optimus on-demand); apps default to the
+  iGPU and the NVIDIA driver is currently version-mismatched, so the dGPU is untested.
 
 _Append new decisions here with date and rationale._

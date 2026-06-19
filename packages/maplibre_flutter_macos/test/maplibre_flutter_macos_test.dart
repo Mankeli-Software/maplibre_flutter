@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_macos/maplibre_flutter_macos.dart';
-import 'package:maplibre_flutter_macos/src/fly_animation.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 void main() {
