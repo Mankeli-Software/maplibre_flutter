@@ -926,4 +926,53 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     via synthetic SendInput, so it needs a debugger (cdb/WinDbg) on a user-reproduced run to get a
     stack. Both are present-path/stability items, separate from the (now fixed) DNS blank-map bug.
 
+- **2026-06-19 — Windows D3D11 zero-copy present (works, smooth) + fly-to/heavy-move crash
+  root-caused to an mbgl GL bug; Vulkan chosen as the fix (next session). On
+  `feat/desktop-windows-angle`, committed `1a51d00`.** Two things after the DNS fix above:
+  - **Zero-copy present (done, user-confirmed smooth).** The D3D11 analog of macOS IOSurface /
+    Linux dmabuf: a new `maplibre_flutter_core_d3d.{h,cpp}` queries ANGLE's `ID3D11Device`
+    (`EGL_D3D11_DEVICE_ANGLE`), keeps a ring of 3 **shared D3D11 textures**, wraps each as an ANGLE
+    pbuffer (`eglCreatePbufferFromClientBuffer(EGL_D3D_TEXTURE_ANGLE)`), blits mbgl's color FBO into
+    the next slot (eglMakeCurrent the pbuffer → glBlitFramebuffer, vertical flip, glFinish for
+    cross-device sync since a legacy DXGI shared handle has no keyed mutex), and publishes the slot's
+    **legacy `IDXGIResource::GetSharedHandle`**. The Windows plugin presents it as a Flutter
+    **`GpuSurfaceTexture`** (`kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle`), which ANGLE re-opens on
+    Flutter's own device via `EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE` — no CPU readback. The shim's
+    non-Apple zero-copy code now branches `#if defined(_WIN32)` (D3D presenter) vs Linux (GL/dmabuf);
+    new C API `mbl_map_current_d3d_handle` / `mbl_map_d3d_active`. **Key gotcha: the shared texture
+    MUST be `DXGI_FORMAT_B8G8R8A8_UNORM` (BGRA)** — ANGLE's share-handle path only accepts BGRA8;
+    RGBA8 → Flutter logs `external_texture_d3d.cc: Binding D3D surface failed` and the map is white.
+    glBlitFramebuffer copies by logical channel, so RGBA-source → BGRA-target keeps colours correct.
+    Opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true` (CPU `PixelBufferTexture` stays default + fallback);
+    if the D3D presenter fails it falls back to CPU. CMake links `unofficial::angle::libEGL/libGLESv2
+    + d3d11 + dxgi`, defines `KHRONOS_STATIC` on the shim, and resolves the EGL/GLES headers via
+    `find_path` (ANGLE's vcpkg include dir doesn't propagate from mbgl's PRIVATE link). **ffigen
+    couldn't run here (no libclang on Windows)**, so the two new bindings were hand-added to
+    `maplibre_flutter_core_bindings_generated.dart` in exact ffigen style — **regenerate on macOS
+    before merge** (`dart run tool/ffigen.dart`) to confirm no diff (CI §7 layer 6).
+  - **Crash on fly-to / heavy movement (NOT fixed; root-caused).** Pre-existing 0xC0000005 access
+    violation (happens on the CPU path too). Caught via a temporary unhandled-exception stack dumper
+    in the plugin (`MblCrashFilter`, RtlVirtualUnwind + the linker `/MAP`) — these **TEMPORARY
+    diagnostics are committed in `1a51d00`; revert them once Windows is stable**. Symbolized stack:
+    `gl::DrawableGL::draw → glDrawElements → ANGLE StateManager11::syncVertexBuffersAndInputLayout`
+    (AV) under `TileLayerGroupGL::render`. **Root cause = an mbgl GL resource-lifetime bug**: a tile
+    drawable's VAO still references vertex buffers freed during rapid tile churn; ANGLE's strict D3D11
+    validation derefs the freed buffer (native GL drivers often paper over it). mbgl's
+    `indexLength>0 && VAO.isValid()` guard only checks the VAO name, not its buffers' liveness.
+  - **Research (delegated; conclusions):** (1) **mbgl bump won't help** — our pin `fa8a9c8e3` is 1
+    docs-only commit behind `main`; all buffer fixes (#4291 etc.) already present. (2) **ANGLE update
+    low-probability** — the dangling buffer originates on mbgl's side. (3) **Native WGL**
+    (`MLN_WITH_OPENGL` without `MLN_WITH_EGL`; mbgl ships `headless_backend_wgl.cpp`) would dodge the
+    crash cheaply BUT **kills the D3D11 zero-copy path** (native-GL texture has no D3D11 interop →
+    CPU present only) and adds GL-driver fragility. (4) **Vulkan** (`MLN_WITH_VULKAN`) genuinely
+    sidesteps the crash (no GL/ANGLE path) **and keeps zero-copy** via `VK_KHR_external_memory_win32`
+    → D3D11 shared handle → Flutter's ANGLE surface; it's MapLibre's Android default and in the
+    upstream FFI Windows matrix.
+  - **DECISION: implement the Vulkan backend for the Windows desktop tier** (next session) — the only
+    path that is both stable AND keeps the smooth zero-copy present. Scope: a Vulkan arm in the core
+    `src/CMakeLists.txt` (`MLN_WITH_VULKAN`, Vulkan-Headers/loader vcpkg deps, mbgl's
+    `vulkan/headless_backend`), a Vulkan→D3D11-shared-texture present helper (replacing the GL blit),
+    and the plugin's `GpuSurfaceTexture` path reused. Also worth filing an upstream mbgl issue for the
+    `DrawableGL`/VAO-retains-freed-VBO lifetime gap.
+
 _Append new decisions here with date and rationale._
