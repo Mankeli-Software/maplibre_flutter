@@ -271,6 +271,19 @@ elseif(WIN32)
   set(_def "${MLN_ROOT}/platform/default/src/mbgl")
   set(_win "${MLN_ROOT}/platform/windows/src")
 
+  # mbgl-core (and our shim, which both link mbgl-compiler-options) inherit two MSVC
+  # flags that bite a CORE_ONLY build off mbgl's own CI toolchain:
+  #  * upstream forces /WX (warnings-as-errors) UNCONDITIONALLY for MSVC (root
+  #    CMakeLists ~line 93), independent of MLN_WITH_WERROR — a newer MSVC than
+  #    upstream's CI then fails on new warnings. We don't gate releases on upstream
+  #    warnings (MLN_WITH_WERROR is OFF above), so append /WX- (last flag wins for cl).
+  #  * mbgl's large translation units can exceed the COFF section limit, so add
+  #    /bigobj (upstream's non-CORE_ONLY Windows path doesn't need it per-TU, but a
+  #    newer MSVC's inlining can push us over — cheap insurance).
+  target_compile_options(mbgl-compiler-options INTERFACE
+    $<$<CXX_COMPILER_ID:MSVC>:/WX->
+    $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+
   find_package(CURL REQUIRED)
   find_package(dlfcn-win32 REQUIRED)
   find_package(ICU OPTIONAL_COMPONENTS i18n uc)
@@ -351,12 +364,31 @@ elseif(WIN32)
   # System ICU if recent enough, else the vendored builtin (mirrors windows.cmake).
   if(NOT ICU_FOUND OR "${ICU_VERSION}" VERSION_LESS 62.0)
     include("${MLN_ROOT}/vendor/icu.cmake")
-    set_source_files_properties("${_def}/i18n/number_format.cpp"
-      PROPERTIES COMPILE_DEFINITIONS MBGL_USE_BUILTIN_ICU)
+    # number_format.cpp is the ONLY file that reads MBGL_USE_BUILTIN_ICU (it swaps the
+    # full-ICU number formatter — absent from the stripped vendored ICU — for a builtin
+    # one). Define it on the whole mbgl-core target: set_source_files_properties is
+    # directory-scoped and would NOT reach mbgl-core, which is defined in the submodule
+    # subdirectory (the upstream set_source_files_properties pattern silently no-ops for
+    # an out-of-tree core; only system-ICU builds dodged it).
+    target_compile_definitions(mbgl-core PRIVATE MBGL_USE_BUILTIN_ICU)
     target_compile_definitions(mbgl-vendor-icu PRIVATE U_STATIC_IMPLEMENTATION)
+    # Put the builtin ICU headers on mbgl-core's include path (BEFORE any system ICU)
+    # so collator.cpp finds <unicode/...> — windows.cmake does this explicitly; the
+    # vendor target's INTERFACE includes alone aren't enough.
+    target_include_directories(mbgl-core BEFORE PRIVATE "${MLN_ROOT}/vendor/icu/include")
     set(_icu_libs mbgl-vendor-icu)
   else()
     set(_icu_libs ICU::i18n ICU::uc ICU::data)
+  endif()
+
+  # vcpkg's libuv exports libuv::uv_a (static, our triplet) or libuv::uv (shared).
+  # Resolve via if(TARGET) — a $<IF:...> genex still names the missing target, and
+  # CMake validates every "::" name in target_link_libraries even in an unselected
+  # genex branch, which fails configure.
+  if(TARGET libuv::uv_a)
+    set(_uv_target libuv::uv_a)
+  else()
+    set(_uv_target libuv::uv)
   endif()
 
   target_link_libraries(mbgl-core PRIVATE
@@ -368,7 +400,7 @@ elseif(WIN32)
     PNG::PNG
     mbgl-vendor-nunicode
     mbgl-vendor-sqlite
-    $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>
+    ${_uv_target}
     unofficial::angle::libEGL
     unofficial::angle::libGLESv2
   )
@@ -380,9 +412,11 @@ if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
   list(APPEND _shim_sources maplibre_flutter_core_metal.mm)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
   # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
-  # EGLImage-backed texture ring) — Linux/desktop-GL.
+  # EGLImage-backed texture ring) — Linux/desktop-GL. On Windows it compiles to no-op
+  # presenter stubs (CPU pixel-buffer present only for now) so the shared non-Apple
+  # shim links; the dmabuf implementation is Linux-only (see the file's _WIN32 guard).
   list(APPEND _shim_sources maplibre_flutter_core_gl.cpp)
 endif()
 

@@ -129,19 +129,23 @@ is scaffolded vs. still TODO:
     expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
     zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
     currently version-mismatched). On `feat/desktop-linux-gl`.
-  - **Windows — scaffolded on Linux, awaiting a Windows machine to build.** Written as the CPU
-    pixel-buffer analog of the Linux tier (it reuses `maplibre_flutter_core` unchanged): a new
-    **ANGLE/EGL arm** in the core's `src/CMakeLists.txt` (`MLN_WITH_EGL` → ANGLE `libEGL`/`libGLESv2`,
-    `platform/windows` sources + the EGL headless backend, vcpkg deps — mirrors
-    `platform/windows/windows.cmake`); a hybrid Windows C++ plugin
-    (`MaplibreFlutterWindowsPlugin`: `flutter::TextureRegistrar` + `flutter::PixelBufferTexture`
-    presenting `mbl_map_copy_frame` RGBA over the `maplibre_flutter/windows/registrar` channel — the
-    analog of the GTK plugin, but `MarkTextureFrameAvailable` is thread-safe so there's no main-loop
-    hop); a Dart controller mirroring Linux (CPU path only — no zero-copy in v1) that reuses the
-    shared desktop gesture + fly-to tier; no widget change (`TextureHandle` already handled). The
-    **Dart side is verified on Linux** (pub resolves, analyze clean, controller test passes); the C++
-    plugin + core CMake arm compile only on **Windows** (MSVC + vcpkg/ANGLE — can't cross-build from
-    Linux). Build/run/debug is the remaining step. On `feat/desktop-windows-angle`.
+  - **Windows — verified on real hardware (builds + renders + camera/style control).** The CPU
+    pixel-buffer analog of the Linux tier (reuses `maplibre_flutter_core`): a new **ANGLE/EGL arm**
+    in the core's `src/CMakeLists.txt` (`MLN_WITH_EGL` → ANGLE `libEGL`/`libGLESv2`,
+    `platform/windows` sources + the EGL headless backend; vcpkg deps — mirrors
+    `platform/windows/windows.cmake`); a hybrid Windows C++ plugin (`MaplibreFlutterWindowsPlugin`:
+    `flutter::TextureRegistrar` + `flutter::PixelBufferTexture` presenting `mbl_map_copy_frame` RGBA
+    over the `maplibre_flutter/windows/registrar` channel — `MarkTextureFrameAvailable` is
+    thread-safe so the frame callback marks frames directly, no main-loop hop); a Dart controller
+    mirroring Linux (CPU path only — no zero-copy in v1) reusing the shared desktop gesture + fly-to
+    tier; no widget change (`TextureHandle` already handled). **Confirmed on a Windows 11 box**
+    (2026-06-19): `flutter build windows` is green and the Windows integration test renders a real
+    frame (ANGLE creates a D3D11 EGL context headlessly on the render thread), moves + reads back the
+    camera, and swaps styles. **Deps come from vcpkg via the build hook** (`hook/build.dart` installs
+    them + passes the vcpkg toolchain file to the CMake configure); with the static triplet **ANGLE
+    links statically into `maplibre_flutter_core.dll`** (~14 MB) so there are **no ANGLE DLLs to
+    bundle** — it calls the system d3d11/dxgi/d3dcompiler. Zero-copy (D3D11 shared texture) is the
+    remaining optional step. On `feat/desktop-windows-angle`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -397,7 +401,8 @@ Build the base architecture first, then implement platforms in this order. Keep 
    a real frame into a texture. Then **Linux** (`FlTextureGL`) → **Windows** (ANGLE + GPU
    surface) → **macOS** (Metal). Start with CPU readback (pixel-buffer) for correctness, then
    optimise to zero-copy GPU texture sharing. The **Linux GL-context/threading** integration
-   is the single biggest risk — budget for it.
+   is the single biggest risk — budget for it. *macOS + Linux + **Windows** all done & verified
+   on hardware (CPU present + control); zero-copy done on macOS/Linux, optional on Windows.*
 4. **Web** — maplibre-gl-js JS interop, `HtmlElementView` + `pointer_interceptor`. *Done (A
    visible map + B control); `flutter build web` + browser unit/integration tests green on this
    machine. Buildable + runnable here (`flutter run -d chrome`), unlike Linux/Windows.*
@@ -822,5 +827,54 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   the MSVC/Ninja core build (hook/build.dart may need a vcvars64 env + the vcpkg toolchain file),
   ANGLE DLL bundling (libEGL/libGLESv2/d3dcompiler_47 next to the .exe), and confirming ANGLE
   windowless headless rendering + the present path. Risks captured in the windows-tier design.
+
+- **2026-06-19 — Windows desktop tier verified on real hardware (§8 step 3, Windows; completes the
+  desktop tier).** Set up a fresh Windows 11 box end-to-end (it had none of the toolchain): Flutter
+  3.44.2 stable at `C:\src\flutter`; **Visual Studio 2022 Community + "Desktop development with C++"**
+  (MSVC 14.44, Win10 SDK 10.0.26100) via winget; **vcpkg at `C:\vcpkg`** (`VCPKG_ROOT` set); Developer
+  Mode + system `LongPathsEnabled` (registry, elevated); recursive mbgl-native submodule; melos
+  `dart pub global activate`d (its scripts shell out to a bare `melos`, not on PATH on a fresh box).
+  `flutter build windows` + the new Windows integration test both green; all 10 packages analyze
+  clean and unit tests pass. What the scaffold (written on Linux) got wrong, fixed here:
+  - **vcpkg wiring was missing.** `hook/build.dart` now, on Windows, runs `vcpkg install` (idempotent;
+    skipped once ANGLE's config exists) and passes `CMAKE_TOOLCHAIN_FILE` + `VCPKG_TARGET_TRIPLET` +
+    `VCPKG_MANIFEST_MODE=OFF` via `CMakeBuilder.create(defines: …)`. Key `native_toolchain_cmake`
+    0.2.5 facts: on Windows it sets **no** toolchain file (only `-DCMAKE_SYSTEM_NAME=Windows`) and,
+    with `useVcvars: true` (default), injects the vcvars64 MSVC env into the Ninja build — so passing
+    the vcpkg toolchain via `defines` is free of conflicts. Deps mirror mbgl's `Get-VendorPackages.ps1`
+    (`curl dlfcn-win32 libuv libjpeg-turbo libpng libwebp egl opengl-registry`); **`egl` pulls
+    `angle`** (which provides `unofficial-angle`); **ICU is the vendored builtin** (not installed).
+  - **Custom static triplet** (`src/vcpkg-triplets/`, `VCPKG_LIBRARY_LINKAGE static` + dynamic CRT,
+    release-only) → deps link into `maplibre_flutter_core.dll`. **ANGLE built STATIC too** (1.1 GB
+    `ANGLE.lib`; the vcpkg `angle` port honors static linkage), so it links into the core DLL (~14 MB
+    after dead-strip) and there are **NO ANGLE runtime DLLs to ship** — it calls system d3d11/dxgi/
+    d3dcompiler. The plugin's `bundled_libraries` is conditional (bundles libEGL/libGLESv2 only if a
+    future dynamic triplet produces them); the hook does NOT register ANGLE DLLs as code assets.
+  - **The shim's non-Apple branch referenced the Linux GL zero-copy presenter** (dmabuf), which is
+    Linux-only and isn't compiled on Windows → would be a link error. Fix: `maplibre_flutter_core_gl.cpp`
+    body is guarded `#if !defined(_WIN32)`, with **no-op presenter stubs** on Windows
+    (`mbl_gl_presenter_create()` returns NULL → the shim stays on the CPU `mbl_map_copy_frame` path);
+    the file is now compiled on Windows too.
+  - **Three CORE_ONLY-on-MSVC gotchas** (mbgl's own `windows.cmake` handles them, but we hand-attach):
+    (1) upstream forces MSVC **`/WX`** (warnings-as-errors) UNCONDITIONALLY (not gated on
+    `MLN_WITH_WERROR`) → a newer MSVC than upstream's CI fails on new warnings; we append **`/WX-`**
+    (last flag wins) to `mbgl-compiler-options` + **`/bigobj`**. (2) `libuv` (static) exports only
+    `libuv::uv_a`; the `$<IF:…,libuv::uv_a,libuv::uv>` genex still NAMES `libuv::uv`, and CMake
+    validates every `::` target in `target_link_libraries` even in an unselected genex branch →
+    resolve with `if(TARGET libuv::uv_a)` instead. (3) the **builtin ICU** path was never exercised
+    before (macOS uses Darwin i18n; the Linux box had system ICU): mbgl's stripped vendored ICU has
+    **no `unicode/numberformatter.h`**, so `i18n/number_format.cpp` must compile with
+    `MBGL_USE_BUILTIN_ICU` — but `set_source_files_properties` is **directory-scoped** and silently
+    no-ops for `mbgl-core` (defined in the submodule subdir); define it on the **target**
+    (`target_compile_definitions(mbgl-core PRIVATE MBGL_USE_BUILTIN_ICU)`) and add the builtin ICU
+    include dir to mbgl-core (collator/bidi need `<unicode/…>`). *(The Linux arm has the same latent
+    directory-scope bug; harmless there only because that machine had system ICU.)*
+  - **General Windows-plugin facts** confirmed: Flutter on Windows needs **Developer Mode** (plugin
+    symlinks) and is happiest with **long paths** enabled; the `dartPluginClass` + `pluginClass` hybrid
+    in the pubspec is what makes Flutter build the native plugin (regenerated
+    `generated_plugin_registrant.cc` calls `MaplibreFlutterWindowsPluginRegisterWithRegistrar`).
+  - **Remaining (optional):** D3D11-shared-texture zero-copy present (parity with macOS IOSurface /
+    Linux dmabuf); a visual `flutter run -d windows` frame check (integration test already renders);
+    arm64-windows (triplet + path exist, untested); prebuilt-core distribution + a Windows CI arm.
 
 _Append new decisions here with date and rationale._

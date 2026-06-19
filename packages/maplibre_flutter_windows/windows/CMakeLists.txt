@@ -25,11 +25,33 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
 # Libraries bundled with the app. The core engine (maplibre_flutter_core.dll) is
-# produced + bundled by maplibre_flutter_core's build hook. The ANGLE DLLs
-# (libEGL.dll / libGLESv2.dll / d3dcompiler_47.dll) that mbgl-core links must sit
-# next to the .exe at runtime — wire them in here once the Windows core build is
-# verified (see CLAUDE.md §8 risks: ANGLE DLL bundling).
+# produced + bundled by maplibre_flutter_core's build hook (native assets).
+#
+# ANGLE: under the vcpkg triplet the core build uses (src/vcpkg-triplets, static
+# library linkage), ANGLE is linked STATICALLY into maplibre_flutter_core.dll, so
+# there are no ANGLE runtime DLLs to ship — it calls the system d3d11/dxgi/
+# d3dcompiler at runtime (all present on Windows 10+). We still look for
+# libEGL.dll/libGLESv2.dll so a future dynamic triplet "just works": any that exist
+# are bundled next to the .exe (where the loader resolves mbgl-core's imports).
+set(_mlf_vcpkg_root "$ENV{VCPKG_ROOT}")
+if(NOT _mlf_vcpkg_root)
+  set(_mlf_vcpkg_root "C:/vcpkg")
+endif()
+file(TO_CMAKE_PATH "${_mlf_vcpkg_root}" _mlf_vcpkg_root)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "[Aa][Rr][Mm]64")
+  set(_mlf_triplet "arm64-windows")
+else()
+  set(_mlf_triplet "x64-windows")
+endif()
+set(_mlf_angle_dlls "")
+foreach(_dll libEGL libGLESv2)
+  set(_mlf_dll_path "${_mlf_vcpkg_root}/installed/${_mlf_triplet}/bin/${_dll}.dll")
+  if(EXISTS "${_mlf_dll_path}")
+    list(APPEND _mlf_angle_dlls "${_mlf_dll_path}")
+  endif()
+endforeach()
+
 set(maplibre_flutter_windows_bundled_libraries
-  ""
+  ${_mlf_angle_dlls}
   PARENT_SCOPE
 )
