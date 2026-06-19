@@ -1,0 +1,124 @@
+diff --git a/platform/default/src/mbgl/storage/http_file_source.cpp b/platform/default/src/mbgl/storage/http_file_source.cpp
+index 4f95137ce..8b6727307 100644
+--- a/platform/default/src/mbgl/storage/http_file_source.cpp
++++ b/platform/default/src/mbgl/storage/http_file_source.cpp
+@@ -15,6 +15,12 @@
+ 
+ #include <curl/curl.h>
+ 
++#ifdef _WIN32
++// For the OS-resolver DNS workaround below (getaddrinfo / inet_ntop). curl.h has
++// already pulled in winsock2.h on Windows; ws2tcpip.h adds getaddrinfo + inet_ntop.
++#include <ws2tcpip.h>
++#endif
++
+ #include <dlfcn.h>
+ #include <queue>
+ #include <cassert>
+@@ -103,6 +109,11 @@ private:
+ 
+     CURL *handle = nullptr;
+     curl_slist *headers = nullptr;
++#ifdef _WIN32
++    // Pre-resolved address list for CURLOPT_RESOLVE (Windows DNS workaround);
++    // owned by this request, freed in the destructor.
++    curl_slist *resolveList = nullptr;
++#endif
+ 
+     char error[CURL_ERROR_SIZE] = {0};
+ };
+@@ -264,6 +275,65 @@ ClientOptions HTTPFileSource::Impl::getClientOptions() {
+     return clientOptions.clone();
+ }
+ 
++#ifdef _WIN32
++namespace {
++// curl's asynchronous DNS resolvers do not work under our libuv-driven curl
++// multi-socket loop on Windows: the default threaded resolver never delivers
++// completion (requests hang before any socket opens), and the c-ares resolver
++// fails to discover the system nameservers. Either way DNS never resolves, so
++// styles/tiles never load and the map stays blank. Work around it by resolving
++// through the OS resolver (getaddrinfo — always reflects the current system DNS
++// config; handles IPv4/IPv6 and network changes) and pre-seeding curl's address
++// cache with CURLOPT_RESOLVE, which makes curl skip its own resolver entirely.
++// Returns a curl_slist the caller owns (curl_slist_free_all), or nullptr.
++curl_slist *resolveHostViaOS(const std::string &url) {
++    CURLU *u = curl_url();
++    if (!u) {
++        return nullptr;
++    }
++    curl_slist *out = nullptr;
++    char *host = nullptr;
++    char *port = nullptr;
++    if (curl_url_set(u, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK &&
++        curl_url_get(u, CURLUPART_HOST, &host, 0) == CURLUE_OK &&
++        curl_url_get(u, CURLUPART_PORT, &port, CURLU_DEFAULT_PORT) == CURLUE_OK) {
++        struct addrinfo hints;
++        memset(&hints, 0, sizeof(hints));
++        hints.ai_socktype = SOCK_STREAM;
++        struct addrinfo *res = nullptr;
++        if (getaddrinfo(host, port, &hints, &res) == 0) {
++            std::string entry = std::string(host) + ":" + port + ":";
++            bool any = false;
++            for (struct addrinfo *a = res; a != nullptr; a = a->ai_next) {
++                char ip[INET6_ADDRSTRLEN] = {0};
++                const void *addr =
++                    a->ai_family == AF_INET6
++                        ? static_cast<const void *>(&reinterpret_cast<sockaddr_in6 *>(a->ai_addr)->sin6_addr)
++                        : static_cast<const void *>(&reinterpret_cast<sockaddr_in *>(a->ai_addr)->sin_addr);
++                if (inet_ntop(a->ai_family, addr, ip, sizeof(ip)) != nullptr) {
++                    if (any) {
++                        entry += ",";
++                    }
++                    entry += ip;
++                    any = true;
++                }
++            }
++            if (res != nullptr) {
++                freeaddrinfo(res);
++            }
++            if (any) {
++                out = curl_slist_append(nullptr, entry.c_str());
++            }
++        }
++    }
++    curl_free(host);
++    curl_free(port);
++    curl_url_cleanup(u);
++    return out;
++}
++} // namespace
++#endif
++
+ HTTPRequest::HTTPRequest(HTTPFileSource::Impl *context_, Resource resource_, FileSource::Callback callback_)
+     : context(context_),
+       resource(std::move(resource_)),
+@@ -306,6 +376,15 @@ HTTPRequest::HTTPRequest(HTTPFileSource::Impl *context_, Resource resource_, Fil
+     handleError(curl_easy_setopt(handle, CURLOPT_USERAGENT, "MapLibreNative/1.0"));
+     handleError(curl_easy_setopt(handle, CURLOPT_SHARE, context->share));
+ 
++#ifdef _WIN32
++    // Bypass curl's async resolver (broken under our event loop on Windows) by
++    // resolving through the OS and pre-seeding curl's address cache.
++    resolveList = resolveHostViaOS(resource.url);
++    if (resolveList) {
++        curl_easy_setopt(handle, CURLOPT_RESOLVE, resolveList);
++    }
++#endif
++
+     // Start requesting the information.
+     handleError(curl_multi_add_handle(context->multi, handle));
+ }
+@@ -322,6 +401,12 @@ HTTPRequest::~HTTPRequest() {
+         curl_slist_free_all(headers);
+         headers = nullptr;
+     }
++#ifdef _WIN32
++    if (resolveList) {
++        curl_slist_free_all(resolveList);
++        resolveList = nullptr;
++    }
++#endif
+ }
+ 
+ // This function is called when we have new data for a request. We just append

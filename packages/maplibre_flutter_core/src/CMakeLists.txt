@@ -48,12 +48,32 @@ if(APPLE)
   set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
   set(MLN_WITH_METAL ON CACHE BOOL "" FORCE)
   set(MLN_WITH_OPENGL OFF CACHE BOOL "" FORCE)
+elseif(WIN32)
+  # Vulkan arm (Windows): mbgl's Vulkan headless backend. Replaces the former
+  # ANGLE/OpenGL-ES (EGL-on-D3D) path, which crashed under rapid tile churn — a
+  # DrawableGL/VAO resource-lifetime bug in mbgl's GL renderer that ANGLE's strict
+  # D3D11 validation faults on (0xC0000005 in glDrawElements during fly-to). Vulkan
+  # has no GL path, so that crash cannot recur, and it keeps the zero-copy present
+  # (Vulkan renders into an image we blit into a shared D3D11 texture — see
+  # maplibre_flutter_core_vk.cpp). CORE_ONLY so mbgl's root return()s before the
+  # glfw/test apps; the Vulkan renderer sources + shaders + glslang/SPIRV/VMA/
+  # Vulkan-Headers are wired automatically by the root's cmake/vulkan.cmake (~line
+  # 999) + vendor/vulkan.cmake (~1220), BOTH of which run before the CORE_ONLY
+  # return() and are keyed on MLN_WITH_VULKAN — so setting the flag is the entire
+  # trigger. We hand-attach only the default-platform Vulkan headless backend below
+  # (mirroring windows.cmake's MLN_WITH_VULKAN branch). validate-backend-options.cmake
+  # requires exactly one backend, so OpenGL/EGL/Metal go OFF.
+  set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
+  set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_OPENGL OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_EGL OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_VULKAN ON CACHE BOOL "" FORCE)
 else()
-  # OpenGL arm (Linux now; Windows later). Build CORE_ONLY so mbgl's root CMake
-  # return()s early (no glfw/test/benchmark/render-test apps + their deps), and
-  # hand-attach the default platform + GL/EGL headless backend below, mirroring
-  # platform/linux/linux.cmake. cmake/opengl.cmake (included before the CORE_ONLY
-  # return) compiles the GL renderer into mbgl-core.
+  # OpenGL arm (Linux). Build CORE_ONLY so mbgl's root CMake return()s early (no
+  # glfw/test/benchmark/render-test apps + their deps), and hand-attach the default
+  # platform + GL/EGL headless backend below, mirroring platform/linux/linux.cmake.
+  # cmake/opengl.cmake (included before the CORE_ONLY return) compiles the GL
+  # renderer into mbgl-core.
   set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
   set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
   set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
@@ -247,6 +267,154 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     mbgl-vendor-sqlite
     OpenGL::EGL
   )
+
+elseif(WIN32)
+  # ---- Attach the default desktop platform + ANGLE (EGL/OpenGL-ES) headless
+  #      backend to mbgl-core (mirrors platform/windows/windows.cmake's mbgl-core
+  #      attach, minus the glfw/test/benchmark apps CORE_ONLY skips). Dependencies
+  #      come from vcpkg: the Windows build must configure with the vcpkg toolchain
+  #      file, and mbgl's platform/windows/Get-VendorPackages.ps1 installs
+  #      CURL/ICU/JPEG/libuv/PNG/WebP/dlfcn-win32/ANGLE for the target triplet.
+  #      Wiring that into hook/build.dart + verifying the MSVC/Ninja build is a
+  #      Windows-machine task — UNVERIFIED here (CLAUDE.md §8). ----
+  set(_def "${MLN_ROOT}/platform/default/src/mbgl")
+  set(_win "${MLN_ROOT}/platform/windows/src")
+
+  # mbgl-core (and our shim, which both link mbgl-compiler-options) inherit two MSVC
+  # flags that bite a CORE_ONLY build off mbgl's own CI toolchain:
+  #  * upstream forces /WX (warnings-as-errors) UNCONDITIONALLY for MSVC (root
+  #    CMakeLists ~line 93), independent of MLN_WITH_WERROR — a newer MSVC than
+  #    upstream's CI then fails on new warnings. We don't gate releases on upstream
+  #    warnings (MLN_WITH_WERROR is OFF above), so append /WX- (last flag wins for cl).
+  #  * mbgl's large translation units can exceed the COFF section limit, so add
+  #    /bigobj (upstream's non-CORE_ONLY Windows path doesn't need it per-TU, but a
+  #    newer MSVC's inlining can push us over — cheap insurance).
+  target_compile_options(mbgl-compiler-options INTERFACE
+    $<$<CXX_COMPILER_ID:MSVC>:/WX->
+    $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+
+  find_package(CURL REQUIRED)
+  find_package(dlfcn-win32 REQUIRED)
+  find_package(ICU OPTIONAL_COMPONENTS i18n uc)
+  find_package(JPEG REQUIRED)
+  find_package(libuv REQUIRED)
+  find_package(PNG REQUIRED)
+  find_package(WebP REQUIRED)
+
+  target_sources(mbgl-core PRIVATE
+    "${_def}/gfx/headless_backend.cpp"
+    "${_def}/gfx/headless_frontend.cpp"
+    "${_def}/i18n/collator.cpp"
+    "${_def}/i18n/number_format.cpp"
+    "${_def}/layermanager/layer_manager.cpp"
+    "${_def}/platform/time.cpp"
+    "${_def}/storage/asset_file_source.cpp"
+    "${_def}/storage/database_file_source.cpp"
+    "${_def}/storage/file_source_manager.cpp"
+    "${_def}/storage/file_source_request.cpp"
+    "${_def}/storage/http_file_source.cpp"
+    "${_def}/storage/local_file_request.cpp"
+    "${_def}/storage/local_file_source.cpp"
+    "${_def}/storage/mbtiles_file_source.cpp"
+    "${_def}/storage/main_resource_loader.cpp"
+    "${_def}/storage/offline.cpp"
+    "${_def}/storage/offline_database.cpp"
+    "${_def}/storage/offline_download.cpp"
+    "${_def}/storage/online_file_source.cpp"
+    "${_def}/storage/pmtiles_file_source.cpp"
+    "${_def}/storage/sqlite3.cpp"
+    "${_def}/text/bidi.cpp"
+    "${_def}/text/local_glyph_rasterizer.cpp"
+    "${_def}/util/async_task.cpp"
+    "${_def}/util/compression.cpp"
+    "${_def}/util/filesystem.cpp"
+    "${_def}/util/image.cpp"
+    "${_def}/util/jpeg_reader.cpp"
+    "${_def}/util/webp_reader.cpp"
+    "${_def}/util/logging_stderr.cpp"
+    "${_def}/util/monotonic_timer.cpp"
+    "${_def}/util/png_reader.cpp"
+    "${_def}/util/png_writer.cpp"
+    "${_def}/util/run_loop.cpp"
+    "${_def}/util/string_stdlib.cpp"
+    "${_def}/util/timer.cpp"
+    "${_def}/util/utf.cpp"
+    # Windows-native thread + thread-local (instead of the default util versions).
+    "${_win}/thread.cpp"
+    "${_win}/thread_local.cpp"
+    # Vulkan headless backend (the off-screen render target). The Vulkan renderer
+    # core + shaders + glslang/SPIRV/VMA are attached by the root's cmake/vulkan.cmake
+    # (keyed on MLN_WITH_VULKAN); this default-platform headless piece is the only
+    # source we hand-attach (mirrors windows.cmake's MLN_WITH_VULKAN branch).
+    "${_def}/vulkan/headless_backend.cpp"
+  )
+
+  target_compile_definitions(mbgl-core PRIVATE
+    NOMINMAX
+    GHC_WIN_DISABLE_WSTRING_STORAGE_TYPE
+    CURL_STATICLIB
+    USE_STD_FILESYSTEM)
+
+  target_include_directories(mbgl-core
+    PUBLIC
+      "${MLN_ROOT}/platform/default/include"
+    PRIVATE
+      "${MLN_ROOT}/platform/windows/include"
+      # mbgl's Vulkan sources + the headless backend include <vulkan/vulkan.hpp>;
+      # the vendored Vulkan-Headers supply it (mirrors windows.cmake:148). The root's
+      # PUBLIC link of mbgl-vendor-vulkan-headers should also propagate this, but we
+      # add it explicitly as belt-and-suspenders.
+      "${MLN_ROOT}/vendor/Vulkan-Headers/include"
+      ${CURL_INCLUDE_DIRS}
+      ${JPEG_INCLUDE_DIRS}
+      ${LIBUV_INCLUDE_DIRS}
+      ${WEBP_INCLUDE_DIRS}
+  )
+
+  include("${MLN_ROOT}/vendor/nunicode.cmake")
+  include("${MLN_ROOT}/vendor/sqlite.cmake")
+
+  # System ICU if recent enough, else the vendored builtin (mirrors windows.cmake).
+  if(NOT ICU_FOUND OR "${ICU_VERSION}" VERSION_LESS 62.0)
+    include("${MLN_ROOT}/vendor/icu.cmake")
+    # number_format.cpp is the ONLY file that reads MBGL_USE_BUILTIN_ICU (it swaps the
+    # full-ICU number formatter — absent from the stripped vendored ICU — for a builtin
+    # one). Define it on the whole mbgl-core target: set_source_files_properties is
+    # directory-scoped and would NOT reach mbgl-core, which is defined in the submodule
+    # subdirectory (the upstream set_source_files_properties pattern silently no-ops for
+    # an out-of-tree core; only system-ICU builds dodged it).
+    target_compile_definitions(mbgl-core PRIVATE MBGL_USE_BUILTIN_ICU)
+    target_compile_definitions(mbgl-vendor-icu PRIVATE U_STATIC_IMPLEMENTATION)
+    # Put the builtin ICU headers on mbgl-core's include path (BEFORE any system ICU)
+    # so collator.cpp finds <unicode/...> — windows.cmake does this explicitly; the
+    # vendor target's INTERFACE includes alone aren't enough.
+    target_include_directories(mbgl-core BEFORE PRIVATE "${MLN_ROOT}/vendor/icu/include")
+    set(_icu_libs mbgl-vendor-icu)
+  else()
+    set(_icu_libs ICU::i18n ICU::uc ICU::data)
+  endif()
+
+  # vcpkg's libuv exports libuv::uv_a (static, our triplet) or libuv::uv (shared).
+  # Resolve via if(TARGET) — a $<IF:...> genex still names the missing target, and
+  # CMake validates every "::" name in target_link_libraries even in an unselected
+  # genex branch, which fails configure.
+  if(TARGET libuv::uv_a)
+    set(_uv_target libuv::uv_a)
+  else()
+    set(_uv_target libuv::uv)
+  endif()
+
+  target_link_libraries(mbgl-core PRIVATE
+    ${CURL_LIBRARIES}
+    dlfcn-win32::dl
+    ${JPEG_LIBRARIES}
+    ${WEBP_LIBRARIES}
+    ${_icu_libs}
+    PNG::PNG
+    mbgl-vendor-nunicode
+    mbgl-vendor-sqlite
+    ${_uv_target}
+  )
 endif()
 
 # ---- The C ABI shim ----
@@ -257,8 +425,14 @@ if(APPLE)
   list(APPEND _shim_sources maplibre_flutter_core_metal.mm)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
-  # EGLImage-backed texture ring) — Linux/desktop-GL.
+  # EGLImage-backed texture ring exported as a dmabuf) — Linux/desktop-GL only.
   list(APPEND _shim_sources maplibre_flutter_core_gl.cpp)
+elseif(WIN32)
+  # maplibre_flutter_core_vk.cpp is the Windows zero-copy present helper: it imports
+  # mbgl's rendered Vulkan image into a ring of shared D3D11 textures and publishes DXGI
+  # shared handles for a Flutter GpuSurfaceTexture (the Vulkan->D3D11 analog of the macOS
+  # Metal/IOSurface path; replaces the obsolete ANGLE-GL maplibre_flutter_core_d3d.cpp).
+  list(APPEND _shim_sources maplibre_flutter_core_vk.cpp)
 endif()
 
 add_library(maplibre_flutter_core SHARED ${_shim_sources})
@@ -281,6 +455,21 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # already found above (find_package(OpenGL REQUIRED EGL)).
   find_library(GLESV2_LIBRARY NAMES GLESv2)
   target_link_libraries(maplibre_flutter_core PRIVATE OpenGL::EGL ${GLESV2_LIBRARY})
+elseif(WIN32)
+  # The shim's Vulkan->D3D11 zero-copy present (maplibre_flutter_core_vk.cpp) imports
+  # mbgl's rendered Vulkan image into a ring of shared D3D11 textures and publishes DXGI
+  # shared handles for Flutter's GpuSurfaceTexture. It needs the system D3D11/DXGI libs
+  # and the Vulkan headers. (VK_USE_PLATFORM_WIN32_KHR + the dynamic-dispatcher /
+  # no-default-dispatcher defines are set by mbgl's renderer_backend.hpp, which _vk.cpp
+  # includes first — so we must NOT redefine them here, else MSVC warns C4005.)
+  target_link_libraries(maplibre_flutter_core PRIVATE d3d11 dxgi)
+  target_include_directories(maplibre_flutter_core PRIVATE
+    "${MLN_ROOT}/vendor/Vulkan-Headers/include"
+    # mbgl's public Vulkan headers (include/mbgl/vulkan/*) pull PRIVATE headers from
+    # mbgl's src/ (e.g. mbgl/gfx/cull_face_mode.hpp), so the shim — which includes those
+    # Vulkan headers for the present helper — needs mbgl's src/ on its include path too.
+    "${MLN_ROOT}/src")
+  target_compile_definitions(maplibre_flutter_core PRIVATE NOMINMAX)
 endif()
 
 # Hide everything but the FFI_PLUGIN_EXPORT-annotated C symbols.

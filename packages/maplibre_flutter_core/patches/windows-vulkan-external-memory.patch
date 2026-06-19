@@ -1,0 +1,58 @@
+diff --git a/src/mbgl/vulkan/renderer_backend.cpp b/src/mbgl/vulkan/renderer_backend.cpp
+index 7382d2f9c..08a390594 100644
+--- a/src/mbgl/vulkan/renderer_backend.cpp
++++ b/src/mbgl/vulkan/renderer_backend.cpp
+@@ -137,6 +137,15 @@ std::vector<const char*> RendererBackend::getInstanceExtensions() {
+     return {
+ #ifdef __APPLE__
+         "VK_KHR_portability_enumeration"
++#endif
++#ifdef _WIN32
++        // MBL_WIN32_EXTERNAL_MEMORY (maplibre_flutter committed patch): the device LUID
++        // (VkPhysicalDeviceIDProperties, used to match the D3D11 adapter for the zero-copy
++        // Vulkan->D3D11 present) is read via vkGetPhysicalDeviceProperties2, which is not
++        // core at this 1.0 instance — enable its KHR instance extension. If the loader
++        // lacks it, checkAvailability simply skips it and the instance is still created
++        // (the present helper then falls back to the CPU path), so this never breaks init.
++        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+ #endif
+     };
+ }
+@@ -562,6 +571,28 @@ void RendererBackend::initDevice() {
+ 
+     pickPhysicalDevice();
+ 
++    // MBL_WIN32_EXTERNAL_MEMORY (maplibre_flutter committed patch): additionally enable
++    // the D3D11<->Vulkan interop extensions when the chosen device exposes them. These
++    // are deliberately NOT added to `extensions` (the required set used to SELECT the
++    // device above) — they are enabled-if-available, so a GPU lacking them still inits
++    // and the maplibre_flutter present helper just falls back to the CPU readback path.
++    std::vector<const char*> enabledExtensions(extensions.begin(), extensions.end());
++#ifdef _WIN32
++    {
++        const auto& deviceExtensions = physicalDevice.enumerateDeviceExtensionProperties(nullptr, dispatcher);
++        for (const char* ext : {VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
++                                VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
++                                VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
++                                VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME}) {
++            if (checkAvailability(deviceExtensions, {ext}, [](const vk::ExtensionProperties& value) {
++                    return value.extensionName.data();
++                })) {
++                enabledExtensions.push_back(ext);
++            }
++        }
++    }
++#endif
++
+     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
+ 
+     float queuePriority = 1.0f;
+@@ -597,7 +628,7 @@ void RendererBackend::initDevice() {
+ 
+     auto createInfo = vk::DeviceCreateInfo()
+                           .setQueueCreateInfos(queueCreateInfos)
+-                          .setPEnabledExtensionNames(extensions)
++                          .setPEnabledExtensionNames(enabledExtensions)
+                           .setPEnabledFeatures(&physicalDeviceFeatures);
+ 
+     device = physicalDevice.createDeviceUnique(createInfo, nullptr, dispatcher);

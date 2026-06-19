@@ -141,6 +141,24 @@ external int mbl_map_current_gl_image(
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
 external int mbl_map_gl_active(ffi.Pointer<MblMap> map);
 
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Pointer<ffi.Void>>,
+    ffi.Pointer<ffi.Uint32>,
+    ffi.Pointer<ffi.Uint32>,
+  )
+>()
+external int mbl_map_current_d3d_handle(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Pointer<ffi.Void>> out_handle,
+  ffi.Pointer<ffi.Uint32> out_width,
+  ffi.Pointer<ffi.Uint32> out_height,
+);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_d3d_active(ffi.Pointer<MblMap> map);
+
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
 external int mbl_map_write_png(
   ffi.Pointer<MblMap> map,

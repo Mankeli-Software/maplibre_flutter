@@ -6,27 +6,28 @@ import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 /// Bootstrap channel for the texture registrar (the one sanctioned platform-
-/// channel use, CLAUDE.md §3/§10): Dart hands the native GTK plugin the core
-/// map's handle + the core's resolved function addresses to bind an
-/// `FlPixelBufferTexture` to. Registration only — the per-frame data path is
-/// native + FFI (the core's render thread → the texture's `copy_pixels`).
+/// channel use, CLAUDE.md §3/§10): Dart hands the native Windows plugin the core
+/// map's handle + the core's resolved function addresses to bind a
+/// `flutter::PixelBufferTexture` to. Registration only — the per-frame data path
+/// is native + FFI (the core's render thread → the texture's copy callback).
 const MethodChannel _registrar = MethodChannel(
-  'maplibre_flutter/linux/registrar',
+  'maplibre_flutter/windows/registrar',
 );
 
-/// Controller for a map composited through a Flutter `Texture` on Linux.
+/// Controller for a map composited through a Flutter `Texture` on Windows.
 ///
-/// Linux is part of the desktop tier (CLAUDE.md §3): it drives `mbgl-core` over
-/// FFI (via `maplibre_flutter_core`, OpenGL/EGL arm), which renders off-screen on
-/// its own thread; the native GTK plugin's `FlPixelBufferTexture` reads each RGBA
-/// frame (`mbl_map_copy_frame`) into a Flutter `Texture`. Mirrors the macOS
-/// controller minus the Metal/IOSurface zero-copy path (GL has no public texture
-/// handle, so the present is CPU pixel-buffer; zero-copy `FlTextureGL` is later).
+/// Windows is part of the desktop tier (CLAUDE.md §3): it drives `mbgl-core` over
+/// FFI (via `maplibre_flutter_core`, the **ANGLE / OpenGL ES + EGL** arm), which
+/// renders off-screen on its own thread; the native Windows plugin's
+/// `flutter::PixelBufferTexture` reads each RGBA frame (`mbl_map_copy_frame`) into
+/// a Flutter `Texture`. Mirrors the Linux controller (same CPU pixel-buffer
+/// present); zero-copy on Windows would use a D3D shared texture and is a later
+/// step, so this v1 has only the CPU path.
 ///
-/// NOTE: not yet run on real Linux hardware — see CLAUDE.md §8.
-class MapLibreFlutterLinuxController
+/// NOTE: not yet run on real Windows hardware — see CLAUDE.md §8.
+class MapLibreFlutterWindowsController
     implements MapLibreMapController, MapLibreGestureHandler {
-  MapLibreFlutterLinuxController._(this._coreMap, this._textureId) {
+  MapLibreFlutterWindowsController._(this._coreMap, this._textureId) {
     _pollReady();
   }
 
@@ -46,7 +47,7 @@ class MapLibreFlutterLinuxController
 
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
-  static Future<MapLibreFlutterLinuxController> create(
+  static Future<MapLibreFlutterWindowsController> create(
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
@@ -70,10 +71,12 @@ class MapLibreFlutterLinuxController
       pitch: camera.pitch,
     );
 
-    // Zero-copy GL present (EGLImage → FlTextureGL) is opt-in until hardware-proven:
-    // --dart-define=MAPLIBRE_ZEROCOPY=true. We only commit to the GL texture once the
-    // native presenter confirms it initialised ([isZeroCopyActive]); otherwise (or
-    // if registration fails) we fall back to the CPU FlPixelBufferTexture path.
+    // Zero-copy D3D11 present (the core blits into a shared D3D11 texture ring;
+    // the plugin presents it as a Flutter GpuSurfaceTexture via a DXGI shared
+    // handle — no CPU readback) is opt-in: --dart-define=MAPLIBRE_ZEROCOPY=true.
+    // We commit to the GPU texture only once the native presenter confirms it
+    // initialised ([isZeroCopyActive]); otherwise (or if registration fails) we
+    // fall back to the CPU PixelBufferTexture path.
     const wantZeroCopy = bool.fromEnvironment(
       'MAPLIBRE_ZEROCOPY',
       defaultValue: false,
@@ -82,15 +85,12 @@ class MapLibreFlutterLinuxController
     if (wantZeroCopy) {
       coreMap.setZeroCopy(true);
       if (await _confirmZeroCopyActive(coreMap)) {
-        // Native presenter is live; register the FlTextureGL. Guard the channel
-        // call so a registration failure falls back to the CPU texture instead of
-        // failing createMap().
         try {
           textureId = await _registrar
-              .invokeMethod<int>('registerTextureGl', <String, Object?>{
+              .invokeMethod<int>('registerTextureGpu', <String, Object?>{
                 'mapHandle': coreMap.nativeAddress,
-                'currentGlImageFn':
-                    core.MapLibreCoreMap.currentGlImageFunctionAddress,
+                'currentD3dHandleFn':
+                    core.MapLibreCoreMap.currentD3dHandleFunctionAddress,
                 'setFrameCallbackFn':
                     core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
               });
@@ -104,8 +104,9 @@ class MapLibreFlutterLinuxController
     }
 
     if (textureId == null || textureId < 0) {
-      // CPU FlPixelBufferTexture path (default + zero-copy fallback). RGBA (macOS's
-      // CVPixelBuffer uses BGRA).
+      // CPU pixel-buffer present (default + zero-copy fallback): the core emits
+      // RGBA (the plugin's FlutterDesktopPixelBuffer is RGBA), and the native
+      // plugin reads each frame over FFI via `mbl_map_copy_frame`.
       coreMap.setPixelFormatBgra(false);
       textureId = await _registrar
           .invokeMethod<int>('registerTexture', <String, Object?>{
@@ -116,10 +117,10 @@ class MapLibreFlutterLinuxController
           });
     }
 
-    return MapLibreFlutterLinuxController._(coreMap, textureId ?? -1);
+    return MapLibreFlutterWindowsController._(coreMap, textureId ?? -1);
   }
 
-  /// Polls (up to ~1s) for the native GL presenter to come up after
+  /// Polls (up to ~1s) for the native D3D presenter to come up after
   /// [setZeroCopy](true) is processed on the render thread.
   static Future<bool> _confirmZeroCopyActive(
     core.MapLibreCoreMap coreMap,
