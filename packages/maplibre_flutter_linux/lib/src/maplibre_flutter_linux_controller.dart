@@ -82,17 +82,24 @@ class MapLibreFlutterLinuxController
     if (wantZeroCopy) {
       coreMap.setZeroCopy(true);
       if (await _confirmZeroCopyActive(coreMap)) {
-        textureId = await _registrar
-            .invokeMethod<int>('registerTextureGl', <String, Object?>{
-              'mapHandle': coreMap.nativeAddress,
-              'currentGlImageFn':
-                  core.MapLibreCoreMap.currentGlImageFunctionAddress,
-              'setFrameCallbackFn':
-                  core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
-            });
+        // Native presenter is live; register the FlTextureGL. Guard the channel
+        // call so a registration failure falls back to the CPU texture instead of
+        // failing createMap().
+        try {
+          textureId = await _registrar
+              .invokeMethod<int>('registerTextureGl', <String, Object?>{
+                'mapHandle': coreMap.nativeAddress,
+                'currentGlImageFn':
+                    core.MapLibreCoreMap.currentGlImageFunctionAddress,
+                'setFrameCallbackFn':
+                    core.MapLibreCoreMap.setFrameCallbackFunctionAddress,
+              });
+        } catch (_) {
+          textureId = null;
+        }
       }
       if (textureId == null || textureId < 0) {
-        coreMap.setZeroCopy(false); // unsupported / failed → CPU fallback
+        coreMap.setZeroCopy(false); // unavailable / failed → CPU fallback
       }
     }
 
