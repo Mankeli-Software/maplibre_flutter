@@ -23,8 +23,6 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
-# DIAG (temporary): dbghelp for the crash-stack dumper (MblCrashFilter).
-target_link_libraries(${PLUGIN_NAME} PRIVATE dbghelp)
 
 # Libraries bundled with the app. The core engine (maplibre_flutter_core.dll) is
 # produced + bundled by maplibre_flutter_core's build hook (native assets).

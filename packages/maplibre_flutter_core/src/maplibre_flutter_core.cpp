@@ -51,7 +51,7 @@
 #include <mbgl/gfx/renderable.hpp>
 #include <mbgl/gfx/renderer_backend.hpp>
 #if defined(_WIN32)
-#include "maplibre_flutter_core_d3d.h"
+#include "maplibre_flutter_core_vk.h"
 #else
 #include "maplibre_flutter_core_gl.h"
 #endif
@@ -122,7 +122,7 @@ struct MblMap {
   // initialised; `d3dTearingDown` makes the getter stop handing out the handle
   // while the render thread destroys the presenter. `currentD3dHandle == nullptr`
   // means "no frame".
-  MblD3dPresenter *d3dPresenter = nullptr;
+  MblVkPresenter *vkPresenter = nullptr;
   void *currentD3dHandle = nullptr;
   uint32_t d3dWidth = 0;
   uint32_t d3dHeight = 0;
@@ -263,7 +263,7 @@ bool renderZeroCopyInner(MblMap *m) {
 bool presentZeroCopy(MblMap *m) {
 #if defined(_WIN32)
   void *handle = nullptr;
-  if (mbl_d3d_presenter_present(m->d3dPresenter, &handle) == 0) {
+  if (mbl_vk_presenter_present(m->vkPresenter, &handle) == 0) {
     return false;
   }
   {
@@ -289,27 +289,31 @@ bool presentZeroCopy(MblMap *m) {
 }
 
 // Render thread, inside its own BackendScope. Resizes the present ring to the
-// current render size, binds mbgl's color renderable (so GL_DRAW_FRAMEBUFFER_BINDING
-// is reliably its FBO and mbgl's GL state cache stays truthful), then blits the
-// already-rendered frame into the ring. Used by the Continuous path (the frame is
-// drawn by the time the observer fires). Returns false to fall back to CPU readback.
+// current render size, then blits the already-rendered frame into the ring. Used by
+// the Continuous path (the frame is drawn by the time the observer fires). Returns
+// false to fall back to CPU readback.
 bool presentZeroCopyAlreadyRendered(MblMap *m) {
   mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
 #if defined(_WIN32)
-  if (mbl_d3d_presenter_resize(m->d3dPresenter, m->renderWidth,
+  if (mbl_vk_presenter_resize(m->vkPresenter, m->renderWidth,
                                m->renderHeight) == 0) {
     return false;
   }
+  // Vulkan: the present helper fetches mbgl's rendered image via the headless
+  // renderable's getAcquiredImage() itself, so there is no GL FBO to bind here.
 #else
   if (mbl_gl_presenter_resize(m->glPresenter, m->renderWidth, m->renderHeight) ==
       0) {
     return false;
   }
-#endif
+  // GL: bind mbgl's color renderable so GL_DRAW_FRAMEBUFFER_BINDING is reliably its
+  // FBO (the dmabuf presenter blits from the currently-bound draw framebuffer) and
+  // mbgl's GL state cache stays truthful.
   m->frontend->getBackend()
       ->getDefaultRenderable()
       .getResource<mbgl::gfx::RenderableResource>()
       .bind();
+#endif
   return presentZeroCopy(m);
 }
 
@@ -356,7 +360,7 @@ void renderNow(MblMap *m) {
       m->zeroCopy = false;
     }
 #elif defined(_WIN32)
-    if (m->zeroCopy && m->d3dPresenter != nullptr) {
+    if (m->zeroCopy && m->vkPresenter != nullptr) {
       if (renderZeroCopy(m)) {
         return;
       }
@@ -481,7 +485,7 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
   }
 
 #if defined(_WIN32)
-  if (m->d3dPresenter != nullptr) {
+  if (m->vkPresenter != nullptr) {
     {
       std::lock_guard<std::mutex> lk(m->frameMutex);
       m->currentD3dHandle = nullptr;
@@ -489,8 +493,8 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
       m->d3dTearingDown = true; // stop the raster getter handing out the handle
     }
     mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
-    mbl_d3d_presenter_destroy(m->d3dPresenter);
-    m->d3dPresenter = nullptr;
+    mbl_vk_presenter_destroy(m->vkPresenter);
+    m->vkPresenter = nullptr;
   }
 #elif !defined(__APPLE__)
   if (m->glPresenter != nullptr) {
@@ -537,7 +541,7 @@ void publishCurrentFrame(MblMap *m) {
       m->zeroCopy = false; // blitter unavailable; fall back to CPU readback
     }
 #elif defined(_WIN32)
-    if (m->zeroCopy && m->d3dPresenter != nullptr) {
+    if (m->zeroCopy && m->vkPresenter != nullptr) {
       // The frame is already drawn (the observer fired after present+swap).
       if (presentZeroCopyAlreadyRendered(m)) {
         return;
@@ -619,7 +623,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
 
   m->renderLoop = nullptr;
 #if defined(_WIN32)
-  if (m->d3dPresenter != nullptr) {
+  if (m->vkPresenter != nullptr) {
     {
       std::lock_guard<std::mutex> lk(m->frameMutex);
       m->currentD3dHandle = nullptr;
@@ -627,8 +631,8 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
       m->d3dTearingDown = true; // stop the raster getter handing out the handle
     }
     mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
-    mbl_d3d_presenter_destroy(m->d3dPresenter);
-    m->d3dPresenter = nullptr;
+    mbl_vk_presenter_destroy(m->vkPresenter);
+    m->vkPresenter = nullptr;
   }
 #elif !defined(__APPLE__)
   if (m->glPresenter != nullptr) {
@@ -844,12 +848,15 @@ void mbl_map_set_zero_copy(MblMap *m, int enabled) {
   const bool on = enabled != 0;
   m->post([m, on] {
     m->zeroCopy = on;
-    if (on && m->d3dPresenter == nullptr) {
-      // The presenter queries ANGLE's D3D11 device; a NULL result (e.g. a non-D3D
-      // ANGLE backend) leaves zeroCopy off so the CPU PixelBufferTexture path stays.
+    if (on && m->vkPresenter == nullptr) {
+      // The presenter matches mbgl's Vulkan device (by LUID) to a D3D11 adapter and
+      // builds a shared-texture ring; a NULL result (no valid LUID / external-memory
+      // unsupported / D3D device-creation failure) leaves zeroCopy off so the CPU
+      // PixelBufferTexture path stays. It needs mbgl's Vulkan backend (device/queue/
+      // dispatcher + the per-frame rendered image), so pass it the backend.
       mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
-      m->d3dPresenter = mbl_d3d_presenter_create();
-      if (m->d3dPresenter == nullptr) {
+      m->vkPresenter = mbl_vk_presenter_create(m->frontend->getBackend());
+      if (m->vkPresenter == nullptr) {
         m->zeroCopy = false; // unsupported config → stay on CPU readback
       } else {
         std::lock_guard<std::mutex> lk(m->frameMutex);
