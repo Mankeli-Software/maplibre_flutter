@@ -292,9 +292,16 @@ int mbl_gl_presenter_present(MblGlPresenter *p, MblGlDmabufFrame *out) {
   if (glGetError() != GL_NO_ERROR) {
     return 0;
   }
-  // v1 sync: ensure the blit is GPU-complete before the raster thread samples the
-  // shared dmabuf.
-  glFinish();
+  // v2 sync: submit the blit without stalling the render thread (glFlush, not the
+  // v1 glFinish) and rely on the dmabuf's IMPLICIT fence — on Linux/Mesa the
+  // producer's write attaches a fence to the buffer's reservation object, and the
+  // consumer's sample (Flutter's raster context, a different EGLDisplay) waits on
+  // it automatically. This is cross-display-safe (a fence handle, like an EGLImage,
+  // is display-scoped and could NOT be shared; the kernel dma_resv fence can).
+  // glFinish would also be correct but stalls the render thread every frame; the
+  // explicit alternative if a driver lacks implicit dma-buf sync is an
+  // EGL_ANDROID_native_fence_sync fd passed alongside the dmabuf fd.
+  glFlush();
 
   out->fd = slot.fd;
   out->fourcc = slot.fourcc;

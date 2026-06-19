@@ -103,9 +103,17 @@ is scaffolded vs. still TODO:
     cannot be shared between them — the first EGLImage-blit attempt went white. The fix is a **Linux
     dmabuf** (a kernel buffer fd, cross-display): the core blits into a ring of RGBA8 textures and
     exports each as a dmabuf (`EGL_MESA_image_dma_buf_export`); the GTK plugin imports it into an
-    `FlTextureGL` via `EGL_LINUX_DMA_BUF_EXT`. Runtime-validated on device (zero-copy activates,
-    dmabuf imports with zero errors, app stable); on-screen visual A/B still TODO. Remaining Linux:
-    **interaction testing**. On `feat/desktop-linux-gl`.
+    `FlTextureGL` via `EGL_LINUX_DMA_BUF_EXT`. Sync is `glFlush` + the dmabuf's **implicit kernel
+    fence** (cross-display-safe; a `glFinish` or an EGLSync handle would stall / can't cross
+    displays). **Confirmed working on device** (2026-06-19): renders correctly, interaction
+    (pan/zoom/fly-to/style) works, no white screen. The white-screen bug en route: the
+    `registerTextureGl` channel handler ran EGL calls on the **platform thread (no current
+    context)** → false failure → uncaught `PlatformException` crashed `createMap`; fixed by doing
+    all EGL work in the raster-thread `populate` (general rule: **never call EGL/GL on the platform
+    thread in a Flutter Linux plugin**). Perf A/B on the **iGPU** is ~parity with the CPU path —
+    expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
+    zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
+    currently version-mismatched). On `feat/desktop-linux-gl`.
   - **Windows / Web** native sides are still stubs — `createMap()` throws `UnimplementedError`;
     those packages declare only `dartPluginClass` (web: `pluginClass`). Windows will reuse the same
     GL arm via **ANGLE** (EGL-on-D3D) + a `FlutterDesktopPixelBufferTexture`.
@@ -700,5 +708,25 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     with **zero** errors (vs the EGLImage flood of "mismatch"), app stable. **On-screen visual A/B
     still pending** (couldn't screenshot the Wayland window non-interactively — `gnome-screenshot`
     blocks on a portal dialog; never call it from an automated shell).
+
+- **2026-06-19 — Linux zero-copy confirmed working on device; white-screen fix + v2 sync + perf
+  note.** The dmabuf `FlTextureGL` rendered white on first hardware run. Root cause: the
+  `registerTextureGl` method-channel handler ran its EGL probing on the **platform thread, which has
+  no current EGL context**, so `eglGetCurrentDisplay()` was `EGL_NO_DISPLAY`, the dmabuf-support
+  check failed, and the resulting `PlatformException` (no Dart guard) crashed `createMap()`. Fix
+  (commit `88996bd`): all EGL entry-point resolution + dmabuf-support detection happens lazily in the
+  first `populate()` (raster thread, context current); the handler only registers; the Dart
+  controller guards the channel call and falls back to CPU on failure. **General rule: never call
+  EGL/GL on the platform thread in a Flutter Linux plugin — only on the raster thread (populate /
+  texture callbacks).** **v2 sync:** the per-frame `glFinish` stall was replaced with `glFlush` +
+  the dmabuf's **implicit kernel fence** (the producer's write fence on the buffer's dma_resv; the
+  consumer's sample auto-waits cross-context). An EGLSync handle was NOT used — it is EGLDisplay-
+  scoped like the EGLImage, so it can't cross the mbgl/Flutter display boundary; the explicit
+  fallback (if a driver lacks implicit dma-buf sync) is an `EGL_ANDROID_native_fence_sync` fd passed
+  beside the dmabuf fd. **Perf:** A/B on the Intel **iGPU** was ~parity with the CPU
+  `FlPixelBufferTexture` path — expected, since unified memory makes the avoided CPU readback a cheap
+  same-RAM memcpy, not a PCIe transfer; zero-copy's real win is on discrete GPUs. This box is a
+  hybrid-graphics laptop (iGPU + NVIDIA GTX 1070 Mobile, Optimus on-demand); apps default to the
+  iGPU and the NVIDIA driver is currently version-mismatched, so the dGPU is untested.
 
 _Append new decisions here with date and rationale._
