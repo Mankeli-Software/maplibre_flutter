@@ -107,12 +107,18 @@ FFI_PLUGIN_EXPORT int mbl_map_copy_frame(MblMap *map, uint8_t *dst,
                                          uint32_t *out_stride);
 
 // Enable (1) or disable (0) zero-copy presentation. When enabled, each render
-// copies mbgl's rendered Metal texture — on the GPU — into an IOSurface-backed
-// BGRA texture (no CPU readback or swizzle), exposed via mbl_map_current_iosurface.
-// macOS only; a no-op (and the CPU mbl_map_copy_frame path stays in use) on other
-// platforms or if the Metal blitter can't initialise. Off by default. Call before
-// or during use; takes effect on the next render.
+// GPU-blits mbgl's rendered frame into a shared texture (no CPU readback): on macOS
+// an IOSurface-backed BGRA texture (mbl_map_current_iosurface), on Linux/desktop GL
+// an EGLImage-backed RGBA texture exposed via mbl_map_current_gl_image. A no-op
+// (the CPU mbl_map_copy_frame path stays in use) if the platform helper can't
+// initialise. Off by default. Call before or during use; takes effect next render.
 FFI_PLUGIN_EXPORT void mbl_map_set_zero_copy(MblMap *map, int enabled);
+
+// Select the byte order mbl_map_copy_frame writes: 1 = BGRA (default; matches the
+// macOS CVPixelBuffer), 0 = RGBA (e.g. Linux FlPixelBufferTexture). mbgl renders
+// RGBA, so BGRA costs a per-pixel swizzle and RGBA is a straight copy. Set once at
+// setup; does not affect the zero-copy/IOSurface path (always BGRA).
+FFI_PLUGIN_EXPORT void mbl_map_set_pixel_format_bgra(MblMap *map, int bgra);
 
 // Return the IOSurface (as an opaque pointer; an IOSurfaceRef on macOS) backing
 // the latest zero-copy frame, or NULL if zero-copy is off or no frame exists yet.
@@ -120,6 +126,37 @@ FFI_PLUGIN_EXPORT void mbl_map_set_zero_copy(MblMap *map, int enabled);
 // surface is owned by the map and reused across frames (a small ring), so read it
 // promptly from the present path. Safe to call from the raster thread.
 FFI_PLUGIN_EXPORT void *mbl_map_current_iosurface(MblMap *map);
+
+// A zero-copy GL frame published as a Linux dmabuf — a kernel buffer fd that is
+// shareable ACROSS EGLDisplays/contexts (mbgl's render context and Flutter's raster
+// context use different displays, so an EGLImage handle cannot cross between them; a
+// dmabuf can). The plugin imports this into Flutter's context via
+// EGL_LINUX_DMA_BUF_EXT. `fd` is process-wide and owned by the core (the plugin must
+// NOT close it). `fd < 0` means "no frame".
+typedef struct MblGlDmabufFrame {
+  int32_t fd;          // dmabuf file descriptor (process-wide; core owns it)
+  uint32_t fourcc;     // DRM FourCC pixel format
+  uint32_t stride;     // plane-0 row pitch in bytes
+  uint32_t offset;     // plane-0 byte offset
+  uint64_t modifier;   // DRM format modifier (DRM_FORMAT_MOD_INVALID if none)
+  uint64_t generation; // bumped on resize (the fd changes); for the plugin's cache
+  uint32_t ring_index; // which ring slot (0..N-1)
+  uint32_t width;
+  uint32_t height;
+} MblGlDmabufFrame;
+
+// Latest zero-copy GL frame for the Linux FlTextureGL present (called by address
+// from the plugin's populate callback on the raster thread). Fills *out with the
+// current dmabuf descriptor and returns 1 if a zero-copy GL frame is available, 0
+// otherwise (zero-copy off, no frame yet, tearing down, or non-Linux). Reads only
+// mutex-guarded state — no GL/EGL calls — so it is safe on the raster thread.
+FFI_PLUGIN_EXPORT int mbl_map_current_gl_image(MblMap *map,
+                                               MblGlDmabufFrame *out);
+
+// Non-zero (1) if the GL zero-copy presenter is live (its dmabuf exporter
+// initialised), 0 otherwise. Lets the plugin/Dart confirm zero-copy actually
+// activated before committing to the FlTextureGL path. 0 on non-Linux.
+FFI_PLUGIN_EXPORT int mbl_map_gl_active(MblMap *map);
 
 // Debug/verification: encode the latest frame to a PNG file at `path` using
 // mbgl's own PNG encoder. Returns 1 on success, 0 if no frame or the write failed.
