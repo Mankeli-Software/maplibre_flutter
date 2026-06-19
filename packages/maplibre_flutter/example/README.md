@@ -1,17 +1,31 @@
-# maplibre_flutter_example
+# maplibre_flutter example
 
-Demonstrates how to use the maplibre_flutter package.
+> ⚠️ **Work in progress — pre-release, not production-ready.** Every target platform
+> (Android, iOS, macOS, Windows, Linux, Web) renders a real MapLibre map, but only a small
+> slice of the API is wired so far — map creation, camera (get / move / jump / fly), style
+> switching, gestures, resize, and lifecycle. Layers, sources, annotations, events, and
+> queries are **not** exposed yet. The public API will change without notice; pin an exact
+> version. ⭐ the [repository](https://github.com/Mankeli-Software/maplibre_flutter) to follow
+> along.
 
-## Getting Started
+The reference app for [`maplibre_flutter`](../) and the project's primary manual test harness.
+It shows a full-screen `MapLibreMap` with floating controls that:
 
-This project is a starting point for a Flutter application.
+- **zoom in / out** — read the camera and animate to `zoom ± 1`,
+- **fly to** — animate the camera through a few cities (London, Tokyo, New York),
+- **toggle style** — swap between two keyless styles at runtime (MapLibre demotiles ↔
+  OpenFreeMap Liberty).
 
-A few resources to get you started if this is your first Flutter project:
+The overlay controls are wrapped in `PointerInterceptor` so their taps don't leak through to the
+map on web (where the map is a DOM element under the Flutter scene); it's a no-op on the other
+platforms. See [`lib/main.dart`](lib/main.dart).
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Run it
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter run -d <android|ios|macos|windows|linux|chrome>
+```
+
+Both demo styles are keyless, so no API token is required. For platform-specific setup (Apple
+codesigning, the desktop native engine submodule, etc.) see the repository
+[CONTRIBUTING.md](../../../CONTRIBUTING.md).
