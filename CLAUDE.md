@@ -129,8 +129,15 @@ is scaffolded vs. still TODO:
     expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
     zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
     currently version-mismatched). On `feat/desktop-linux-gl`.
-  - **Windows — verified on real hardware (builds + renders + camera/style control).** The CPU
-    pixel-buffer analog of the Linux tier (reuses `maplibre_flutter_core`): a new **ANGLE/EGL arm**
+  - **Windows — verified on real hardware; the tier now runs on mbgl's VULKAN backend (the
+    ANGLE/OpenGL-ES arm described below was replaced after it crashed on fly-to — see the
+    2026-06-19 "Windows Vulkan backend implemented" decision-log entry).** The fly-to/heavy-movement
+    0xC0000005 crash is **fixed** (no GL `DrawableGL` path under Vulkan; validated on a Windows 11
+    Intel UHD 630 box), the CPU present path renders correctly, and zero-copy
+    (`maplibre_flutter_core_vk.cpp`, opt-in `MAPLIBRE_ZEROCOPY=true`) works on GPUs that can import
+    the legacy D3D shared handle but falls back to CPU on this Intel driver. _Original ANGLE arm
+    (history, superseded by Vulkan):_ The CPU pixel-buffer analog of the Linux tier (reuses
+    `maplibre_flutter_core`): a new **ANGLE/EGL arm**
     in the core's `src/CMakeLists.txt` (`MLN_WITH_EGL` → ANGLE `libEGL`/`libGLESv2`,
     `platform/windows` sources + the EGL headless backend; vcpkg deps — mirrors
     `platform/windows/windows.cmake`); a hybrid Windows C++ plugin (`MaplibreFlutterWindowsPlugin`:
@@ -974,5 +981,69 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     `vulkan/headless_backend`), a Vulkan→D3D11-shared-texture present helper (replacing the GL blit),
     and the plugin's `GpuSurfaceTexture` path reused. Also worth filing an upstream mbgl issue for the
     `DrawableGL`/VAO-retains-freed-VBO lifetime gap.
+
+- **2026-06-19 — Windows Vulkan backend implemented; the fly-to/heavy-movement crash is FIXED
+  (validated on hardware). Zero-copy present is blocked on this Intel iGPU's driver, with a
+  graceful CPU fallback. On `feat/desktop-windows-angle`.** Replaced the crashing ANGLE/OpenGL-ES
+  core arm with mbgl's **Vulkan** headless backend (the decision recorded in `1a51d00`/`55a3767`).
+  - **CMake (core `src/CMakeLists.txt` WIN32 arm):** flip to `MLN_WITH_VULKAN` (OpenGL/EGL/Metal
+    OFF — `cmake/validate-backend-options.cmake` requires exactly one backend). The root's
+    `cmake/vulkan.cmake` (~line 999) + `vendor/vulkan.cmake` (~1220) auto-attach the Vulkan
+    renderer + shaders + glslang/SPIRV/VMA/Vulkan-Headers (both run **before** the CORE_ONLY
+    `return()`, self-guarded on the flag), so we hand-attach only the single default-platform
+    `platform/default/src/mbgl/vulkan/headless_backend.cpp` + the `vendor/Vulkan-Headers/include`
+    path. Dropped ANGLE entirely (`find_package(unofficial-angle)`, the libEGL/libGLESv2 links,
+    `KHRONOS_STATIC`); mbgl uses a runtime `vk::detail::DynamicLoader` (loads the driver-shipped
+    `vulkan-1.dll`), so there is **nothing new to link or bundle** and the core DLL is ~11 MB
+    (vs ~14 MB with static ANGLE). Build-hook vcpkg ports drop `egl`+`opengl-registry` (idempotency
+    gate re-keyed off the c-ares + libuv configs). The shim's Vulkan present helper additionally
+    needs mbgl's **private `src/`** on its include path (the public Vulkan headers pull
+    `src/mbgl/gfx/*.hpp`).
+  - **CRASH FIXED + validated on device.** The 0xC0000005 lived in `gl::DrawableGL::draw` /
+    `TileLayerGroupGL::render` — GL renderer classes that **do not exist** under Vulkan. Confirmed
+    via ~30 rapid fly-to/zoom/style-toggle iterations (~18s of the exact tile-churn that crashed):
+    **no crash**, 360+ frames published, top-left pixel changing as the camera moved. The temporary
+    crash diagnostics from `1a51d00` (`MblCrashFilter` + dbghelp + the `/MAP` link option) are now
+    **reverted** (Windows is stable).
+  - **CPU present path is the validated default.** `mbl_map_copy_frame`/`readStillImage` is
+    backend-agnostic and works unchanged on Vulkan: the `render_harness` renders demotiles + the
+    OpenFreeMap Liberty vector style correctly, and the "Invalid geometry in line layer" warning
+    that *preceded* the GL crash now just logs and completes. On an iGPU the readback is a cheap
+    unified-memory memcpy. **GOTCHA: GDI screen capture (CopyFromScreen / PrintWindow even with
+    PW_RENDERFULLCONTENT) CANNOT capture Flutter's ANGLE/D3D flip-model external texture — it shows
+    the map area WHITE even when the map renders correctly** (the prior ANGLE session's screenshots
+    show the identical white map area under a working map). Verify rendering via core diagnostics /
+    the harness PNG, never a GDI screenshot.
+  - **Zero-copy (`maplibre_flutter_core_vk.{h,cpp}`, opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true`):
+    written, but BLOCKED on this Intel UHD 630 driver.** The helper LUID-matches mbgl's Vulkan
+    device to a DXGI adapter, creates a D3D11 device there, builds a ring of shared D3D11 BGRA
+    textures, imports each into Vulkan (`VK_KHR_external_memory_win32`), blits mbgl's
+    `getAcquiredImage()` into the slot via `vulkan::Context::submitOneTimeCommand` (which submits
+    with a fence and waits — the analog of the GL path's `glFinish`), and publishes the legacy DXGI
+    shared handle for the **unchanged** plugin `GpuSurfaceTexture` path. **The conflict:** Flutter's
+    consumer (engine `external_texture_d3d.cc` → `EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE`) requires a
+    **legacy** shared handle (`GetSharedHandle`, no keyed mutex), but this Intel driver can only
+    import the **NT** handle into Vulkan (a `vkGetPhysicalDeviceImageFormatProperties2` probe shows
+    `D3D11_TEXTURE` importable, `D3D11_TEXTURE_KMT`/legacy **NOT SUPPORTED**) — mutually exclusive
+    for one texture. The helper detects this (`vkGetMemoryWin32HandlePropertiesKHR` returns
+    `memoryTypeBits=0`), logs it, and **falls back to CPU**. It should work on discrete NVIDIA/AMD
+    GPUs (which typically support the legacy import) — UNTESTED there (this hybrid laptop's NVIDIA
+    driver is version-mismatched). A near-zero-copy path on Intel would be NT-import + a GPU-local
+    `D3D11::CopyResource` into a legacy texture (deferred). Details in memory
+    `windows-vulkan-d3d11-interop`.
+  - **mbgl patch** `patches/windows-vulkan-external-memory.patch` (marker `MBL_WIN32_EXTERNAL_MEMORY`,
+    applied idempotently by the build hook exactly like the DNS patch): appends
+    `VK_KHR_get_physical_device_properties2` to `getInstanceExtensions()` (the 1.0 instance needs it
+    for the device-LUID `VkPhysicalDeviceIDProperties` query) and the external-memory device
+    extensions in `initDevice()` — **enabled-if-available** (deliberately NOT added to the required
+    set used for device *selection*, so a GPU lacking them still initialises and just uses CPU). All
+    `#ifdef _WIN32`-guarded and only compiled under the Vulkan backend → inert on the macOS (Metal)
+    and Linux (GL) tiers.
+  - **No ffigen regen needed:** the C ABI (`maplibre_flutter_core.h`) is unchanged — the present
+    helper's `mbl_d3d_presenter_*`→`mbl_vk_presenter_*` rename is internal (not an ffigen input),
+    and the public `mbl_map_current_d3d_handle`/`mbl_map_d3d_active` are kept (the output is still a
+    D3D shared handle). `maplibre_flutter_core_d3d.{h,cpp}` deleted (replaced by `_vk`). Verified:
+    `flutter build windows` green; `melos analyze` (`--fatal-infos`) + `format` green across all 10
+    packages.
 
 _Append new decisions here with date and rationale._

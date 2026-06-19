@@ -121,7 +121,9 @@ class MapLibreFlutterLinuxController
 
   /// Polls (up to ~1s) for the native GL presenter to come up after
   /// [setZeroCopy](true) is processed on the render thread.
-  static Future<bool> _confirmZeroCopyActive(core.MapLibreCoreMap coreMap) async {
+  static Future<bool> _confirmZeroCopyActive(
+    core.MapLibreCoreMap coreMap,
+  ) async {
     for (var i = 0; i < 20; i++) {
       if (coreMap.isZeroCopyActive()) return true;
       await Future<void>.delayed(const Duration(milliseconds: 50));

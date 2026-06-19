@@ -114,8 +114,8 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core_metal.mm'),
       src.resolve('maplibre_flutter_core_gl.h'),
       src.resolve('maplibre_flutter_core_gl.cpp'),
-      src.resolve('maplibre_flutter_core_d3d.h'),
-      src.resolve('maplibre_flutter_core_d3d.cpp'),
+      src.resolve('maplibre_flutter_core_vk.h'),
+      src.resolve('maplibre_flutter_core_vk.cpp'),
       src.resolve('CMakeLists.txt'),
     ]);
   });
@@ -145,6 +145,17 @@ Future<void> _applySubmodulePatches(
       marker: 'resolveHostViaOS',
       patch: 'patches/windows-dns-os-resolve.patch',
     ),
+    // Windows Vulkan zero-copy: enable the D3D11<->Vulkan external-memory extensions
+    // (and the instance Properties2 extension for the device-LUID query) so the
+    // Vulkan->D3D11 shared-texture present can import mbgl's rendered image. The added
+    // device extensions are enabled-if-available (never required for device selection),
+    // and the code is #ifdef _WIN32-guarded + only compiled under the Vulkan backend, so
+    // this is inert on the macOS (Metal) and Linux (GL) tiers.
+    (
+      file: 'src/mbgl/vulkan/renderer_backend.cpp',
+      marker: 'MBL_WIN32_EXTERNAL_MEMORY',
+      patch: 'patches/windows-vulkan-external-memory.patch',
+    ),
   ];
   for (final p in patches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));
@@ -157,13 +168,12 @@ Future<void> _applySubmodulePatches(
         'maplibre_flutter_core: missing patch ${patchFile.path}.',
       );
     }
-    final result = await Process.run(
-      'git',
-      ['apply', '--ignore-whitespace', patchFile.path],
-      workingDirectory: submodule.path,
-    );
-    if (result.exitCode != 0 ||
-        !target.readAsStringSync().contains(p.marker)) {
+    final result = await Process.run('git', [
+      'apply',
+      '--ignore-whitespace',
+      patchFile.path,
+    ], workingDirectory: submodule.path);
+    if (result.exitCode != 0 || !target.readAsStringSync().contains(p.marker)) {
       logger.severe(result.stdout.toString());
       logger.severe(result.stderr.toString());
       throw Exception(
@@ -218,24 +228,26 @@ Future<void> _provisionWindowsVcpkg(
   final overlayTriplets = src.resolve('vcpkg-triplets/');
   final toolchain = vcpkgRoot.resolve('scripts/buildsystems/vcpkg.cmake');
 
-  // `egl` pulls in `angle` (the EGL/GLES implementation, which provides the
-  // unofficial-angle CMake config our CMakeLists find_package()s); the rest mirror
-  // mbgl's Get-VendorPackages.ps1. ICU is the vendored builtin (vendor/icu.cmake),
-  // so it is intentionally not installed here.
-  final angleConfig = File.fromUri(
-    vcpkgRoot.resolve(
-      'installed/$triplet/share/unofficial-angle/unofficial-angle-config.cmake',
-    ),
-  );
-  // curl is built with the c-ares feature: its default threaded DNS resolver
-  // hangs under our libuv-driven curl multi-socket loop on Windows. (The
-  // OS-resolver patch in _applySubmodulePatches is the primary fix; c-ares is
-  // the fallback resolver — it fails a request fast instead of hanging the slot
-  // if getaddrinfo ever fails.) c-ares's config also gates the (slow) install.
+  // The Windows core renders with mbgl's *Vulkan* backend, whose headers + loader +
+  // glslang/SPIRV/VMA are all vendored in the mbgl submodule (vendor/Vulkan-Headers,
+  // vendor/VulkanMemoryAllocator, vendor/glslang) and the vulkan-1.dll loader ships
+  // with every Windows GPU driver — so there is NO vcpkg port for Vulkan. The former
+  // ANGLE/GL ports (`egl`, `opengl-registry`) are therefore dropped. The rest mirror
+  // mbgl's Get-VendorPackages.ps1. ICU is the vendored builtin (vendor/icu.cmake), so
+  // it is intentionally not installed here.
+  //
+  // curl is built with the c-ares feature: its default threaded DNS resolver hangs
+  // under our libuv-driven curl multi-socket loop on Windows. (The OS-resolver patch
+  // in _applySubmodulePatches is the primary fix; c-ares is the fallback resolver — it
+  // fails a request fast instead of hanging the slot if getaddrinfo ever fails.)
+  // c-ares's + libuv's configs gate the (slow) install (ANGLE's config is gone now).
   final caresConfig = File.fromUri(
     vcpkgRoot.resolve('installed/$triplet/share/c-ares/c-ares-config.cmake'),
   );
-  if (!angleConfig.existsSync() || !caresConfig.existsSync()) {
+  final libuvConfig = File.fromUri(
+    vcpkgRoot.resolve('installed/$triplet/share/libuv/libuvConfig.cmake'),
+  );
+  if (!caresConfig.existsSync() || !libuvConfig.existsSync()) {
     const ports = [
       // ssl -> schannel on Windows (uses the Windows cert store); c-ares -> a
       // socket-based async resolver that integrates with our event loop.
@@ -245,12 +257,10 @@ Future<void> _provisionWindowsVcpkg(
       'libjpeg-turbo',
       'libpng',
       'libwebp',
-      'egl',
-      'opengl-registry',
     ];
     logger.info(
       'maplibre_flutter_core: installing vcpkg deps ($triplet) — the first build '
-      'compiles ANGLE and can take many minutes: ${ports.join(' ')}',
+      'can take several minutes: ${ports.join(' ')}',
     );
     final result = await Process.run(vcpkgExe.path, [
       'install',

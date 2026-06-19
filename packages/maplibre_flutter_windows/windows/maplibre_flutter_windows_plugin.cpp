@@ -23,66 +23,7 @@
 #include <mutex>
 #include <vector>
 
-// DIAG (temporary): crash-stack dumper for the fly-to/fast-pan access violation.
-#include <windows.h>
-#include <dbghelp.h>
-#include <cstdio>
-#include <cstring>
-
 namespace {
-
-// DIAG: walk + print the faulting thread's stack on an unhandled exception (the
-// 0xC0000005 under heavy movement). Uses dbghelp + the x64 .pdata unwind info, so
-// it works on optimized builds; mbgl frames show as maplibre_flutter_core.dll+RVA
-// (resolve via the linker .map), our plugin/runner frames resolve to names.
-LONG WINAPI MblCrashFilter(EXCEPTION_POINTERS* ep) {
-  HANDLE proc = GetCurrentProcess();
-  SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
-  SymInitialize(proc, nullptr, TRUE);
-  fprintf(stderr, "[mbl-crash] code=0x%08lx addr=%p\n",
-          ep->ExceptionRecord->ExceptionCode,
-          ep->ExceptionRecord->ExceptionAddress);
-  fflush(stderr);
-  CONTEXT ctx = *ep->ContextRecord;
-  char symBuf[sizeof(SYMBOL_INFO) + 512] = {};
-  auto* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
-  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-  sym->MaxNameLen = 511;
-  for (int i = 0; i < 48 && ctx.Rip != 0; i++) {
-    const DWORD64 pc = ctx.Rip;
-    HMODULE hmod = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCSTR>(pc), &hmod);
-    char modPath[MAX_PATH] = "?";
-    if (hmod) GetModuleFileNameA(hmod, modPath, MAX_PATH);
-    const char* mod = strrchr(modPath, '\\');
-    mod = mod ? mod + 1 : modPath;
-    const DWORD64 rva = hmod ? (pc - reinterpret_cast<DWORD64>(hmod)) : 0;
-    DWORD64 disp = 0;
-    if (SymFromAddr(proc, pc, &disp, sym)) {
-      fprintf(stderr, "[mbl-crash] #%02d %s!%s+0x%llx (rva 0x%llx)\n", i, mod,
-              sym->Name, disp, rva);
-    } else {
-      fprintf(stderr, "[mbl-crash] #%02d %s+0x%llx\n", i, mod, rva);
-    }
-    fflush(stderr);
-    // Manual x64 unwind via in-memory .pdata (no PDB needed; reliable on /O2).
-    DWORD64 imageBase = 0;
-    PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(pc, &imageBase, nullptr);
-    if (rf == nullptr) {
-      if (ctx.Rsp == 0) break; // leaf: return addr at [Rsp]
-      ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
-      ctx.Rsp += 8;
-    } else {
-      void* handlerData = nullptr;
-      DWORD64 establisher = 0;
-      RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, pc, rf, &ctx, &handlerData,
-                       &establisher, nullptr);
-    }
-  }
-  return EXCEPTION_EXECUTE_HANDLER;
-}
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
@@ -145,11 +86,6 @@ class MaplibreFlutterWindowsPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(
       flutter::PluginRegistrarWindows* registrar) {
-    static bool s_crashFilterInstalled = false;
-    if (!s_crashFilterInstalled) {
-      s_crashFilterInstalled = true;
-      SetUnhandledExceptionFilter(MblCrashFilter);  // DIAG: dump crash stack
-    }
     auto plugin = std::make_unique<MaplibreFlutterWindowsPlugin>(registrar);
     auto channel = std::make_unique<flutter::MethodChannel<EncodableValue>>(
         registrar->messenger(), "maplibre_flutter/windows/registrar",
