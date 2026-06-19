@@ -158,6 +158,23 @@ FFI_PLUGIN_EXPORT int mbl_map_current_gl_image(MblMap *map,
 // activated before committing to the FlTextureGL path. 0 on non-Linux.
 FFI_PLUGIN_EXPORT int mbl_map_gl_active(MblMap *map);
 
+// Windows D3D11 zero-copy: the latest frame published as a DXGI shared handle (a
+// legacy IDXGIResource::GetSharedHandle from a shared D3D11 texture). The Windows
+// plugin hands it to a Flutter GpuSurfaceTexture (DxgiSharedHandle), which ANGLE
+// re-opens on Flutter's device via EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE. Fills
+// *out_handle and the (nullable) size out params and returns 1 if a zero-copy D3D
+// frame is available, 0 otherwise (zero-copy off, no frame yet, tearing down, or
+// non-Windows). Reads only mutex-guarded state — no D3D/GL/EGL calls — so it is
+// safe on the raster thread.
+FFI_PLUGIN_EXPORT int mbl_map_current_d3d_handle(MblMap *map, void **out_handle,
+                                                 uint32_t *out_width,
+                                                 uint32_t *out_height);
+
+// Non-zero (1) if the D3D11 zero-copy presenter is live, 0 otherwise. Lets the
+// plugin/Dart confirm zero-copy activated before committing to the
+// GpuSurfaceTexture path. 0 on non-Windows.
+FFI_PLUGIN_EXPORT int mbl_map_d3d_active(MblMap *map);
+
 // Debug/verification: encode the latest frame to a PNG file at `path` using
 // mbgl's own PNG encoder. Returns 1 on success, 0 if no frame or the write failed.
 FFI_PLUGIN_EXPORT int mbl_map_write_png(MblMap *map, const char *path);

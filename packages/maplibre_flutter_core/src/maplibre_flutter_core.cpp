@@ -46,11 +46,15 @@
 #include "maplibre_flutter_core_metal.h"
 #include <mbgl/mtl/headless_backend.hpp>
 #else
-// GL zero-copy present (Linux/desktop). The shim binds mbgl's color renderable so
-// the helper can blit from its FBO; that needs the gfx renderable/backend API.
-#include "maplibre_flutter_core_gl.h"
+// GL/D3D zero-copy present (Linux/Windows). The shim binds mbgl's color renderable
+// so the helper can blit from its FBO; that needs the gfx renderable/backend API.
 #include <mbgl/gfx/renderable.hpp>
 #include <mbgl/gfx/renderer_backend.hpp>
+#if defined(_WIN32)
+#include "maplibre_flutter_core_vk.h"
+#else
+#include "maplibre_flutter_core_gl.h"
+#endif
 #endif
 
 namespace {
@@ -111,6 +115,19 @@ struct MblMap {
   // `currentSurface` is also read under `frameMutex` by the IOSurface getter.
   MblMetalBlitter *blitter = nullptr;
   IOSurfaceRef currentSurface = nullptr;
+#elif defined(_WIN32)
+  // D3D11 presenter (render thread only). The latest shared handle below is
+  // frameMutex-guarded and read by the GpuSurfaceTexture getter on the raster
+  // thread, which never touches D3D/GL/EGL. `d3dActive` signals the presenter
+  // initialised; `d3dTearingDown` makes the getter stop handing out the handle
+  // while the render thread destroys the presenter. `currentD3dHandle == nullptr`
+  // means "no frame".
+  MblVkPresenter *vkPresenter = nullptr;
+  void *currentD3dHandle = nullptr;
+  uint32_t d3dWidth = 0;
+  uint32_t d3dHeight = 0;
+  bool d3dActive = false;
+  bool d3dTearingDown = false;
 #else
   // GL presenter (render thread only). The latest dmabuf frame below is
   // frameMutex-guarded and read by the FlTextureGL getter on the raster thread,
@@ -241,9 +258,22 @@ bool renderZeroCopyInner(MblMap *m) {
 
 #if !defined(__APPLE__)
 // Render thread, inside a BackendScope with mbgl's color renderable just bound.
-// Blits mbgl's FBO into the ring and publishes the image descriptor under
+// Blits mbgl's FBO into the platform present ring and publishes the result under
 // frameMutex for the raster-thread getter. Returns false on failure (→ CPU).
-bool presentGl(MblMap *m) {
+bool presentZeroCopy(MblMap *m) {
+#if defined(_WIN32)
+  void *handle = nullptr;
+  if (mbl_vk_presenter_present(m->vkPresenter, &handle) == 0) {
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lk(m->frameMutex);
+    m->currentD3dHandle = handle;
+    m->d3dWidth = m->renderWidth;
+    m->d3dHeight = m->renderHeight;
+    ++m->frameCount;
+  }
+#else
   MblGlDmabufFrame frame;
   if (mbl_gl_presenter_present(m->glPresenter, &frame) == 0) {
     return false;
@@ -253,40 +283,62 @@ bool presentGl(MblMap *m) {
     m->currentGlFrame = frame;
     ++m->frameCount;
   }
+#endif
   announceFrame(m);
   return true;
 }
 
-// Render thread only (Static path). GL zero-copy: render a complete frame, bind
-// mbgl's color renderable (so GL_DRAW_FRAMEBUFFER_BINDING is reliably its FBO and
-// mbgl's GL state cache stays truthful), then blit into the ring. Returns false to
-// fall back to CPU readback.
-bool renderZeroCopyGl(MblMap *m) {
+// Render thread, inside its own BackendScope. Resizes the present ring to the
+// current render size, then blits the already-rendered frame into the ring. Used by
+// the Continuous path (the frame is drawn by the time the observer fires). Returns
+// false to fall back to CPU readback.
+bool presentZeroCopyAlreadyRendered(MblMap *m) {
   mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+#if defined(_WIN32)
+  if (mbl_vk_presenter_resize(m->vkPresenter, m->renderWidth,
+                               m->renderHeight) == 0) {
+    return false;
+  }
+  // Vulkan: the present helper fetches mbgl's rendered image via the headless
+  // renderable's getAcquiredImage() itself, so there is no GL FBO to bind here.
+#else
   if (mbl_gl_presenter_resize(m->glPresenter, m->renderWidth, m->renderHeight) ==
       0) {
     return false;
   }
-  bool done = false;
-  std::exception_ptr error;
-  m->map->renderStill([&](const std::exception_ptr &e) {
-    if (e) {
-      error = e;
-    } else {
-      done = true;
-    }
-  });
-  while (!done && !error) {
-    mbgl::util::RunLoop::Get()->runOnce();
-  }
-  if (error) {
-    std::rethrow_exception(error);
-  }
+  // GL: bind mbgl's color renderable so GL_DRAW_FRAMEBUFFER_BINDING is reliably its
+  // FBO (the dmabuf presenter blits from the currently-bound draw framebuffer) and
+  // mbgl's GL state cache stays truthful.
   m->frontend->getBackend()
       ->getDefaultRenderable()
       .getResource<mbgl::gfx::RenderableResource>()
       .bind();
-  return presentGl(m);
+#endif
+  return presentZeroCopy(m);
+}
+
+// Render thread only (Static path). Zero-copy: render a complete frame, then blit
+// it into the ring. Returns false to fall back to CPU readback.
+bool renderZeroCopy(MblMap *m) {
+  {
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    bool done = false;
+    std::exception_ptr error;
+    m->map->renderStill([&](const std::exception_ptr &e) {
+      if (e) {
+        error = e;
+      } else {
+        done = true;
+      }
+    });
+    while (!done && !error) {
+      mbgl::util::RunLoop::Get()->runOnce();
+    }
+    if (error) {
+      std::rethrow_exception(error);
+    }
+  }
+  return presentZeroCopyAlreadyRendered(m);
 }
 #endif // !__APPLE__
 
@@ -307,9 +359,18 @@ void renderNow(MblMap *m) {
                       "back to CPU readback.\n");
       m->zeroCopy = false;
     }
+#elif defined(_WIN32)
+    if (m->zeroCopy && m->vkPresenter != nullptr) {
+      if (renderZeroCopy(m)) {
+        return;
+      }
+      fprintf(stderr, "maplibre_flutter_core: D3D zero-copy present failed; "
+                      "falling back to CPU readback.\n");
+      m->zeroCopy = false;
+    }
 #else
     if (m->zeroCopy && m->glPresenter != nullptr) {
-      if (renderZeroCopyGl(m)) {
+      if (renderZeroCopy(m)) {
         return;
       }
       fprintf(stderr, "maplibre_flutter_core: GL zero-copy present failed; "
@@ -423,7 +484,19 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
     }
   }
 
-#if !defined(__APPLE__)
+#if defined(_WIN32)
+  if (m->vkPresenter != nullptr) {
+    {
+      std::lock_guard<std::mutex> lk(m->frameMutex);
+      m->currentD3dHandle = nullptr;
+      m->d3dActive = false;
+      m->d3dTearingDown = true; // stop the raster getter handing out the handle
+    }
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    mbl_vk_presenter_destroy(m->vkPresenter);
+    m->vkPresenter = nullptr;
+  }
+#elif !defined(__APPLE__)
   if (m->glPresenter != nullptr) {
     {
       std::lock_guard<std::mutex> lk(m->frameMutex);
@@ -467,20 +540,21 @@ void publishCurrentFrame(MblMap *m) {
       }
       m->zeroCopy = false; // blitter unavailable; fall back to CPU readback
     }
+#elif defined(_WIN32)
+    if (m->zeroCopy && m->vkPresenter != nullptr) {
+      // The frame is already drawn (the observer fired after present+swap).
+      if (presentZeroCopyAlreadyRendered(m)) {
+        return;
+      }
+      fprintf(stderr, "maplibre_flutter_core: D3D zero-copy present failed; "
+                      "falling back to CPU readback.\n");
+      m->zeroCopy = false;
+    }
 #else
     if (m->zeroCopy && m->glPresenter != nullptr) {
-      // The frame is already drawn (the observer fired after present+swap). Bind
-      // mbgl's color renderable so the blit sources its FBO, then present.
-      mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
-      if (mbl_gl_presenter_resize(m->glPresenter, m->renderWidth,
-                                  m->renderHeight) != 0) {
-        m->frontend->getBackend()
-            ->getDefaultRenderable()
-            .getResource<mbgl::gfx::RenderableResource>()
-            .bind();
-        if (presentGl(m)) {
-          return;
-        }
+      // The frame is already drawn (the observer fired after present+swap).
+      if (presentZeroCopyAlreadyRendered(m)) {
+        return;
       }
       fprintf(stderr, "maplibre_flutter_core: GL zero-copy present failed; "
                       "falling back to CPU readback.\n");
@@ -548,7 +622,19 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
   loop.run();
 
   m->renderLoop = nullptr;
-#if !defined(__APPLE__)
+#if defined(_WIN32)
+  if (m->vkPresenter != nullptr) {
+    {
+      std::lock_guard<std::mutex> lk(m->frameMutex);
+      m->currentD3dHandle = nullptr;
+      m->d3dActive = false;
+      m->d3dTearingDown = true; // stop the raster getter handing out the handle
+    }
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    mbl_vk_presenter_destroy(m->vkPresenter);
+    m->vkPresenter = nullptr;
+  }
+#elif !defined(__APPLE__)
   if (m->glPresenter != nullptr) {
     {
       std::lock_guard<std::mutex> lk(m->frameMutex);
@@ -755,6 +841,30 @@ void mbl_map_set_zero_copy(MblMap *m, int enabled) {
     }
     m->renderRequested = true;
   });
+#elif defined(_WIN32)
+  if (m == nullptr) {
+    return;
+  }
+  const bool on = enabled != 0;
+  m->post([m, on] {
+    m->zeroCopy = on;
+    if (on && m->vkPresenter == nullptr) {
+      // The presenter matches mbgl's Vulkan device (by LUID) to a D3D11 adapter and
+      // builds a shared-texture ring; a NULL result (no valid LUID / external-memory
+      // unsupported / D3D device-creation failure) leaves zeroCopy off so the CPU
+      // PixelBufferTexture path stays. It needs mbgl's Vulkan backend (device/queue/
+      // dispatcher + the per-frame rendered image), so pass it the backend.
+      mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+      m->vkPresenter = mbl_vk_presenter_create(m->frontend->getBackend());
+      if (m->vkPresenter == nullptr) {
+        m->zeroCopy = false; // unsupported config → stay on CPU readback
+      } else {
+        std::lock_guard<std::mutex> lk(m->frameMutex);
+        m->d3dActive = true;
+      }
+    }
+    m->renderRequested = true;
+  });
 #else
   if (m == nullptr) {
     return;
@@ -797,7 +907,7 @@ void *mbl_map_current_iosurface(MblMap *m) {
 // never touches GL/EGL. Returns 0 when zero-copy is off, no frame exists yet, or
 // the map is tearing down (so the plugin falls back / stops importing).
 int mbl_map_current_gl_image(MblMap *m, MblGlDmabufFrame *out) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   (void)m;
   (void)out;
   return 0;
@@ -818,7 +928,7 @@ int mbl_map_current_gl_image(MblMap *m, MblGlDmabufFrame *out) {
 // not tearing down. Lets Dart confirm zero-copy actually activated before
 // committing to the FlTextureGL path.
 int mbl_map_gl_active(MblMap *m) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
   (void)m;
   return 0;
 #else
@@ -827,6 +937,42 @@ int mbl_map_gl_active(MblMap *m) {
   }
   std::lock_guard<std::mutex> lk(m->frameMutex);
   return (m->glActive && !m->glTearingDown) ? 1 : 0;
+#endif
+}
+
+int mbl_map_current_d3d_handle(MblMap *m, void **out_handle, uint32_t *out_width,
+                               uint32_t *out_height) {
+#if defined(_WIN32)
+  if (m == nullptr || out_handle == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  if (m->currentD3dHandle == nullptr || m->d3dTearingDown) {
+    return 0;
+  }
+  *out_handle = m->currentD3dHandle;
+  if (out_width) *out_width = m->d3dWidth;
+  if (out_height) *out_height = m->d3dHeight;
+  return 1;
+#else
+  (void)m;
+  (void)out_handle;
+  (void)out_width;
+  (void)out_height;
+  return 0;
+#endif
+}
+
+int mbl_map_d3d_active(MblMap *m) {
+#if defined(_WIN32)
+  if (m == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  return (m->d3dActive && !m->d3dTearingDown) ? 1 : 0;
+#else
+  (void)m;
+  return 0;
 #endif
 }
 

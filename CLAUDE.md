@@ -129,10 +129,30 @@ is scaffolded vs. still TODO:
     expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
     zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
     currently version-mismatched). On `feat/desktop-linux-gl`.
-  - **Windows** native side is still a stub — `createMap()` throws `UnimplementedError`; the package
-    declares only `dartPluginClass`. Windows will reuse `maplibre_flutter_core`'s `mbgl-core`
-    integration via the same GL arm through **ANGLE** (EGL-on-D3D) + a
-    `FlutterDesktopPixelBufferTexture`.
+  - **Windows — verified on real hardware; the tier now runs on mbgl's VULKAN backend (the
+    ANGLE/OpenGL-ES arm described below was replaced after it crashed on fly-to — see the
+    2026-06-19 "Windows Vulkan backend implemented" decision-log entry).** The fly-to/heavy-movement
+    0xC0000005 crash is **fixed** (no GL `DrawableGL` path under Vulkan; validated on a Windows 11
+    Intel UHD 630 box), the CPU present path renders correctly, and zero-copy
+    (`maplibre_flutter_core_vk.cpp`, opt-in `MAPLIBRE_ZEROCOPY=true`) works on GPUs that can import
+    the legacy D3D shared handle but falls back to CPU on this Intel driver. _Original ANGLE arm
+    (history, superseded by Vulkan):_ The CPU pixel-buffer analog of the Linux tier (reuses
+    `maplibre_flutter_core`): a new **ANGLE/EGL arm**
+    in the core's `src/CMakeLists.txt` (`MLN_WITH_EGL` → ANGLE `libEGL`/`libGLESv2`,
+    `platform/windows` sources + the EGL headless backend; vcpkg deps — mirrors
+    `platform/windows/windows.cmake`); a hybrid Windows C++ plugin (`MaplibreFlutterWindowsPlugin`:
+    `flutter::TextureRegistrar` + `flutter::PixelBufferTexture` presenting `mbl_map_copy_frame` RGBA
+    over the `maplibre_flutter/windows/registrar` channel — `MarkTextureFrameAvailable` is
+    thread-safe so the frame callback marks frames directly, no main-loop hop); a Dart controller
+    mirroring Linux (CPU path only — no zero-copy in v1) reusing the shared desktop gesture + fly-to
+    tier; no widget change (`TextureHandle` already handled). **Confirmed on a Windows 11 box**
+    (2026-06-19): `flutter build windows` is green and the Windows integration test renders a real
+    frame (ANGLE creates a D3D11 EGL context headlessly on the render thread), moves + reads back the
+    camera, and swaps styles. **Deps come from vcpkg via the build hook** (`hook/build.dart` installs
+    them + passes the vcpkg toolchain file to the CMake configure); with the static triplet **ANGLE
+    links statically into `maplibre_flutter_core.dll`** (~14 MB) so there are **no ANGLE DLLs to
+    bundle** — it calls the system d3d11/dxgi/d3dcompiler. Zero-copy (D3D11 shared texture) is the
+    remaining optional step. On `feat/desktop-windows-angle`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -388,7 +408,8 @@ Build the base architecture first, then implement platforms in this order. Keep 
    a real frame into a texture. Then **Linux** (`FlTextureGL`) → **Windows** (ANGLE + GPU
    surface) → **macOS** (Metal). Start with CPU readback (pixel-buffer) for correctness, then
    optimise to zero-copy GPU texture sharing. The **Linux GL-context/threading** integration
-   is the single biggest risk — budget for it.
+   is the single biggest risk — budget for it. *macOS + Linux + **Windows** all done & verified
+   on hardware (CPU present + control); zero-copy done on macOS/Linux, optional on Windows.*
 4. **Web** — maplibre-gl-js JS interop, `HtmlElementView` + `pointer_interceptor`. *Done (A
    visible map + B control); `flutter build web` + browser unit/integration tests green on this
    machine. Buildable + runnable here (`flutter run -d chrome`), unlike Linux/Windows.*
@@ -821,5 +842,237 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   - **Escape hatch, not a commitment:** if mobile-SDK maintenance ever dominates, the move is to
     offer core-on-mobile as an **opt-in/experimental** path, A/B it against the SDK, and switch only
     if native feel + integration match — never rip the SDK out up front.
+- **2026-06-19 — Windows tier scaffolded on Linux (§8 step 3, Windows; on `feat/desktop-windows-angle`,
+  not yet built).** Wrote the whole `maplibre_flutter_windows` tier as the **CPU pixel-buffer analog
+  of the Linux tier**, leveraging the just-finished Linux work as the template — without a Windows
+  machine, which can only build/run it. The core (`maplibre_flutter_core`) is **unchanged except a
+  new `elseif(WIN32)` arm** in `src/CMakeLists.txt` that hand-attaches `platform/windows` +
+  `platform/default` sources + the **ANGLE** EGL headless backend (`MLN_WITH_EGL` → vcpkg
+  `unofficial::angle::libEGL`/`libGLESv2`), mirroring `platform/windows/windows.cmake` minus the
+  glfw/test apps `CORE_ONLY` skips — the C ABI, ffigen bindings, shim, and build hook are already
+  cross-platform. The hybrid plugin uses `flutter::TextureRegistrar` + `flutter::PixelBufferTexture`;
+  vs the GTK plugin, `MarkTextureFrameAvailable` is thread-safe so the frame callback marks frames
+  **directly** from the render thread (no `g_idle_add` hop), and the raster-thread copy callback +
+  shared buffer are mutex-guarded. The Dart controller mirrors Linux **minus the zero-copy block**
+  (D3D-shared-texture zero-copy is a later step; v1 is CPU pixel-buffer only). No widget change
+  (`TextureHandle`). **Verified on Linux:** pub resolves, `flutter analyze` clean, the controller
+  unit test passes, and `flutter pub get` correctly regenerated the example's Windows
+  `generated_plugin_registrant.cc` to call `MaplibreFlutterWindowsPluginRegisterWithRegistrar`
+  (confirming the plugin naming) — that churn is NOT committed (regenerates on Windows, like the iOS
+  SPM/Pod churn, §5b). **Needs a Windows machine** for: vcpkg/ANGLE setup (Get-VendorPackages.ps1),
+  the MSVC/Ninja core build (hook/build.dart may need a vcvars64 env + the vcpkg toolchain file),
+  ANGLE DLL bundling (libEGL/libGLESv2/d3dcompiler_47 next to the .exe), and confirming ANGLE
+  windowless headless rendering + the present path. Risks captured in the windows-tier design.
+
+- **2026-06-19 — Windows desktop tier verified on real hardware (§8 step 3, Windows; completes the
+  desktop tier).** Set up a fresh Windows 11 box end-to-end (it had none of the toolchain): Flutter
+  3.44.2 stable at `C:\src\flutter`; **Visual Studio 2022 Community + "Desktop development with C++"**
+  (MSVC 14.44, Win10 SDK 10.0.26100) via winget; **vcpkg at `C:\vcpkg`** (`VCPKG_ROOT` set); Developer
+  Mode + system `LongPathsEnabled` (registry, elevated); recursive mbgl-native submodule; melos
+  `dart pub global activate`d (its scripts shell out to a bare `melos`, not on PATH on a fresh box).
+  `flutter build windows` + the new Windows integration test both green; all 10 packages analyze
+  clean and unit tests pass. What the scaffold (written on Linux) got wrong, fixed here:
+  - **vcpkg wiring was missing.** `hook/build.dart` now, on Windows, runs `vcpkg install` (idempotent;
+    skipped once ANGLE's config exists) and passes `CMAKE_TOOLCHAIN_FILE` + `VCPKG_TARGET_TRIPLET` +
+    `VCPKG_MANIFEST_MODE=OFF` via `CMakeBuilder.create(defines: …)`. Key `native_toolchain_cmake`
+    0.2.5 facts: on Windows it sets **no** toolchain file (only `-DCMAKE_SYSTEM_NAME=Windows`) and,
+    with `useVcvars: true` (default), injects the vcvars64 MSVC env into the Ninja build — so passing
+    the vcpkg toolchain via `defines` is free of conflicts. Deps mirror mbgl's `Get-VendorPackages.ps1`
+    (`curl dlfcn-win32 libuv libjpeg-turbo libpng libwebp egl opengl-registry`); **`egl` pulls
+    `angle`** (which provides `unofficial-angle`); **ICU is the vendored builtin** (not installed).
+  - **Custom static triplet** (`src/vcpkg-triplets/`, `VCPKG_LIBRARY_LINKAGE static` + dynamic CRT,
+    release-only) → deps link into `maplibre_flutter_core.dll`. **ANGLE built STATIC too** (1.1 GB
+    `ANGLE.lib`; the vcpkg `angle` port honors static linkage), so it links into the core DLL (~14 MB
+    after dead-strip) and there are **NO ANGLE runtime DLLs to ship** — it calls system d3d11/dxgi/
+    d3dcompiler. The plugin's `bundled_libraries` is conditional (bundles libEGL/libGLESv2 only if a
+    future dynamic triplet produces them); the hook does NOT register ANGLE DLLs as code assets.
+  - **The shim's non-Apple branch referenced the Linux GL zero-copy presenter** (dmabuf), which is
+    Linux-only and isn't compiled on Windows → would be a link error. Fix: `maplibre_flutter_core_gl.cpp`
+    body is guarded `#if !defined(_WIN32)`, with **no-op presenter stubs** on Windows
+    (`mbl_gl_presenter_create()` returns NULL → the shim stays on the CPU `mbl_map_copy_frame` path);
+    the file is now compiled on Windows too.
+  - **Three CORE_ONLY-on-MSVC gotchas** (mbgl's own `windows.cmake` handles them, but we hand-attach):
+    (1) upstream forces MSVC **`/WX`** (warnings-as-errors) UNCONDITIONALLY (not gated on
+    `MLN_WITH_WERROR`) → a newer MSVC than upstream's CI fails on new warnings; we append **`/WX-`**
+    (last flag wins) to `mbgl-compiler-options` + **`/bigobj`**. (2) `libuv` (static) exports only
+    `libuv::uv_a`; the `$<IF:…,libuv::uv_a,libuv::uv>` genex still NAMES `libuv::uv`, and CMake
+    validates every `::` target in `target_link_libraries` even in an unselected genex branch →
+    resolve with `if(TARGET libuv::uv_a)` instead. (3) the **builtin ICU** path was never exercised
+    before (macOS uses Darwin i18n; the Linux box had system ICU): mbgl's stripped vendored ICU has
+    **no `unicode/numberformatter.h`**, so `i18n/number_format.cpp` must compile with
+    `MBGL_USE_BUILTIN_ICU` — but `set_source_files_properties` is **directory-scoped** and silently
+    no-ops for `mbgl-core` (defined in the submodule subdir); define it on the **target**
+    (`target_compile_definitions(mbgl-core PRIVATE MBGL_USE_BUILTIN_ICU)`) and add the builtin ICU
+    include dir to mbgl-core (collator/bidi need `<unicode/…>`). *(The Linux arm has the same latent
+    directory-scope bug; harmless there only because that machine had system ICU.)*
+  - **General Windows-plugin facts** confirmed: Flutter on Windows needs **Developer Mode** (plugin
+    symlinks) and is happiest with **long paths** enabled; the `dartPluginClass` + `pluginClass` hybrid
+    in the pubspec is what makes Flutter build the native plugin (regenerated
+    `generated_plugin_registrant.cc` calls `MaplibreFlutterWindowsPluginRegisterWithRegistrar`).
+  - **Remaining (optional):** D3D11-shared-texture zero-copy present (parity with macOS IOSurface /
+    Linux dmabuf); a visual `flutter run -d windows` frame check (integration test already renders);
+    arm64-windows (triplet + path exist, untested); prebuilt-core distribution + a Windows CI arm.
+
+- **2026-06-19 — Windows map was blank: curl's DNS resolver hangs; fixed via OS-resolver +
+  CURLOPT_RESOLVE (on `feat/desktop-windows-angle`).** The Windows tier built + the integration
+  test passed, but the GUI map rendered **blank** — because the integration test only asserts that
+  *a* frame of the right size comes back (`onReady` + camera round-trip), never that the frame has
+  map content. Root-caused with the headless `render_harness` (built standalone against the core
+  DLL, `-DMAPLIBRE_FLUTTER_BUILD_HARNESS=ON`): mbgl-core itself produced a blank frame, so the
+  present path was **not** the bug. Tracing into mbgl's curl http_file_source (temporary `fprintf`
+  instrumentation, reverted) showed: requests reach `curl_multi_add_handle`, the timer backs off
+  (0→1→…→200 ms) forever, but `handleSocket` is **never called** → curl never opens a socket → zero
+  TCP connections, zero errors, blank map. **curl's async DNS resolver never completes under our
+  libuv-driven curl multi-socket loop on Windows.** Confirmed it's *only* DNS: pre-seeding the IP
+  via `CURLOPT_RESOLVE` made curl connect → TLS (Schannel) → `GET`→`200` → tiles → the harness PNG
+  rendered the full world map (1.9 KB blank → 184 KB real). Ruled out (all verified on-device):
+  `getaddrinfo` works in-process **and** on a worker thread (curl's exact threaded-resolver
+  pattern), IPv6, SSL (curl has Schannel), the CURLSH share handle (shares nothing), `iphlpapi`
+  linkage, and our event-loop wiring (run_loop/timer/async/thread sources **match upstream
+  windows.cmake** exactly). Tried c-ares (`vcpkg curl[c-ares]`): it integrates with the loop
+  (`handleSocket` fires, resolution completes) but **fails to discover the system DNS servers** on
+  Windows ("Could not contact DNS servers"; works only with an explicit `CURLOPT_DNS_SERVERS`) — a
+  curl-8.20 ↔ c-ares-1.34 sysconfig gap (`nslookup` proves a process *can* send UDP:53 directly, so
+  not a firewall).
+  - **Fix (primary):** resolve through the **OS resolver** (`getaddrinfo` — always reflects current
+    system DNS, handles IPv4/IPv6 + network changes) and pre-seed curl's address cache via
+    `CURLOPT_RESOLVE` in mbgl's curl `http_file_source.cpp` (Windows-only `#ifdef`, no-op on
+    Linux/macOS), which makes curl skip its own (broken) resolver entirely. mbgl is a **pinned
+    vendored submodule with no patch mechanism**, so the change ships as a committed patch
+    (`packages/maplibre_flutter_core/patches/windows-dns-os-resolve.patch`) applied **idempotently
+    by the build hook** (`_applySubmodulePatches` in `hook/build.dart`: marker-presence check →
+    `git apply --ignore-whitespace` → verify marker, fail loud). Validated end-to-end: pristine
+    submodule → `flutter build windows` → hook auto-applies the patch → green.
+  - **Fix (fallback):** build curl with the **c-ares** feature (`curl[core,non-http,ssl,c-ares]` in
+    the build hook's vcpkg install, gated by `share/c-ares/c-ares-config.cmake`, `--recurse`). The
+    OS-resolver patch is the working path; c-ares matters only if `getaddrinfo` ever fails — then
+    curl falls back to c-ares which **fails fast** instead of the default threaded resolver, which
+    would **hang the request slot** (and could jam the file source on a transient DNS hiccup).
+  - **Verified on device (user-confirmed):** the map renders and is interactive (fly-to works).
+  - **General rule:** an integration test that only checks "a frame came back" does **not** prove
+    the map is visible — assert real content (or do a visual/PNG check). The §7 Windows test should
+    gain a non-blank-pixel assertion.
+  - **Known follow-ups (NOT fixed):** (1) **janky pan/zoom + fly-to** — the CPU pixel-buffer present
+    does an ANGLE D3D11 GPU→CPU readback **every frame**, and Continuous mode renders on every map
+    update, so the costly readback runs constantly; the real fix is the deferred **D3D11
+    shared-texture zero-copy** present (Static mode `--dart-define=MAPLIBRE_CONTINUOUS=false`
+    coalesces renders and is a lighter stopgap). (2) **crash on fast movement** — a native
+    **0xC0000005 access violation** under rapid rendering (logged `Invalid geometry in line layer`
+    just before; no WER dump — HKCU LocalDumps doesn't take, needs HKLM/elevation); not reproducible
+    via synthetic SendInput, so it needs a debugger (cdb/WinDbg) on a user-reproduced run to get a
+    stack. Both are present-path/stability items, separate from the (now fixed) DNS blank-map bug.
+
+- **2026-06-19 — Windows D3D11 zero-copy present (works, smooth) + fly-to/heavy-move crash
+  root-caused to an mbgl GL bug; Vulkan chosen as the fix (next session). On
+  `feat/desktop-windows-angle`, committed `1a51d00`.** Two things after the DNS fix above:
+  - **Zero-copy present (done, user-confirmed smooth).** The D3D11 analog of macOS IOSurface /
+    Linux dmabuf: a new `maplibre_flutter_core_d3d.{h,cpp}` queries ANGLE's `ID3D11Device`
+    (`EGL_D3D11_DEVICE_ANGLE`), keeps a ring of 3 **shared D3D11 textures**, wraps each as an ANGLE
+    pbuffer (`eglCreatePbufferFromClientBuffer(EGL_D3D_TEXTURE_ANGLE)`), blits mbgl's color FBO into
+    the next slot (eglMakeCurrent the pbuffer → glBlitFramebuffer, vertical flip, glFinish for
+    cross-device sync since a legacy DXGI shared handle has no keyed mutex), and publishes the slot's
+    **legacy `IDXGIResource::GetSharedHandle`**. The Windows plugin presents it as a Flutter
+    **`GpuSurfaceTexture`** (`kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle`), which ANGLE re-opens on
+    Flutter's own device via `EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE` — no CPU readback. The shim's
+    non-Apple zero-copy code now branches `#if defined(_WIN32)` (D3D presenter) vs Linux (GL/dmabuf);
+    new C API `mbl_map_current_d3d_handle` / `mbl_map_d3d_active`. **Key gotcha: the shared texture
+    MUST be `DXGI_FORMAT_B8G8R8A8_UNORM` (BGRA)** — ANGLE's share-handle path only accepts BGRA8;
+    RGBA8 → Flutter logs `external_texture_d3d.cc: Binding D3D surface failed` and the map is white.
+    glBlitFramebuffer copies by logical channel, so RGBA-source → BGRA-target keeps colours correct.
+    Opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true` (CPU `PixelBufferTexture` stays default + fallback);
+    if the D3D presenter fails it falls back to CPU. CMake links `unofficial::angle::libEGL/libGLESv2
+    + d3d11 + dxgi`, defines `KHRONOS_STATIC` on the shim, and resolves the EGL/GLES headers via
+    `find_path` (ANGLE's vcpkg include dir doesn't propagate from mbgl's PRIVATE link). **ffigen
+    couldn't run here (no libclang on Windows)**, so the two new bindings were hand-added to
+    `maplibre_flutter_core_bindings_generated.dart` in exact ffigen style — **regenerate on macOS
+    before merge** (`dart run tool/ffigen.dart`) to confirm no diff (CI §7 layer 6).
+  - **Crash on fly-to / heavy movement (NOT fixed; root-caused).** Pre-existing 0xC0000005 access
+    violation (happens on the CPU path too). Caught via a temporary unhandled-exception stack dumper
+    in the plugin (`MblCrashFilter`, RtlVirtualUnwind + the linker `/MAP`) — these **TEMPORARY
+    diagnostics are committed in `1a51d00`; revert them once Windows is stable**. Symbolized stack:
+    `gl::DrawableGL::draw → glDrawElements → ANGLE StateManager11::syncVertexBuffersAndInputLayout`
+    (AV) under `TileLayerGroupGL::render`. **Root cause = an mbgl GL resource-lifetime bug**: a tile
+    drawable's VAO still references vertex buffers freed during rapid tile churn; ANGLE's strict D3D11
+    validation derefs the freed buffer (native GL drivers often paper over it). mbgl's
+    `indexLength>0 && VAO.isValid()` guard only checks the VAO name, not its buffers' liveness.
+  - **Research (delegated; conclusions):** (1) **mbgl bump won't help** — our pin `fa8a9c8e3` is 1
+    docs-only commit behind `main`; all buffer fixes (#4291 etc.) already present. (2) **ANGLE update
+    low-probability** — the dangling buffer originates on mbgl's side. (3) **Native WGL**
+    (`MLN_WITH_OPENGL` without `MLN_WITH_EGL`; mbgl ships `headless_backend_wgl.cpp`) would dodge the
+    crash cheaply BUT **kills the D3D11 zero-copy path** (native-GL texture has no D3D11 interop →
+    CPU present only) and adds GL-driver fragility. (4) **Vulkan** (`MLN_WITH_VULKAN`) genuinely
+    sidesteps the crash (no GL/ANGLE path) **and keeps zero-copy** via `VK_KHR_external_memory_win32`
+    → D3D11 shared handle → Flutter's ANGLE surface; it's MapLibre's Android default and in the
+    upstream FFI Windows matrix.
+  - **DECISION: implement the Vulkan backend for the Windows desktop tier** (next session) — the only
+    path that is both stable AND keeps the smooth zero-copy present. Scope: a Vulkan arm in the core
+    `src/CMakeLists.txt` (`MLN_WITH_VULKAN`, Vulkan-Headers/loader vcpkg deps, mbgl's
+    `vulkan/headless_backend`), a Vulkan→D3D11-shared-texture present helper (replacing the GL blit),
+    and the plugin's `GpuSurfaceTexture` path reused. Also worth filing an upstream mbgl issue for the
+    `DrawableGL`/VAO-retains-freed-VBO lifetime gap.
+
+- **2026-06-19 — Windows Vulkan backend implemented; the fly-to/heavy-movement crash is FIXED
+  (validated on hardware). Zero-copy present is blocked on this Intel iGPU's driver, with a
+  graceful CPU fallback. On `feat/desktop-windows-angle`.** Replaced the crashing ANGLE/OpenGL-ES
+  core arm with mbgl's **Vulkan** headless backend (the decision recorded in `1a51d00`/`55a3767`).
+  - **CMake (core `src/CMakeLists.txt` WIN32 arm):** flip to `MLN_WITH_VULKAN` (OpenGL/EGL/Metal
+    OFF — `cmake/validate-backend-options.cmake` requires exactly one backend). The root's
+    `cmake/vulkan.cmake` (~line 999) + `vendor/vulkan.cmake` (~1220) auto-attach the Vulkan
+    renderer + shaders + glslang/SPIRV/VMA/Vulkan-Headers (both run **before** the CORE_ONLY
+    `return()`, self-guarded on the flag), so we hand-attach only the single default-platform
+    `platform/default/src/mbgl/vulkan/headless_backend.cpp` + the `vendor/Vulkan-Headers/include`
+    path. Dropped ANGLE entirely (`find_package(unofficial-angle)`, the libEGL/libGLESv2 links,
+    `KHRONOS_STATIC`); mbgl uses a runtime `vk::detail::DynamicLoader` (loads the driver-shipped
+    `vulkan-1.dll`), so there is **nothing new to link or bundle** and the core DLL is ~11 MB
+    (vs ~14 MB with static ANGLE). Build-hook vcpkg ports drop `egl`+`opengl-registry` (idempotency
+    gate re-keyed off the c-ares + libuv configs). The shim's Vulkan present helper additionally
+    needs mbgl's **private `src/`** on its include path (the public Vulkan headers pull
+    `src/mbgl/gfx/*.hpp`).
+  - **CRASH FIXED + validated on device.** The 0xC0000005 lived in `gl::DrawableGL::draw` /
+    `TileLayerGroupGL::render` — GL renderer classes that **do not exist** under Vulkan. Confirmed
+    via ~30 rapid fly-to/zoom/style-toggle iterations (~18s of the exact tile-churn that crashed):
+    **no crash**, 360+ frames published, top-left pixel changing as the camera moved. The temporary
+    crash diagnostics from `1a51d00` (`MblCrashFilter` + dbghelp + the `/MAP` link option) are now
+    **reverted** (Windows is stable).
+  - **CPU present path is the validated default.** `mbl_map_copy_frame`/`readStillImage` is
+    backend-agnostic and works unchanged on Vulkan: the `render_harness` renders demotiles + the
+    OpenFreeMap Liberty vector style correctly, and the "Invalid geometry in line layer" warning
+    that *preceded* the GL crash now just logs and completes. On an iGPU the readback is a cheap
+    unified-memory memcpy. **GOTCHA: GDI screen capture (CopyFromScreen / PrintWindow even with
+    PW_RENDERFULLCONTENT) CANNOT capture Flutter's ANGLE/D3D flip-model external texture — it shows
+    the map area WHITE even when the map renders correctly** (the prior ANGLE session's screenshots
+    show the identical white map area under a working map). Verify rendering via core diagnostics /
+    the harness PNG, never a GDI screenshot.
+  - **Zero-copy (`maplibre_flutter_core_vk.{h,cpp}`, opt-in `--dart-define=MAPLIBRE_ZEROCOPY=true`):
+    written, but BLOCKED on this Intel UHD 630 driver.** The helper LUID-matches mbgl's Vulkan
+    device to a DXGI adapter, creates a D3D11 device there, builds a ring of shared D3D11 BGRA
+    textures, imports each into Vulkan (`VK_KHR_external_memory_win32`), blits mbgl's
+    `getAcquiredImage()` into the slot via `vulkan::Context::submitOneTimeCommand` (which submits
+    with a fence and waits — the analog of the GL path's `glFinish`), and publishes the legacy DXGI
+    shared handle for the **unchanged** plugin `GpuSurfaceTexture` path. **The conflict:** Flutter's
+    consumer (engine `external_texture_d3d.cc` → `EGL_D3D_TEXTURE_2D_SHARE_HANDLE_ANGLE`) requires a
+    **legacy** shared handle (`GetSharedHandle`, no keyed mutex), but this Intel driver can only
+    import the **NT** handle into Vulkan (a `vkGetPhysicalDeviceImageFormatProperties2` probe shows
+    `D3D11_TEXTURE` importable, `D3D11_TEXTURE_KMT`/legacy **NOT SUPPORTED**) — mutually exclusive
+    for one texture. The helper detects this (`vkGetMemoryWin32HandlePropertiesKHR` returns
+    `memoryTypeBits=0`), logs it, and **falls back to CPU**. It should work on discrete NVIDIA/AMD
+    GPUs (which typically support the legacy import) — UNTESTED there (this hybrid laptop's NVIDIA
+    driver is version-mismatched). A near-zero-copy path on Intel would be NT-import + a GPU-local
+    `D3D11::CopyResource` into a legacy texture (deferred). Details in memory
+    `windows-vulkan-d3d11-interop`.
+  - **mbgl patch** `patches/windows-vulkan-external-memory.patch` (marker `MBL_WIN32_EXTERNAL_MEMORY`,
+    applied idempotently by the build hook exactly like the DNS patch): appends
+    `VK_KHR_get_physical_device_properties2` to `getInstanceExtensions()` (the 1.0 instance needs it
+    for the device-LUID `VkPhysicalDeviceIDProperties` query) and the external-memory device
+    extensions in `initDevice()` — **enabled-if-available** (deliberately NOT added to the required
+    set used for device *selection*, so a GPU lacking them still initialises and just uses CPU). All
+    `#ifdef _WIN32`-guarded and only compiled under the Vulkan backend → inert on the macOS (Metal)
+    and Linux (GL) tiers.
+  - **No ffigen regen needed:** the C ABI (`maplibre_flutter_core.h`) is unchanged — the present
+    helper's `mbl_d3d_presenter_*`→`mbl_vk_presenter_*` rename is internal (not an ffigen input),
+    and the public `mbl_map_current_d3d_handle`/`mbl_map_d3d_active` are kept (the output is still a
+    D3D shared handle). `maplibre_flutter_core_d3d.{h,cpp}` deleted (replaced by `_vk`). Verified:
+    `flutter build windows` green; `melos analyze` (`--fatal-infos`) + `format` green across all 10
+    packages.
 
 _Append new decisions here with date and rationale._
