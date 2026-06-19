@@ -129,10 +129,19 @@ is scaffolded vs. still TODO:
     expected, since unified memory makes the CPU readback a cheap memcpy, not a PCIe transfer;
     zero-copy's win is on **discrete GPUs**. Remaining Linux: optional dGPU testing (NVIDIA driver
     currently version-mismatched). On `feat/desktop-linux-gl`.
-  - **Windows** native side is still a stub — `createMap()` throws `UnimplementedError`; the package
-    declares only `dartPluginClass`. Windows will reuse `maplibre_flutter_core`'s `mbgl-core`
-    integration via the same GL arm through **ANGLE** (EGL-on-D3D) + a
-    `FlutterDesktopPixelBufferTexture`.
+  - **Windows — scaffolded on Linux, awaiting a Windows machine to build.** Written as the CPU
+    pixel-buffer analog of the Linux tier (it reuses `maplibre_flutter_core` unchanged): a new
+    **ANGLE/EGL arm** in the core's `src/CMakeLists.txt` (`MLN_WITH_EGL` → ANGLE `libEGL`/`libGLESv2`,
+    `platform/windows` sources + the EGL headless backend, vcpkg deps — mirrors
+    `platform/windows/windows.cmake`); a hybrid Windows C++ plugin
+    (`MaplibreFlutterWindowsPlugin`: `flutter::TextureRegistrar` + `flutter::PixelBufferTexture`
+    presenting `mbl_map_copy_frame` RGBA over the `maplibre_flutter/windows/registrar` channel — the
+    analog of the GTK plugin, but `MarkTextureFrameAvailable` is thread-safe so there's no main-loop
+    hop); a Dart controller mirroring Linux (CPU path only — no zero-copy in v1) that reuses the
+    shared desktop gesture + fly-to tier; no widget change (`TextureHandle` already handled). The
+    **Dart side is verified on Linux** (pub resolves, analyze clean, controller test passes); the C++
+    plugin + core CMake arm compile only on **Windows** (MSVC + vcpkg/ANGLE — can't cross-build from
+    Linux). Build/run/debug is the remaining step. On `feat/desktop-windows-angle`.
 
 Still check the tree before editing — package contents are skeletons.
 
@@ -791,5 +800,27 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   same-RAM memcpy, not a PCIe transfer; zero-copy's real win is on discrete GPUs. This box is a
   hybrid-graphics laptop (iGPU + NVIDIA GTX 1070 Mobile, Optimus on-demand); apps default to the
   iGPU and the NVIDIA driver is currently version-mismatched, so the dGPU is untested.
+
+- **2026-06-19 — Windows tier scaffolded on Linux (§8 step 3, Windows; on `feat/desktop-windows-angle`,
+  not yet built).** Wrote the whole `maplibre_flutter_windows` tier as the **CPU pixel-buffer analog
+  of the Linux tier**, leveraging the just-finished Linux work as the template — without a Windows
+  machine, which can only build/run it. The core (`maplibre_flutter_core`) is **unchanged except a
+  new `elseif(WIN32)` arm** in `src/CMakeLists.txt` that hand-attaches `platform/windows` +
+  `platform/default` sources + the **ANGLE** EGL headless backend (`MLN_WITH_EGL` → vcpkg
+  `unofficial::angle::libEGL`/`libGLESv2`), mirroring `platform/windows/windows.cmake` minus the
+  glfw/test apps `CORE_ONLY` skips — the C ABI, ffigen bindings, shim, and build hook are already
+  cross-platform. The hybrid plugin uses `flutter::TextureRegistrar` + `flutter::PixelBufferTexture`;
+  vs the GTK plugin, `MarkTextureFrameAvailable` is thread-safe so the frame callback marks frames
+  **directly** from the render thread (no `g_idle_add` hop), and the raster-thread copy callback +
+  shared buffer are mutex-guarded. The Dart controller mirrors Linux **minus the zero-copy block**
+  (D3D-shared-texture zero-copy is a later step; v1 is CPU pixel-buffer only). No widget change
+  (`TextureHandle`). **Verified on Linux:** pub resolves, `flutter analyze` clean, the controller
+  unit test passes, and `flutter pub get` correctly regenerated the example's Windows
+  `generated_plugin_registrant.cc` to call `MaplibreFlutterWindowsPluginRegisterWithRegistrar`
+  (confirming the plugin naming) — that churn is NOT committed (regenerates on Windows, like the iOS
+  SPM/Pod churn, §5b). **Needs a Windows machine** for: vcpkg/ANGLE setup (Get-VendorPackages.ps1),
+  the MSVC/Ninja core build (hook/build.dart may need a vcvars64 env + the vcpkg toolchain file),
+  ANGLE DLL bundling (libEGL/libGLESv2/d3dcompiler_47 next to the .exe), and confirming ANGLE
+  windowless headless rendering + the present path. Risks captured in the windows-tier design.
 
 _Append new decisions here with date and rationale._

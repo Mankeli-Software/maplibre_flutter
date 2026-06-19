@@ -48,12 +48,23 @@ if(APPLE)
   set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
   set(MLN_WITH_METAL ON CACHE BOOL "" FORCE)
   set(MLN_WITH_OPENGL OFF CACHE BOOL "" FORCE)
+elseif(WIN32)
+  # ANGLE arm (Windows): OpenGL ES via ANGLE (EGL-on-D3D). Same CORE_ONLY + OpenGL
+  # as Linux, plus MLN_WITH_EGL so mbgl selects the EGL/GLES (ANGLE) headless path
+  # + the KHRONOS_STATIC GLES headers. We hand-attach platform/windows below
+  # (mirroring platform/windows/windows.cmake), so CORE_ONLY skips the
+  # glfw/test/benchmark apps and their extra vcpkg deps.
+  set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
+  set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_OPENGL ON CACHE BOOL "" FORCE)
+  set(MLN_WITH_EGL ON CACHE BOOL "" FORCE) # ANGLE libEGL/libGLESv2
 else()
-  # OpenGL arm (Linux now; Windows later). Build CORE_ONLY so mbgl's root CMake
-  # return()s early (no glfw/test/benchmark/render-test apps + their deps), and
-  # hand-attach the default platform + GL/EGL headless backend below, mirroring
-  # platform/linux/linux.cmake. cmake/opengl.cmake (included before the CORE_ONLY
-  # return) compiles the GL renderer into mbgl-core.
+  # OpenGL arm (Linux). Build CORE_ONLY so mbgl's root CMake return()s early (no
+  # glfw/test/benchmark/render-test apps + their deps), and hand-attach the default
+  # platform + GL/EGL headless backend below, mirroring platform/linux/linux.cmake.
+  # cmake/opengl.cmake (included before the CORE_ONLY return) compiles the GL
+  # renderer into mbgl-core.
   set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
   set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
   set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
@@ -246,6 +257,120 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     mbgl-vendor-nunicode
     mbgl-vendor-sqlite
     OpenGL::EGL
+  )
+
+elseif(WIN32)
+  # ---- Attach the default desktop platform + ANGLE (EGL/OpenGL-ES) headless
+  #      backend to mbgl-core (mirrors platform/windows/windows.cmake's mbgl-core
+  #      attach, minus the glfw/test/benchmark apps CORE_ONLY skips). Dependencies
+  #      come from vcpkg: the Windows build must configure with the vcpkg toolchain
+  #      file, and mbgl's platform/windows/Get-VendorPackages.ps1 installs
+  #      CURL/ICU/JPEG/libuv/PNG/WebP/dlfcn-win32/ANGLE for the target triplet.
+  #      Wiring that into hook/build.dart + verifying the MSVC/Ninja build is a
+  #      Windows-machine task — UNVERIFIED here (CLAUDE.md §8). ----
+  set(_def "${MLN_ROOT}/platform/default/src/mbgl")
+  set(_win "${MLN_ROOT}/platform/windows/src")
+
+  find_package(CURL REQUIRED)
+  find_package(dlfcn-win32 REQUIRED)
+  find_package(ICU OPTIONAL_COMPONENTS i18n uc)
+  find_package(JPEG REQUIRED)
+  find_package(libuv REQUIRED)
+  find_package(PNG REQUIRED)
+  find_package(WebP REQUIRED)
+  find_package(unofficial-angle CONFIG REQUIRED) # ANGLE libEGL/libGLESv2
+
+  target_sources(mbgl-core PRIVATE
+    "${_def}/gfx/headless_backend.cpp"
+    "${_def}/gfx/headless_frontend.cpp"
+    "${_def}/i18n/collator.cpp"
+    "${_def}/i18n/number_format.cpp"
+    "${_def}/layermanager/layer_manager.cpp"
+    "${_def}/platform/time.cpp"
+    "${_def}/storage/asset_file_source.cpp"
+    "${_def}/storage/database_file_source.cpp"
+    "${_def}/storage/file_source_manager.cpp"
+    "${_def}/storage/file_source_request.cpp"
+    "${_def}/storage/http_file_source.cpp"
+    "${_def}/storage/local_file_request.cpp"
+    "${_def}/storage/local_file_source.cpp"
+    "${_def}/storage/mbtiles_file_source.cpp"
+    "${_def}/storage/main_resource_loader.cpp"
+    "${_def}/storage/offline.cpp"
+    "${_def}/storage/offline_database.cpp"
+    "${_def}/storage/offline_download.cpp"
+    "${_def}/storage/online_file_source.cpp"
+    "${_def}/storage/pmtiles_file_source.cpp"
+    "${_def}/storage/sqlite3.cpp"
+    "${_def}/text/bidi.cpp"
+    "${_def}/text/local_glyph_rasterizer.cpp"
+    "${_def}/util/async_task.cpp"
+    "${_def}/util/compression.cpp"
+    "${_def}/util/filesystem.cpp"
+    "${_def}/util/image.cpp"
+    "${_def}/util/jpeg_reader.cpp"
+    "${_def}/util/webp_reader.cpp"
+    "${_def}/util/logging_stderr.cpp"
+    "${_def}/util/monotonic_timer.cpp"
+    "${_def}/util/png_reader.cpp"
+    "${_def}/util/png_writer.cpp"
+    "${_def}/util/run_loop.cpp"
+    "${_def}/util/string_stdlib.cpp"
+    "${_def}/util/timer.cpp"
+    "${_def}/util/utf.cpp"
+    # Windows-native thread + thread-local (instead of the default util versions).
+    "${_win}/thread.cpp"
+    "${_win}/thread_local.cpp"
+    # GL headless backend + ANGLE EGL context + GL function loader.
+    "${_def}/gl/headless_backend.cpp"
+    "${_win}/headless_backend_egl.cpp"
+    "${_win}/gl_functions.cpp"
+  )
+
+  target_compile_definitions(mbgl-core PRIVATE
+    NOMINMAX
+    GHC_WIN_DISABLE_WSTRING_STORAGE_TYPE
+    CURL_STATICLIB
+    USE_STD_FILESYSTEM
+    KHRONOS_STATIC)
+
+  target_include_directories(mbgl-core
+    PUBLIC
+      "${MLN_ROOT}/platform/default/include"
+    PRIVATE
+      "${MLN_ROOT}/platform/windows/include"
+      ${CURL_INCLUDE_DIRS}
+      ${JPEG_INCLUDE_DIRS}
+      ${LIBUV_INCLUDE_DIRS}
+      ${WEBP_INCLUDE_DIRS}
+  )
+
+  include("${MLN_ROOT}/vendor/nunicode.cmake")
+  include("${MLN_ROOT}/vendor/sqlite.cmake")
+
+  # System ICU if recent enough, else the vendored builtin (mirrors windows.cmake).
+  if(NOT ICU_FOUND OR "${ICU_VERSION}" VERSION_LESS 62.0)
+    include("${MLN_ROOT}/vendor/icu.cmake")
+    set_source_files_properties("${_def}/i18n/number_format.cpp"
+      PROPERTIES COMPILE_DEFINITIONS MBGL_USE_BUILTIN_ICU)
+    target_compile_definitions(mbgl-vendor-icu PRIVATE U_STATIC_IMPLEMENTATION)
+    set(_icu_libs mbgl-vendor-icu)
+  else()
+    set(_icu_libs ICU::i18n ICU::uc ICU::data)
+  endif()
+
+  target_link_libraries(mbgl-core PRIVATE
+    ${CURL_LIBRARIES}
+    dlfcn-win32::dl
+    ${JPEG_LIBRARIES}
+    ${WEBP_LIBRARIES}
+    ${_icu_libs}
+    PNG::PNG
+    mbgl-vendor-nunicode
+    mbgl-vendor-sqlite
+    $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>
+    unofficial::angle::libEGL
+    unofficial::angle::libGLESv2
   )
 endif()
 
