@@ -792,4 +792,34 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   hybrid-graphics laptop (iGPU + NVIDIA GTX 1070 Mobile, Optimus on-demand); apps default to the
   iGPU and the NVIDIA driver is currently version-mismatched, so the dGPU is untested.
 
+- **2026-06-19 — Rejected "unify the whole stack on one rendering pipeline" (keep mobile SDKs,
+  keep maplibre-gl-js on web).** Question raised: now that the desktop core (`mbgl-core` via
+  ffigen) is hardened, should we ditch the Android/iOS native SDKs and render mobile ourselves
+  off the same core, and/or compile the core to WASM for web — one engine everywhere? Decided
+  **no** on both, reaffirming the §3 two-tier split. Rationale:
+  - **Feasibility is not the question.** `mbgl-core` is literally the C++ engine both mobile SDKs
+    already wrap (MapLibre Native = one core + per-platform frontends), and an Emscripten WASM/
+    WebGL2 target for the core exists. So either unification is *possible*; it is not *worth it*.
+  - **Mobile — keep the SDKs.** What unification would remove is exactly what the SDK buys, on the
+    highest-stakes platforms: native gesture/fling/inertia feel, location component, native
+    annotations, accessibility, DPI/lifecycle. Plus it re-opens the GL/Metal-context-+-threading
+    risk (the single biggest desktop risk) on two more platforms, and makes us own the CMake/NDK/
+    Apple native build matrix for 5 platforms instead of 3. For a project whose pitch is *stability*,
+    hand-rolled mobile rendering on the platforms most users run is a trust regression. The
+    maintenance pain that motivates unification (three binding toolchains — jnigen/swiftgen/ffigen)
+    does **not** justify it: the **public Dart API is already unified** (§3); only the impl behind
+    the platform interface diverges. We'd be trading proven feature/quality for impl tidiness.
+  - **Web — keep maplibre-gl-js.** Two senses of "web + WASM": (1) the *Flutter app* compiling to
+    **dart2wasm** is **already supported** — the web tier deliberately uses `dart:js_interop` +
+    `package:web` (WASM-safe; gl-js stays JS, called over interop from either build). (2) Compiling
+    *the core* to WASM to replace gl-js = maturity regression (gl-js is the reference web renderer,
+    CDN-cached, KBs) for MBs of WASM download + Emscripten threading (SharedArrayBuffer/COOP-COEP),
+    GL-context and font/text friction. Not worth it.
+  - **The only real unification target is desktop** (macOS + Windows + Linux all on the core) —
+    already the plan (§8 step 3), and macOS + Linux already ship on it. Payoff and risk both live
+    there; finish **Windows** on the core rather than expanding the core's blast radius to mobile/web.
+  - **Escape hatch, not a commitment:** if mobile-SDK maintenance ever dominates, the move is to
+    offer core-on-mobile as an **opt-in/experimental** path, A/B it against the SDK, and switch only
+    if native feel + integration match — never rip the SDK out up front.
+
 _Append new decisions here with date and rationale._
