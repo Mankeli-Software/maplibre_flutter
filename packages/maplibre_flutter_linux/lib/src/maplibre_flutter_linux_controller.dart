@@ -25,7 +25,7 @@ const MethodChannel _registrar = MethodChannel(
 ///
 /// NOTE: not yet run on real Linux hardware — see CLAUDE.md §8.
 class MapLibreFlutterLinuxController
-    implements MapLibreMapController, MapLibreGestureHandler {
+    implements MapLibreMapPlatformController, MapLibreGestureHandler {
   MapLibreFlutterLinuxController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -47,6 +47,7 @@ class MapLibreFlutterLinuxController
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
   static Future<MapLibreFlutterLinuxController> create(
+    String style,
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
@@ -54,7 +55,7 @@ class MapLibreFlutterLinuxController
       width: _initialWidth,
       height: _initialHeight,
       pixelRatio: 1,
-      styleUri: options.styleUri,
+      styleUri: style,
       // Continuous render (partial frames that refine as tiles load) is on by
       // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the Static path.
       continuous: const bool.fromEnvironment(

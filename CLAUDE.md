@@ -197,6 +197,27 @@ platforms. All divergence stays behind the platform interface.
 > which is only reachable from a **native plugin class**. So most platform packages are
 > **hybrid** (`dartPluginClass` + `pluginClass`) even when the heavy lifting is FFI/jnigen/swiftgen.
 
+### Public API shape: controller-on-widget, three-bucket properties
+
+The app-facing API follows `webview_flutter`'s split: a user-constructible
+**`MapLibreMapController`** (app-facing, in `maplibre_flutter`) wraps the per-platform
+**`MapLibreMapPlatformController`** (the thing `createMap` returns, in the platform interface).
+Users do `MapLibreMap(controller: c, style: ...)` and drive `c` imperatively; the controller is
+**optional** (the widget owns an internal one if omitted). There is **no `onMapCreated`**.
+
+Properties are placed by a **three-bucket rule** (not just "mutable vs not"):
+
+- **Init-only** → widget (`MapOptions.initialCamera`, creation flags).
+- **Mutable + declarative/low-frequency** → widget prop (`MapLibreMap.style`; pushed via
+  `didUpdateWidget` → platform `setStyle`). Style's single source of truth is the widget — there
+  is **no public `controller.setStyle`** (avoids the declarative/imperative conflict).
+- **Mutable + imperative/high-frequency/command** → controller (`getCamera`/`moveCamera`/fly).
+
+Mirrors `google_maps_flutter` (`initialCameraPosition` + declarative `style` + imperative camera).
+Dispose ownership: the widget disposes only a controller it created; a user-provided controller is
+`detach()`ed on unmount and `dispose()`d by the owner. Controller widget-glue (`attach`/`detach`/
+`renderHandle`/`gestureHandler`/`setStyle`/`resize`) is `@internal` (needs `package:meta`).
+
 ---
 
 ## 4. Repository layout (target)
@@ -1074,5 +1095,45 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     D3D shared handle). `maplibre_flutter_core_d3d.{h,cpp}` deleted (replaced by `_vk`). Verified:
     `flutter build windows` green; `melos analyze` (`--fatal-infos`) + `format` green across all 10
     packages.
+
+- **2026-06-20 — Public API reshaped to controller-on-widget + declarative style (§3 "Public API
+  shape"; on `feat/controller-on-widget-api`).** Replaced the `onMapCreated`-returns-controller API
+  (google_maps_flutter/maplibre_gl style) with the `webview_flutter` split: a user-constructible
+  app-facing **`MapLibreMapController`** wraps the per-platform controller. Rationale: the
+  controller-passed-to-widget pattern is the more modern, idiomatic Flutter shape
+  (`webview_flutter` v4, `VideoPlayerController`, `flutter_map`); pre-publish, so done cleanly with
+  no deprecation. Changes:
+  - **Interface rename:** the abstract controller `MapLibreMapController` → **`MapLibreMapPlatformController`**
+    (platform_interface, the thing `createMap` returns). The name `MapLibreMapController` is now the
+    **app-facing wrapper** in `maplibre_flutter` (user constructs it, optional — the widget owns one
+    if omitted; forwards camera/query/lifecycle to the bound platform controller; queues nothing,
+    just no-ops before attach per the existing "best-effort before onReady" contract).
+  - **Two-phase lifecycle preserved:** the widget's FutureBuilder waits on `attach()` (renderHandle
+    ready, post-`createMap`) to mount the embed — NOT on `onReady` (first frame) — so the texture/view
+    mounts as early as before. `onReady` is forwarded from the platform controller.
+  - **Three-bucket property rule (the design principle, now in §3):** init-only → widget
+    (`MapOptions.initialCamera`); mutable+declarative → widget prop (`MapLibreMap.style`, pushed via
+    `didUpdateWidget`→ platform `setStyle`); mutable+imperative/high-freq → controller (camera/fly).
+    **`styleUri` removed from `MapOptions`**; style is now `MapLibreMap.style` (single source of
+    truth — **no public `controller.setStyle`**, which would reintroduce the declarative/imperative
+    conflict). `createMap` signature is now `({required String style, required MapOptions options})`.
+    Camera stays imperative (never declarative — google_maps_flutter does the same; animating a
+    camera through `setState` is wrong).
+  - **Dispose ownership:** widget disposes only a controller it created; a user-provided controller
+    is `detach()`ed (native torn down) on unmount and the owner calls `dispose()`. `didUpdateWidget`
+    handles controller-swap (detach/dispose old, attach new) and style-change. Controller widget-glue
+    (`attach`/`detach`/`renderHandle`/`gestureHandler`/`setStyle`/`resize`) is **`@internal`** — added
+    `meta: ^1.15.0` to `maplibre_flutter` (flutter/foundation doesn't re-export `@internal`; resolved
+    to 1.18.0, no workspace conflict). The widget reads `controller.gestureHandler` (the bound
+    platform controller iff it's a `MapLibreGestureHandler`) to decide the desktop Dart gesture layer,
+    replacing the old `controller is MapLibreGestureHandler` check.
+  - **Mechanical ripple, no native/binding changes:** all 6 impls implement the renamed type and take
+    `style` as a param instead of reading `options.styleUri`; native render/control logic untouched;
+    no ffigen/jnigen/swiftgen regen. Tests: rewrote the widget test (style/options, dispose-vs-detach
+    ownership, declarative style→setStyle, gesture-layer branch) + new `maplibre_map_controller_test`
+    (pre-attach getCamera default, attach/forward, double-attach + post-dispose-attach throw,
+    detach-reuse); integration tests (web/windows) construct a controller and swap style by re-pumping
+    with a new `style`. Verified on this Mac: `melos analyze` (`--fatal-infos`) + `test` (VM) +
+    `test:web` (Chrome) + `test:native` (source-build) + `format` all green; READMEs updated.
 
 _Append new decisions here with date and rationale._

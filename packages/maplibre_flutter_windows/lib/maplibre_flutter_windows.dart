@@ -19,6 +19,8 @@ class MapLibreFlutterWindows extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) =>
-      MapLibreFlutterWindowsController.create(options);
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) => MapLibreFlutterWindowsController.create(style, options);
 }

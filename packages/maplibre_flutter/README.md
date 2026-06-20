@@ -57,29 +57,54 @@ pulled in transitively; never depend on a platform package directly.
 
 ## Usage
 
+Drive the map with a `MapLibreMapController` (camera + queries are imperative); the **style is
+a declarative widget property** — change it and rebuild to switch styles at runtime.
+
 ```dart
+import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 
-MapLibreMap(
-  options: const MapOptions(
-    styleUri: 'https://demotiles.maplibre.org/style.json',
-    initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
-  ),
-  onMapCreated: (controller) async {
-    // The controller exists before the native map is ready — await it first.
-    await controller.onReady;
+class MapScreen extends StatefulWidget {
+  const MapScreen({super.key});
+  @override
+  State<MapScreen> createState() => _MapScreenState();
+}
 
-    // Read and move the camera.
-    final camera = await controller.getCamera();
-    await controller.moveCamera(
+class _MapScreenState extends State<MapScreen> {
+  // You constructed the controller, so you own it: dispose it when done.
+  final MapLibreMapController _controller = MapLibreMapController();
+  String _style = 'https://demotiles.maplibre.org/style.json';
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _zoomIn() async {
+    await _controller.onReady; // the native map is ready a moment after build
+    final camera = await _controller.getCamera();
+    await _controller.moveCamera(
       camera.copyWith(zoom: camera.zoom + 2),
       duration: const Duration(milliseconds: 600),
     );
+  }
 
-    // Swap the style at runtime.
-    await controller.setStyle('https://tiles.openfreemap.org/styles/liberty');
-  },
-);
+  // Style is declarative — change the `style` prop and rebuild.
+  void _useLiberty() =>
+      setState(() => _style = 'https://tiles.openfreemap.org/styles/liberty');
+
+  @override
+  Widget build(BuildContext context) {
+    return MapLibreMap(
+      controller: _controller, // optional — omit it and the widget owns one
+      style: _style,
+      options: const MapOptions(
+        initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
+      ),
+    );
+  }
+}
 ```
 
 Gestures (pan / zoom / rotate / pitch) work out of the box: natively via the SDK on

@@ -14,14 +14,15 @@ import 'maplibre_gl_loader.dart';
 ///
 /// Web mirrors the **mobile** tier, not the desktop tier: maplibre-gl-js owns
 /// pan/zoom/rotate gestures and inertia natively, so this implements
-/// [MapLibreMapController] only — *not* [MapLibreGestureHandler]. The app-facing
-/// widget therefore skips its Dart gesture layer for `ElementViewHandle`.
+/// [MapLibreMapPlatformController] only — *not* [MapLibreGestureHandler]. The
+/// app-facing widget therefore skips its Dart gesture layer for
+/// `ElementViewHandle`.
 ///
 /// The JS map is built inside the platform-view factory (which the engine runs
 /// when the `HtmlElementView` mounts — *after* [create] returns and the view is
 /// laid out, mirroring how the desktop controllers return before the first
 /// frame). [onReady] completes on the JS `'load'` event.
-class MapLibreFlutterWebController implements MapLibreMapController {
+class MapLibreFlutterWebController implements MapLibreMapPlatformController {
   MapLibreFlutterWebController._(this._viewType, this._initialCamera);
 
   /// Monotonic id source for unique platform-view type names. View-type
@@ -40,7 +41,10 @@ class MapLibreFlutterWebController implements MapLibreMapController {
 
   /// Loads maplibre-gl-js, registers a view factory that builds the map when the
   /// `HtmlElementView` mounts, and returns the controller.
-  static Future<MapLibreFlutterWebController> create(MapOptions options) async {
+  static Future<MapLibreFlutterWebController> create(
+    String style,
+    MapOptions options,
+  ) async {
     await ensureMaplibreLoaded();
 
     final viewType = 'maplibre_flutter/web/${_nextId++}';
@@ -55,7 +59,7 @@ class MapLibreFlutterWebController implements MapLibreMapController {
       final map = MaplibreMap(
         MaplibreMapOptions(
           container: div,
-          style: options.styleUri.toJS,
+          style: style.toJS,
           center: _lngLat(camera.center),
           zoom: camera.zoom,
           bearing: camera.bearing,

@@ -14,6 +14,9 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
+  # For @internal on the controller's widget-glue members (kept out of the
+  # public API surface). flutter/foundation does not re-export @internal.
+  meta: ^1.15.0
   maplibre_flutter_platform_interface: ^0.0.2
   # Endorsed default implementations. App users get these transitively and
   # never depend on a platform package directly.

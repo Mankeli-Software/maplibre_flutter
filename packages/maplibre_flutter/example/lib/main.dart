@@ -37,38 +37,49 @@ class MapDemoPage extends StatefulWidget {
 }
 
 class _MapDemoPageState extends State<MapDemoPage> {
-  MapLibreMapController? _controller;
+  // We construct and own the controller, so we dispose it (see [dispose]).
+  final MapLibreMapController _controller = MapLibreMapController();
   bool _ready = false;
   String _style = _demotiles;
   int _placeIndex = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    // The controller exists immediately; the native map is ready a bit later.
+    // Wait for it, then enable the camera/style controls.
+    _controller.onReady.then((_) {
+      if (mounted) setState(() => _ready = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   Future<void> _zoomBy(double delta) async {
-    final controller = _controller;
-    if (controller == null) return;
-    final camera = await controller.getCamera();
-    await controller.moveCamera(
+    final camera = await _controller.getCamera();
+    await _controller.moveCamera(
       camera.copyWith(zoom: camera.zoom + delta),
       duration: const Duration(milliseconds: 300),
     );
   }
 
   Future<void> _flyToNextPlace() async {
-    final controller = _controller;
-    if (controller == null) return;
     final (_, center, zoom) = _places[_placeIndex];
     _placeIndex = (_placeIndex + 1) % _places.length;
-    await controller.moveCamera(
+    await _controller.moveCamera(
       MapCamera(center: center, zoom: zoom),
       duration: const Duration(milliseconds: 2000),
     );
   }
 
-  Future<void> _toggleStyle() async {
-    final controller = _controller;
-    if (controller == null) return;
-    _style = _style == _demotiles ? _liberty : _demotiles;
-    await controller.setStyle(_style);
-    setState(() {});
+  // Style is declarative: change the widget's `style` prop and rebuild. The
+  // widget pushes the new style to the native map (CLAUDE.md §3).
+  void _toggleStyle() {
+    setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
   }
 
   @override
@@ -79,17 +90,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
         children: [
           Positioned.fill(
             child: MapLibreMap(
+              controller: _controller,
+              style: _style,
               options: const MapOptions(
-                styleUri: _demotiles,
                 initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
               ),
-              onMapCreated: (c) async {
-                _controller = c;
-                // The controller exists before the native map is ready; wait
-                // for it, then enable the camera/style controls.
-                await c.onReady;
-                if (mounted) setState(() => _ready = true);
-              },
             ),
           ),
           Positioned(

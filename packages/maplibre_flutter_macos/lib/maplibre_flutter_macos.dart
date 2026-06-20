@@ -17,6 +17,8 @@ class MapLibreFlutterMacos extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) =>
-      MapLibreFlutterMacosController.create(options);
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) => MapLibreFlutterMacosController.create(style, options);
 }
