@@ -1172,4 +1172,24 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     with a new `style`. Verified on this Mac: `melos analyze` (`--fatal-infos`) + `test` (VM) +
     `test:web` (Chrome) + `test:native` (source-build) + `format` all green; READMEs updated.
 
+- **2026-06-20 — Web-via-core WASM: empirical build started; the engine compiles to WebAssembly (on
+  `feat/web-core-wasm-poc`).** Acting on the 2026-06-20 feasibility decision, branched off latest main
+  (after merging the controller-on-widget API rework and conforming the web scaffold:
+  `MapLibreMapController`→`MapLibreMapPlatformController`; `createMap`/`create` now take
+  `(style, options)`). Set up the Emscripten toolchain on the Windows box: **emsdk** + a real Python
+  (the winget Python is shadowed by the Windows Store `python.exe` execution alias — point
+  `EMSDK_PYTHON` at `…\Programs\Python\Python312\python.exe`) + VS2022's bundled cmake/ninja. **Key
+  result: `mbgl-core` both configures AND compiles to WASM** with `MLN_WITH_CORE_ONLY` +
+  `MLN_WITH_OPENGL` — 435/435 objects, **0 errors** → `libmbgl-core.a` (~17.5 MB) + vendored deps
+  (freetype/harfbuzz/…). This contradicts the upstream blocker
+  ([maplibre-native#2554](https://github.com/maplibre/maplibre-native/issues/2554), "can't run
+  emcmake without errors" — still open/unsolved): our pinned core builds cleanly. Reproducible probe
+  at `packages/maplibre_flutter_core/web/probe/` (its `../build/` is git-ignored). **Remaining work =
+  the platform layer + glue, NOT the core:** curl→`fetch` HTTP source; libuv→browser `RunLoop` (the
+  hard part); pthreads (Emscripten + COOP/COEP); EGL-pbuffer→WebGL2-on-canvas; sqlite/offline stub; a
+  web C-shim; and an embind JS module matching `core_wasm_interop.dart`. Realistic effort to a
+  rendering PoC: **week(s)** of platform-port work (run loop riskiest) — materially de-risked but not
+  finished this pass. Full status + ordered next steps in `docs/experimental-web-core-wasm.md`.
+  maplibre-gl-js remains the default; nothing here affects it.
+
 _Append new decisions here with date and rationale._
