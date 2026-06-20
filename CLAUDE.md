@@ -74,10 +74,11 @@ is scaffolded vs. still TODO:
     on iOS unchanged. SPM **and** CocoaPods example builds green; device frame pending a sim run.
     **Experimental core-on-iOS POC** (`--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true`, default off):
     the same package can alternatively render `mbgl-core` into a Flutter `Texture` like the desktop
-    tier, A/B-able against the SDK on one device — the sanctioned §3 escape hatch. Build chain
-    verified on this Mac (mbgl-core compiles for iphoneos incl. the Metal headless backend, links,
-    and Flutter frameworks+signs the dylib into the device app); on-device render/gestures pending a
-    physical device. See the 2026-06-20 decision-log entry.
+    tier, A/B-able against the SDK on one device — the sanctioned §3 escape hatch. **Verified on a
+    physical iPhone 17 Pro Max** (iOS 26.5.1): renders a real map, smooth at proper retina density,
+    no seams (a faint tile-seam seen only on the Simulator was a sim offscreen-Metal quirk, clean on
+    device). Known production blocker: bundling both the Apple SDK and mbgl-core duplicates mbgl
+    symbols → needs a separate opt-in package. See the 2026-06-20 decision-log entry.
   - **macOS — desktop tier complete; smooth on device.** `maplibre_flutter_core` drives `mbgl-core`
     (vendored submodule, pinned `MBGL_CORE_VERSION`) over a C-shim + ffigen, built via
     `native_toolchain_cmake` in `hook/build.dart`, on a dedicated render thread. Two perf wins make
@@ -1227,20 +1228,33 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
        the `× DPR`), matching the Apple SDK. User-confirmed on device-sim: map now renders at proper
        retina density and is smooth. (The macOS/Linux/Windows controllers share the pr=1 pattern —
        likely the same latent issue; not yet changed, out of the iOS POC's scope.)
-    2. **Residual tile seams are SIMULATOR-specific (offscreen Metal), not the present path.** Faint
-       1-px tile-boundary seams remain on the sim (subtle on Liberty, obvious on demotiles' solid
-       overzoom fills, zoom-dependent). Bisected exhaustively: the raw mbgl frame on **macOS native
-       Metal is clean** at every zoom; **all four iOS present configs** (zero-copy/CPU × Continuous/
-       Static) show the **identical** seams (so it is NOT zero-copy, Continuous, or Flutter's Texture
-       compositing — `FilterQuality.none` made no difference); and the **iOS SDK** (on-screen
-       MLNMapView, same mbgl Metal) is clean at the same view. So the seam is specifically our
-       **headless OFFSCREEN Metal render on the iOS Simulator** — macOS native Metal (headless) is
-       clean and the iOS on-screen drawable is clean, only iOS-sim offscreen seams. Strong evidence
-       this is a **simulator Metal-translation quirk** that a real device (native Apple-Silicon Metal,
-       like macOS) would not show; the definitive check is a physical-device run. If it DOES
-       reproduce on device, the fix lives in mbgl's `mtl::HeadlessBackend` (offscreen pass setup —
-       tile clip/scissor or MSAA), a deeper submodule patch. Verification method: a brightness-spike
-       seam detector over `simctl` screenshots (the seams are 1-px hairlines lost to viewer
-       downscaling; quantitative column/row profiles caught them).
+    2. **Residual tile seams were SIMULATOR-ONLY (offscreen Metal) — CONFIRMED CLEAN ON DEVICE.**
+       Faint 1-px tile-boundary seams showed on the *sim* (subtle on Liberty, obvious on demotiles'
+       solid overzoom fills, zoom-dependent). Bisected exhaustively: the raw mbgl frame on **macOS
+       native Metal is clean** at every zoom; **all four iOS present configs** (zero-copy/CPU ×
+       Continuous/Static) showed the **identical** seams (so NOT zero-copy, Continuous, or Flutter's
+       Texture compositing — `FilterQuality.none` made no difference); and the **iOS SDK** (on-screen
+       MLNMapView, same mbgl Metal) was clean at the same view. So the seam was specifically our
+       **headless OFFSCREEN Metal render on the iOS Simulator** (macOS native Metal headless = clean,
+       iOS on-screen = clean, only iOS-sim offscreen seamed) → a **simulator Metal-translation quirk**.
+       **Verified on a physical iPhone 17 Pro Max (iOS 26.5.1): the map renders smooth with NO white
+       lines.** So real-device native Metal renders the headless offscreen frame cleanly, like macOS —
+       no mbgl `mtl::HeadlessBackend` patch needed. (Seam-detection method during the hunt: a
+       brightness-spike detector over `simctl` screenshots — the seams are 1-px hairlines lost to
+       viewer downscaling; quantitative column/row profiles caught them.)
+  - **Device run surfaced the production blocker the always-build tradeoff implies: duplicate mbgl
+    ObjC classes.** With the experimental flag on, the app bundles BOTH `MapLibre.framework` (the SDK,
+    still an unconditional iOS dep) and `maplibre_flutter_core.framework` (our mbgl-core) — and since
+    the SDK is *built on* mbgl, the runtime logs duplicate-class warnings (`MBGLBundleCanary`,
+    `MLNNativeNetworkManager`, …; "may cause spurious casting failures and mysterious crashes"). It
+    ran fine here, but this is exactly why production must move the core path to a **separate opt-in
+    package** so SDK-path apps never link both — the §3/probe-4 conclusion, now concretely motivated.
+  - **NET POC RESULT: SUCCESS.** core-on-iOS renders a real MapLibre map on a physical device —
+    smooth, retina, correct — over the desktop mbgl-core tier (Metal → Flutter Texture), gated behind
+    `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE` with the Apple SDK still the default. The build→bundle→
+    codesign→run chain works on device. The escape hatch is proven viable; remaining before it could
+    be more than a POC: a separate opt-in package (duplicate-symbol + binary-size fix), the native
+    gesture-feel A/B vs the SDK (inertia/fling), and porting the pixelRatio fix to the desktop
+    controllers (same latent pr=1).
 
 _Append new decisions here with date and rationale._
