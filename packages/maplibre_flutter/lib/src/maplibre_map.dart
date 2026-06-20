@@ -114,38 +114,27 @@ class _MapLibreMapState extends State<MapLibreMap> {
             _controller.renderHandle == null) {
           return const SizedBox.shrink();
         }
-        return _embed(context, _controller);
+        return _MapEmbed(controller: _controller);
       },
     );
   }
+}
 
-  /// The render split (CLAUDE.md §3) is resolved here and nowhere else.
-  Widget _embed(BuildContext context, MapLibreMapController controller) {
+/// Resolves the render split (CLAUDE.md §3) to a concrete embed widget. This is
+/// the only place that branches on [MapLibreRenderHandle].
+class _MapEmbed extends StatelessWidget {
+  const _MapEmbed({required this.controller});
+
+  final MapLibreMapController controller;
+
+  @override
+  Widget build(BuildContext context) {
     final handle = controller.renderHandle!;
     switch (handle) {
       case TextureHandle(:final textureId):
-        // Desktop tier: report the view's size + DPR so the core renders at the
-        // right resolution and aspect ratio (and follows window resizes), and
-        // drive pan/zoom from Flutter gestures when the controller supports it
-        // (CLAUDE.md §3: the desktop tier handles gestures in Dart).
-        Widget map = Texture(textureId: textureId);
-        if (controller.gestureHandler case final gestures?) {
-          map = _DesktopMapGestures(handler: gestures, child: map);
-        }
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final size = constraints.biggest;
-            final dpr = MediaQuery.devicePixelRatioOf(context);
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (size.isFinite && !size.isEmpty) {
-                controller.resize(size, dpr);
-              }
-            });
-            return map;
-          },
-        );
+        return _TextureMapView(controller: controller, textureId: textureId);
       case PlatformViewHandle():
-        return _platformView(handle);
+        return _PlatformView(handle: handle);
       case ElementViewHandle(:final viewType):
         // Web tier: the maplibre-gl-js map is the host `<div>` registered under
         // [viewType] by the web controller's view factory. It is the top DOM
@@ -156,15 +145,53 @@ class _MapLibreMapState extends State<MapLibreMap> {
         return HtmlElementView(viewType: viewType);
     }
   }
+}
 
-  /// Embed a native view. The mobile tier reaches here: Android composites the
-  /// map's `SurfaceView` via Hybrid Composition, iOS embeds `MLNMapView` via
-  /// `UiKitView`. The concrete view factory is registered by each platform
-  /// package.
-  Widget _platformView(PlatformViewHandle handle) {
+/// Desktop tier: embeds the rendered map [Texture]. Reports the view's size +
+/// DPR so the core renders at the right resolution and aspect ratio (and follows
+/// window resizes), and drives pan/zoom from Flutter gestures when the controller
+/// supports it (CLAUDE.md §3: the desktop tier handles gestures in Dart).
+class _TextureMapView extends StatelessWidget {
+  const _TextureMapView({required this.controller, required this.textureId});
+
+  final MapLibreMapController controller;
+  final int textureId;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget map = Texture(textureId: textureId);
+    if (controller.gestureHandler case final gestures?) {
+      map = _DesktopMapGestures(handler: gestures, child: map);
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = constraints.biggest;
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (size.isFinite && !size.isEmpty) {
+            controller.resize(size, dpr);
+          }
+        });
+        return map;
+      },
+    );
+  }
+}
+
+/// Embeds a native view. The mobile tier reaches here: Android composites the
+/// map's `SurfaceView` via Hybrid Composition, iOS embeds `MLNMapView` via
+/// `UiKitView`. The concrete view factory is registered by each platform
+/// package.
+class _PlatformView extends StatelessWidget {
+  const _PlatformView({required this.handle});
+
+  final PlatformViewHandle handle;
+
+  @override
+  Widget build(BuildContext context) {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        return _androidView(handle);
+        return _AndroidView(handle: handle);
       case TargetPlatform.iOS:
         return UiKitView(
           viewType: handle.viewType,
@@ -177,17 +204,24 @@ class _MapLibreMapState extends State<MapLibreMap> {
         );
     }
   }
+}
 
-  /// Android embed via **Hybrid Composition** (`PlatformViewLink` +
-  /// `PlatformViewsService.initSurfaceAndroidView`), so the map's `SurfaceView`
-  /// composites directly in the view hierarchy with correct gestures and
-  /// accessibility — unlike the plain `AndroidView` (texture-layer) path, which
-  /// shunts SurfaceViews into a virtual display. On capable devices (Flutter
-  /// 3.44+, Android API 34+, Vulkan) this is transparently upgraded to Hybrid
-  /// Composition Plus (HCPP) when the app manifest sets
-  /// `io.flutter.embedding.android.EnableHcpp`; otherwise it falls back to
-  /// classic Hybrid Composition.
-  Widget _androidView(PlatformViewHandle handle) {
+/// Android embed via **Hybrid Composition** (`PlatformViewLink` +
+/// `PlatformViewsService.initSurfaceAndroidView`), so the map's `SurfaceView`
+/// composites directly in the view hierarchy with correct gestures and
+/// accessibility — unlike the plain `AndroidView` (texture-layer) path, which
+/// shunts SurfaceViews into a virtual display. On capable devices (Flutter
+/// 3.44+, Android API 34+, Vulkan) this is transparently upgraded to Hybrid
+/// Composition Plus (HCPP) when the app manifest sets
+/// `io.flutter.embedding.android.EnableHcpp`; otherwise it falls back to
+/// classic Hybrid Composition.
+class _AndroidView extends StatelessWidget {
+  const _AndroidView({required this.handle});
+
+  final PlatformViewHandle handle;
+
+  @override
+  Widget build(BuildContext context) {
     return PlatformViewLink(
       viewType: handle.viewType,
       surfaceFactory: (context, controller) {
