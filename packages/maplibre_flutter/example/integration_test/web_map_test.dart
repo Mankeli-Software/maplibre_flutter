@@ -19,38 +19,45 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('loads a style and moves the camera both ways', (tester) async {
-    MapLibreMapController? controller;
-    await tester.pumpWidget(
+    const demotiles = 'https://demotiles.maplibre.org/style.json';
+    const liberty = 'https://tiles.openfreemap.org/styles/liberty';
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+
+    Future<void> pumpWithStyle(String style) => tester.pumpWidget(
       MaterialApp(
         home: MapLibreMap(
+          controller: controller,
+          style: style,
           options: const MapOptions(
-            styleUri: 'https://demotiles.maplibre.org/style.json',
             initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
           ),
-          onMapCreated: (c) => controller = c,
         ),
       ),
     );
 
+    await pumpWithStyle(demotiles);
+
     // The HtmlElementView mounts, the view factory builds the JS map, and its
     // 'load' event completes onReady — proving maplibre-gl-js loaded a style.
     await tester.pumpAndSettle();
-    expect(controller, isNotNull);
-    await controller!.onReady;
+    await controller.onReady;
 
     // Jump the camera, then read it back: exercises the Dart->JS->Dart bridge
     // and the LatLng(lat,lng) <-> [lng,lat] conversion in both directions.
-    await controller!.moveCamera(
+    await controller.camera.move(
       const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
     );
-    final cam = await controller!.getCamera();
+    final cam = await controller.camera.getPosition();
     expect(cam.center.latitude, closeTo(51.5, 0.5));
     expect(cam.center.longitude, closeTo(-0.13, 0.5));
     expect(cam.zoom, closeTo(6, 0.5));
 
-    // Swapping styles must not throw and the map must keep reporting a camera.
-    await controller!.setStyle('https://tiles.openfreemap.org/styles/liberty');
-    final after = await controller!.getCamera();
+    // Style is declarative: rebuilding with a new `style` must push it to the
+    // native map without throwing, and the map must keep reporting a camera.
+    await pumpWithStyle(liberty);
+    await tester.pumpAndSettle();
+    final after = await controller.camera.getPosition();
     expect(after.zoom, closeTo(6, 0.5));
   });
 }

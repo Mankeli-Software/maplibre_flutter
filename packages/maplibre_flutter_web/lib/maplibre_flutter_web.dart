@@ -32,7 +32,10 @@ class MapLibreFlutterWeb extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) => useNativeCore
-      ? MapLibreCoreWebController.create(options)
-      : MapLibreFlutterWebController.create(options);
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) => useNativeCore
+      ? MapLibreCoreWebController.create(style, options)
+      : MapLibreFlutterWebController.create(style, options);
 }

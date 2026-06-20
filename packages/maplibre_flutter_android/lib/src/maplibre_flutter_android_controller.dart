@@ -17,11 +17,14 @@ const String kAndroidMapViewType = 'maplibre_flutter/android';
 /// registers a `MapLibreController` in the native `MapRegistry` under that id,
 /// and we look it up here ([_resolve]) to call the bound methods. No data-path
 /// method channel is involved (CLAUDE.md §10).
-class MapLibreFlutterAndroidController implements MapLibreMapController {
-  MapLibreFlutterAndroidController(this._options) : _mapId = _nextMapId++ {
+class MapLibreFlutterAndroidController
+    implements MapLibreMapPlatformController {
+  MapLibreFlutterAndroidController(this._style, this._options)
+    : _mapId = _nextMapId++ {
     _pollReady();
   }
 
+  final String _style;
   final MapOptions _options;
   final int _mapId;
 
@@ -49,7 +52,7 @@ class MapLibreFlutterAndroidController implements MapLibreMapController {
     final camera = _options.initialCamera;
     return <String, Object?>{
       'mapId': _mapId,
-      'styleUri': _options.styleUri,
+      'styleUri': _style,
       'lat': camera.center.latitude,
       'lng': camera.center.longitude,
       'zoom': camera.zoom,

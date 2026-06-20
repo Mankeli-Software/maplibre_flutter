@@ -26,7 +26,7 @@ const MethodChannel _registrar = MethodChannel(
 ///
 /// NOTE: not yet run on real Windows hardware — see CLAUDE.md §8.
 class MapLibreFlutterWindowsController
-    implements MapLibreMapController, MapLibreGestureHandler {
+    implements MapLibreMapPlatformController, MapLibreGestureHandler {
   MapLibreFlutterWindowsController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -48,6 +48,7 @@ class MapLibreFlutterWindowsController
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
   static Future<MapLibreFlutterWindowsController> create(
+    String style,
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
@@ -55,7 +56,7 @@ class MapLibreFlutterWindowsController
       width: _initialWidth,
       height: _initialHeight,
       pixelRatio: 1,
-      styleUri: options.styleUri,
+      styleUri: style,
       // Continuous render (partial frames that refine as tiles load) is on by
       // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the Static path.
       continuous: const bool.fromEnvironment(

@@ -9,8 +9,9 @@
 /// This mirrors the structure of `MapLibreFlutterWebController` (the gl-js path):
 /// the engine renders into a `<canvas>` hosted by an `HtmlElementView`, built in
 /// the platform-view factory when the view mounts. The WASM/JS glue owns canvas
-/// pointer gestures (as gl-js does), so this implements [MapLibreMapController]
-/// only — no Dart gesture layer and no platform-interface change.
+/// pointer gestures (as gl-js does), so this implements
+/// [MapLibreMapPlatformController] only — no Dart gesture layer and no
+/// platform-interface change.
 library;
 
 import 'dart:async';
@@ -30,7 +31,7 @@ const bool _continuous = bool.fromEnvironment(
   defaultValue: true,
 );
 
-class MapLibreCoreWebController implements MapLibreMapController {
+class MapLibreCoreWebController implements MapLibreMapPlatformController {
   MapLibreCoreWebController._(this._viewType, this._initialCamera);
 
   static int _nextId = 0;
@@ -44,7 +45,10 @@ class MapLibreCoreWebController implements MapLibreMapController {
 
   /// Loads the WASM module, registers a view factory that builds the map into a
   /// `<canvas>` when the `HtmlElementView` mounts, and returns the controller.
-  static Future<MapLibreCoreWebController> create(MapOptions options) async {
+  static Future<MapLibreCoreWebController> create(
+    String style,
+    MapOptions options,
+  ) async {
     // Throws a clear error if the experimental artifact isn't built/served.
     final module = await ensureCoreModuleLoaded();
 
@@ -63,7 +67,7 @@ class MapLibreCoreWebController implements MapLibreMapController {
       final map = module.createMap(
         CoreMapOptions(
           canvas: canvas,
-          styleUri: options.styleUri,
+          styleUri: style,
           lat: camera.center.latitude,
           lng: camera.center.longitude,
           zoom: camera.zoom,

@@ -15,7 +15,10 @@ class MapLibreFlutterIos extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) async {
-    return MapLibreFlutterIosController(options);
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) async {
+    return MapLibreFlutterIosController(style, options);
   }
 }
