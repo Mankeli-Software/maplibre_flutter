@@ -28,7 +28,16 @@ import 'package:web/web.dart' as web;
 /// override with a `locateFile` module arg only if they are served apart (see the
 /// design doc).
 @JS('MaplibreFlutterCore')
-external JSPromise<CoreModule> instantiateCoreModule();
+external JSPromise<CoreModule> instantiateCoreModule(CoreModuleArg arg);
+
+/// Partial Emscripten Module config passed to the factory. We set
+/// [mainScriptUrlOrBlob] because the loader injects the glue `<script>` dynamically
+/// — `document.currentScript` is then null, so without this Emscripten cannot
+/// resolve its own pthread-worker / `.wasm` URLs and startup hangs at
+/// `library_fetch_init`.
+extension type CoreModuleArg._(JSObject _) implements JSObject {
+  external factory CoreModuleArg({String mainScriptUrlOrBlob});
+}
 
 /// A ready Emscripten module instance. Factory for maps; one module instance can
 /// host one rendering context, so each map gets its own module (see the design

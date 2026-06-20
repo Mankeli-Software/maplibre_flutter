@@ -51,8 +51,12 @@ Future<CoreModule> _load() async {
   }
 
   // MODULARIZE factory → Promise<CoreModule>. Awaiting it runs WASM instantiation
-  // (and, in a threaded build, spins up the pthread workers).
-  return instantiateCoreModule().toDart;
+  // (and, in a threaded build, spins up the pthread workers). We pass
+  // mainScriptUrlOrBlob so Emscripten can locate its worker/.wasm even though the
+  // glue script was injected dynamically (no document.currentScript).
+  return instantiateCoreModule(
+    CoreModuleArg(mainScriptUrlOrBlob: coreModuleUrl),
+  ).toDart;
 }
 
 Future<void> _injectScript(String url) async {
