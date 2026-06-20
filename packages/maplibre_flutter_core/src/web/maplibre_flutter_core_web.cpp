@@ -176,6 +176,7 @@ public:
     }
 
     void setCamera(double lat, double lng, double zoom, double bearing, double pitch) {
+        inertia_ = false; // an explicit camera move cancels any in-flight fling
         map_->jumpTo(mbgl::CameraOptions()
                          .withCenter(mbgl::LatLng{lat, lng})
                          .withZoom(zoom)
@@ -186,6 +187,7 @@ public:
 
     // Eased camera transition over [durationMs] (the fly-to path). Stepped in tick().
     void animateTo(double lat, double lng, double zoom, double bearing, double pitch, double durationMs) {
+        inertia_ = false; // a fly-to cancels any in-flight fling
         const mbgl::CameraOptions cam = map_->getCameraOptions();
         fromLat_ = cam.center ? cam.center->latitude() : lat;
         fromLng_ = cam.center ? cam.center->longitude() : lng;
@@ -299,6 +301,7 @@ public:
     void tick() {
         syncSize();
         stepAnimation();
+        stepInertia();
         if (continuous_) {
             // Continuous mode renders itself: camera/size mutations and tile loads
             // invalidate the frontend, which renders off the RunLoop (driven by
@@ -459,6 +462,33 @@ private:
         dirty_ = true;
     }
 
+    // Pan inertia ("fling"): after the drag is released with velocity, keep panning
+    // and decay it exponentially — so the web-core engine feels like gl-js / the
+    // native SDKs (mirrors the desktop Dart gesture layer). Velocity is tracked in
+    // the drag handlers (device px/s); stepped here each frame.
+    void stepInertia() {
+        if (!inertia_) {
+            return;
+        }
+        const double now = emscripten_get_now();
+        double dt = (now - lastInertiaMs_) / 1000.0;
+        lastInertiaMs_ = now;
+        if (dt <= 0.0) {
+            return;
+        }
+        if (dt > 0.05) {
+            dt = 0.05; // clamp big gaps (e.g. tab defocus) so it doesn't jump
+        }
+        map_->moveBy(mbgl::ScreenCoordinate{inertiaVx_ * dt, inertiaVy_ * dt});
+        const double decay = std::exp(-dt / kInertiaTau);
+        inertiaVx_ *= decay;
+        inertiaVy_ *= decay;
+        dirty_ = true;
+        if (std::hypot(inertiaVx_, inertiaVy_) < kInertiaMinSpeed * pixelRatio_) {
+            inertia_ = false;
+        }
+    }
+
     static double lerp(double a, double b, double t) { return a + (b - a) * t; }
 
     static EM_BOOL onMouseDown(int, const EmscriptenMouseEvent* e, void* ud) {
@@ -467,6 +497,10 @@ private:
         m->lastX_ = e->targetX;
         m->lastY_ = e->targetY;
         m->animating_ = false; // a press cancels any in-flight fly-to
+        m->inertia_ = false;   // ...and any in-flight fling
+        m->dragVx_ = 0;
+        m->dragVy_ = 0;
+        m->lastMoveMs_ = emscripten_get_now();
         return EM_TRUE;
     }
     static EM_BOOL onMouseMove(int, const EmscriptenMouseEvent* e, void* ud) {
@@ -478,12 +512,33 @@ private:
         const double dy = (e->targetY - m->lastY_) * m->pixelRatio_;
         m->lastX_ = e->targetX;
         m->lastY_ = e->targetY;
+        // Track a smoothed drag velocity (device px/s) for the release fling.
+        const double now = emscripten_get_now();
+        const double dt = (now - m->lastMoveMs_) / 1000.0;
+        m->lastMoveMs_ = now;
+        if (dt > 0.0 && dt < 0.1) {
+            constexpr double a = 0.6; // EMA weight toward the most recent sample
+            m->dragVx_ = m->dragVx_ * (1.0 - a) + (dx / dt) * a;
+            m->dragVy_ = m->dragVy_ * (1.0 - a) + (dy / dt) * a;
+        }
         m->map_->moveBy(mbgl::ScreenCoordinate{dx, dy});
         m->dirty_ = true;
         return EM_TRUE;
     }
     static EM_BOOL onMouseUp(int, const EmscriptenMouseEvent*, void* ud) {
-        static_cast<WebMap*>(ud)->dragging_ = false;
+        auto* m = static_cast<WebMap*>(ud);
+        m->dragging_ = false;
+        // Fling only if released while still moving (not after a pause) and fast
+        // enough — mirrors the desktop Dart thresholds (scaled to device px).
+        const double sinceMove = emscripten_get_now() - m->lastMoveMs_;
+        const double speed = std::hypot(m->dragVx_, m->dragVy_);
+        if (sinceMove < 100.0 && speed >= kInertiaStartSpeed * m->pixelRatio_) {
+            m->inertia_ = true;
+            m->inertiaVx_ = m->dragVx_;
+            m->inertiaVy_ = m->dragVy_;
+            m->lastInertiaMs_ = emscripten_get_now();
+            m->dirty_ = true;
+        }
         return EM_FALSE;
     }
     static EM_BOOL onWheel(int, const EmscriptenWheelEvent* e, void* ud) {
@@ -522,6 +577,18 @@ private:
     bool dragging_ = false;
     double lastX_ = 0;
     double lastY_ = 0;
+
+    // Pan inertia ("fling"). Decay time constant (s); glide distance ≈ v0·tau. Speed
+    // thresholds are in logical px/s (scaled by pixelRatio_ where used, since the
+    // tracked velocity is device px/s). Matches the desktop Dart gesture layer.
+    static constexpr double kInertiaTau = 0.3;
+    static constexpr double kInertiaMinSpeed = 16;    // stop the fling below this
+    static constexpr double kInertiaStartSpeed = 120; // min release speed to fling
+    bool inertia_ = false;
+    double inertiaVx_ = 0, inertiaVy_ = 0; // device px/s
+    double dragVx_ = 0, dragVy_ = 0;       // smoothed drag velocity (device px/s)
+    double lastMoveMs_ = 0;
+    double lastInertiaMs_ = 0;
 
     // Fly-to animation state.
     bool animating_ = false;

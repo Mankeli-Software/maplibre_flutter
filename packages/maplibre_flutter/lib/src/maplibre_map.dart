@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -276,11 +277,33 @@ class _DesktopMapGestures extends StatefulWidget {
   State<_DesktopMapGestures> createState() => _DesktopMapGesturesState();
 }
 
-class _DesktopMapGesturesState extends State<_DesktopMapGestures> {
+class _DesktopMapGesturesState extends State<_DesktopMapGestures>
+    with SingleTickerProviderStateMixin {
   Offset _lastFocalPoint = Offset.zero;
   double _lastScale = 1;
 
+  // Pan inertia ("fling"): when the drag is released with velocity, keep panning
+  // and decay it, so the custom rendering engines (desktop core + core-on-mobile)
+  // feel like the native SDKs / gl-js. Driven by a Ticker; the velocity decays
+  // exponentially.
+  Ticker? _inertiaTicker;
+  Offset _inertiaVelocity = Offset.zero; // logical px/s
+  Duration _lastInertiaElapsed = Duration.zero;
+
+  // Velocity decay time constant; lower = stops sooner. Distance glided ≈ v0·tau.
+  static const double _inertiaTauSeconds = 0.3;
+  // Stop the fling once it slows below this.
+  static const double _inertiaMinSpeed = 16; // px/s
+  // Only fling if released faster than this (ignore slow/precise drags).
+  static const double _inertiaStartSpeed = 120; // px/s
+
+  void _stopInertia() {
+    _inertiaTicker?.dispose();
+    _inertiaTicker = null;
+  }
+
   void _onScaleStart(ScaleStartDetails details) {
+    _stopInertia(); // a new gesture cancels any ongoing fling
     _lastFocalPoint = details.localFocalPoint;
     _lastScale = 1;
   }
@@ -301,6 +324,38 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures> {
       }
       _lastScale = details.scale;
     }
+  }
+
+  void _onScaleEnd(ScaleEndDetails details) {
+    // Pan inertia only (not pinch-zoom). Single-pointer drag end carries the fling
+    // velocity in details.velocity.
+    if (details.pointerCount > 1) return;
+    final velocity = details.velocity.pixelsPerSecond;
+    if (velocity.distance < _inertiaStartSpeed) return;
+    _inertiaVelocity = velocity;
+    _lastInertiaElapsed = Duration.zero;
+    _inertiaTicker = createTicker(_onInertiaTick)..start();
+  }
+
+  void _onInertiaTick(Duration elapsed) {
+    final dt = (elapsed - _lastInertiaElapsed).inMicroseconds / 1e6;
+    _lastInertiaElapsed = elapsed;
+    if (dt <= 0) return;
+    final dx = _inertiaVelocity.dx * dt;
+    final dy = _inertiaVelocity.dy * dt;
+    if (dx != 0 || dy != 0) {
+      widget.handler.moveBy(dx, dy);
+    }
+    _inertiaVelocity *= math.exp(-dt / _inertiaTauSeconds);
+    if (_inertiaVelocity.distance < _inertiaMinSpeed) {
+      _stopInertia();
+    }
+  }
+
+  @override
+  void dispose() {
+    _stopInertia();
+    super.dispose();
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
@@ -324,6 +379,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures> {
       child: GestureDetector(
         onScaleStart: _onScaleStart,
         onScaleUpdate: _onScaleUpdate,
+        onScaleEnd: _onScaleEnd,
         child: widget.child,
       ),
     );
