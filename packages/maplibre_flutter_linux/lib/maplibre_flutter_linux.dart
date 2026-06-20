@@ -19,6 +19,8 @@ class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
   }
 
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) =>
-      MapLibreFlutterLinuxController.create(options);
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) => MapLibreFlutterLinuxController.create(style, options);
 }

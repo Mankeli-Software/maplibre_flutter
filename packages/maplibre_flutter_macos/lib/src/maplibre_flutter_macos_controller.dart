@@ -24,7 +24,7 @@ const MethodChannel _registrar = MethodChannel(
 /// controller creates the core map, registers the texture, forwards
 /// camera/style, and resizes the off-screen surface to the widget. (§8 M2–M3.)
 class MapLibreFlutterMacosController
-    implements MapLibreMapController, MapLibreGestureHandler {
+    implements MapLibreMapPlatformController, MapLibreGestureHandler {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -49,6 +49,7 @@ class MapLibreFlutterMacosController
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
   static Future<MapLibreFlutterMacosController> create(
+    String style,
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
@@ -56,7 +57,7 @@ class MapLibreFlutterMacosController
       width: _initialWidth,
       height: _initialHeight,
       pixelRatio: 1,
-      styleUri: options.styleUri,
+      styleUri: style,
       // Continuous render (partial frames that refine as tiles load) is on by
       // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the blocking
       // Static path for an A/B.

@@ -7,8 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-/// Signature for [MapLibreMap.onMapCreated].
-typedef MapCreatedCallback = void Function(MapLibreMapController controller);
+import 'maplibre_map_controller.dart';
 
 /// The public map widget.
 ///
@@ -17,61 +16,112 @@ typedef MapCreatedCallback = void Function(MapLibreMapController controller);
 /// based on its [MapLibreRenderHandle]: a platform view on mobile/web or a
 /// [Texture] on desktop. The branch is an implementation detail — callers see
 /// one widget and one [MapLibreMapController].
+///
+/// Drive the map with a [MapLibreMapController]: construct one, pass it as
+/// [controller], and call its methods once [MapLibreMapController.onReady]
+/// completes. Omit [controller] and the widget creates and owns one internally.
 class MapLibreMap extends StatefulWidget {
-  const MapLibreMap({super.key, required this.options, this.onMapCreated});
+  const MapLibreMap({
+    super.key,
+    required this.style,
+    this.controller,
+    this.options = const MapOptions(),
+  });
 
-  /// Initial style and camera.
+  /// MapLibre style document: a URL, asset path, or inline JSON.
+  ///
+  /// Declarative — change it (e.g. via `setState`) to switch styles at runtime.
+  /// This is the single source of truth for the map's style (CLAUDE.md §3).
+  final String style;
+
+  /// Optional externally-owned controller for driving the map imperatively.
+  ///
+  /// Omit it and the widget creates and owns one (disposed when the widget is
+  /// removed). When provided, **you** own it: call
+  /// [MapLibreMapController.dispose] when done. One controller per map.
+  final MapLibreMapController? controller;
+
+  /// Init-only configuration (e.g. the initial camera). Changes after the first
+  /// build are ignored; use the [controller] for runtime camera moves.
   final MapOptions options;
-
-  /// Called as soon as the [MapLibreMapController] exists — which is *before*
-  /// the native map has finished initialising. Await
-  /// [MapLibreMapController.onReady] before driving the camera or style.
-  final MapCreatedCallback? onMapCreated;
 
   @override
   State<MapLibreMap> createState() => _MapLibreMapState();
 }
 
 class _MapLibreMapState extends State<MapLibreMap> {
-  Future<MapLibreMapController>? _creation;
+  // Set only when the widget owns the controller (none was provided).
+  MapLibreMapController? _internalController;
+  MapLibreMapController get _controller =>
+      widget.controller ?? _internalController!;
+
+  Future<void>? _attach;
 
   @override
   void initState() {
     super.initState();
-    _creation = _create();
+    if (widget.controller == null) {
+      _internalController = MapLibreMapController();
+    }
+    _attach = _controller.attach(style: widget.style, options: widget.options);
   }
 
-  Future<MapLibreMapController> _create() async {
-    final controller = await MapLibreFlutterPlatform.instance.createMap(
-      widget.options,
-    );
-    widget.onMapCreated?.call(controller);
-    return controller;
+  @override
+  void didUpdateWidget(MapLibreMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.controller != oldWidget.controller) {
+      // The controller was swapped. Release the old binding (dispose if we
+      // owned it, else just detach the native map), then attach the new one.
+      if (oldWidget.controller == null) {
+        _internalController?.dispose();
+        _internalController = null;
+      } else {
+        oldWidget.controller!.detach();
+      }
+      if (widget.controller == null) {
+        _internalController = MapLibreMapController();
+      }
+      setState(() {
+        _attach = _controller.attach(
+          style: widget.style,
+          options: widget.options,
+        );
+      });
+    } else if (widget.style != oldWidget.style) {
+      // Declarative style: push the new style to the native map.
+      _controller.setStyle(widget.style);
+    }
   }
 
   @override
   void dispose() {
-    _creation?.then((c) => c.dispose());
+    // Dispose the controller only if we created it; otherwise just tear down the
+    // native map and leave the owner's controller object intact.
+    if (widget.controller == null) {
+      _internalController?.dispose();
+    } else {
+      widget.controller!.detach();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<MapLibreMapController>(
-      future: _creation,
+    return FutureBuilder<void>(
+      future: _attach,
       builder: (context, snapshot) {
-        final controller = snapshot.data;
-        if (controller == null) {
+        if (snapshot.connectionState != ConnectionState.done ||
+            _controller.renderHandle == null) {
           return const SizedBox.shrink();
         }
-        return _embed(context, controller);
+        return _embed(context, _controller);
       },
     );
   }
 
   /// The render split (CLAUDE.md §3) is resolved here and nowhere else.
   Widget _embed(BuildContext context, MapLibreMapController controller) {
-    final handle = controller.renderHandle;
+    final handle = controller.renderHandle!;
     switch (handle) {
       case TextureHandle(:final textureId):
         // Desktop tier: report the view's size + DPR so the core renders at the
@@ -79,7 +129,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
         // drive pan/zoom from Flutter gestures when the controller supports it
         // (CLAUDE.md §3: the desktop tier handles gestures in Dart).
         Widget map = Texture(textureId: textureId);
-        if (controller case final MapLibreGestureHandler gestures) {
+        if (controller.gestureHandler case final gestures?) {
           map = _DesktopMapGestures(handler: gestures, child: map);
         }
         return LayoutBuilder(
