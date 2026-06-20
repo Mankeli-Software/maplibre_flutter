@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
@@ -33,12 +34,11 @@ class MapLibreFlutterMacosController
   final int _textureId;
 
   bool _disposed = false;
-  double _devicePixelRatio = 1;
   // Bumped to supersede a running fly-to animation (a new move or a gesture).
   int _animToken = 0;
   final Completer<void> _ready = Completer<void>();
 
-  // Initial off-screen size in device pixels; replaced once the widget reports
+  // Initial off-screen size in LOGICAL points; replaced once the widget reports
   // its real size via [resize]. The texture self-sizes to whatever the core
   // renders, so this is only the size of the very first frame(s).
   static const int _initialWidth = 512;
@@ -53,10 +53,17 @@ class MapLibreFlutterMacosController
     MapOptions options,
   ) async {
     final camera = options.initialCamera;
+    // Render at the display's real pixel ratio (like a native map view), NOT 1. The
+    // core's framebuffer is mbgl `Size * pixelRatio`, so passing logical points as the
+    // size + the real DPR makes mbgl lay out tiles/lines on the device pixel grid; the
+    // device-pixel texture then composites 1:1 with no resampling (pr=1 rendered a 1x
+    // map blown up — more area, tiny labels, tile edges on fractional device pixels).
+    final dpr =
+        ui.PlatformDispatcher.instance.implicitView?.devicePixelRatio ?? 1.0;
     final coreMap = core.MapLibreCoreMap.create(
       width: _initialWidth,
       height: _initialHeight,
-      pixelRatio: 1,
+      pixelRatio: dpr,
       styleUri: style,
       // Continuous render (partial frames that refine as tiles load) is on by
       // default; --dart-define=MAPLIBRE_CONTINUOUS=false uses the blocking
@@ -160,9 +167,11 @@ class MapLibreFlutterMacosController
   @override
   Future<void> resize(Size size, double devicePixelRatio) async {
     if (_disposed) return;
-    _devicePixelRatio = devicePixelRatio;
-    final w = (size.width * devicePixelRatio).round();
-    final h = (size.height * devicePixelRatio).round();
+    // Pass LOGICAL points as mbgl's size; the core multiplies by the pixelRatio set
+    // at create to produce the device-pixel texture. (devicePixelRatio is unused
+    // here — the core already knows the density.)
+    final w = size.width.round();
+    final h = size.height.round();
     if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
     _renderWidth = w;
     _renderHeight = h;
@@ -173,19 +182,16 @@ class MapLibreFlutterMacosController
   void moveBy(double dx, double dy) {
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
-    // Gesture deltas are logical pixels; the core renders in device pixels.
-    _coreMap.moveBy(dx * _devicePixelRatio, dy * _devicePixelRatio);
+    // mbgl's screen coordinates are logical points (Size = logical points),
+    // matching the widget's gesture deltas — no DPR scaling.
+    _coreMap.moveBy(dx, dy);
   }
 
   @override
   void scaleBy(double scale, double anchorX, double anchorY) {
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
-    _coreMap.scaleBy(
-      scale,
-      anchorX * _devicePixelRatio,
-      anchorY * _devicePixelRatio,
-    );
+    _coreMap.scaleBy(scale, anchorX, anchorY);
   }
 
   @override
