@@ -35,6 +35,18 @@ if(CCACHE_PROGRAM)
   set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
 endif()
 
+# native_toolchain_cmake's iOS toolchain (leetal ios-cmake) leaves APPLE=TRUE for BOTH
+# macOS (CMAKE_SYSTEM_NAME=Darwin) and iOS (CMAKE_SYSTEM_NAME=iOS; device PLATFORM=OS64,
+# simulator SIMULATORARM64). The whole Apple arm below — CORE_ONLY + Metal + the
+# platform/darwin Apple-native helpers + the mtl headless backend — is shared by both
+# Darwin platforms; this flag disambiguates the few iOS-only deltas (no AppKit/macOS
+# sources, a tighter framework link line). This is the macOS desktop-core tier extended
+# to iOS as an experimental core-on-mobile path (CLAUDE.md §3 escape hatch).
+set(_apple_is_ios FALSE)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(_apple_is_ios TRUE)
+endif()
+
 if(APPLE)
   # Metal arm: build CORE_ONLY (skip the bazel/SDK Darwin branch) + ObjC++ for the
   # Apple-native helpers and the zero-copy Metal present helper.
@@ -141,31 +153,55 @@ if(APPLE)
       "${MLN_ROOT}/platform/default/include"
     PRIVATE
       "${MLN_ROOT}/platform/darwin/src"
-      "${MLN_ROOT}/platform/macos/src"
   )
+  if(NOT _apple_is_ios)
+    # macOS-only (MLNMapView/AppKit headers). The headless core path references nothing
+    # under platform/macos/src, but darwin.cmake puts it on macOS's include path; iOS must
+    # NOT pull it — AppKit is unavailable there.
+    target_include_directories(mbgl-core PRIVATE "${MLN_ROOT}/platform/macos/src")
+  endif()
 
   # Builtin ICU (text shaping/collation) — darwin.cmake includes this.
   include("${MLN_ROOT}/vendor/icu.cmake")
 
-  target_link_libraries(mbgl-core PRIVATE
+  # Frameworks shared by macOS + iOS. (CoreServices is macOS-only; IOKit is
+  # private/restricted on iOS and App Store review flags it — both are unused by the
+  # headless core path, so they are macOS-only additions below. IOSurface is its own
+  # public framework on iOS, unrelated to IOKit.)
+  set(_apple_frameworks
     "-framework Foundation"
     "-framework CoreFoundation"
     "-framework CoreGraphics"
     "-framework CoreImage"
     "-framework CoreText"
     "-framework ImageIO"
-    "-framework CoreServices"
     "-framework CoreLocation"
     "-framework CFNetwork"
     "-framework SystemConfiguration"
     "-framework Metal"
     "-framework QuartzCore"
     "-framework IOSurface"
-    "-framework IOKit"
+  )
+  if(NOT _apple_is_ios)
+    list(APPEND _apple_frameworks "-framework CoreServices" "-framework IOKit")
+  endif()
+
+  target_link_libraries(mbgl-core PRIVATE
+    ${_apple_frameworks}
     mbgl-vendor-icu
     sqlite3
     z
   )
+
+  if(_apple_is_ios)
+    # mbgl hard-codes ghc::filesystem on iOS (action_journal_impl.cpp guards the
+    # include on TARGET_OS_IPHONE) instead of std::filesystem, so mbgl-core needs the
+    # vendored ghc header path. Upstream's platform/ios/ios.cmake links the same
+    # mbgl-vendor-filesystem INTERFACE target for this; it's created by
+    # vendor/filesystem.cmake (root CMake ~line 1118, before the CORE_ONLY return()).
+    # macOS compiles std::filesystem and needs none of this.
+    target_link_libraries(mbgl-core PRIVATE mbgl-vendor-filesystem)
+  endif()
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # ---- Attach the default desktop platform + GL/EGL headless backend to

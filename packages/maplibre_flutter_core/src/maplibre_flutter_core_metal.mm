@@ -6,7 +6,11 @@
 // stores in BGRA byte order — exactly what Flutter's CVPixelBuffer expects).
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
-#import <IOSurface/IOSurface.h>
+// IOSurfaceRef.h (the C API: IOSurfaceRef + the kIOSurface* property keys this file
+// uses) exists on BOTH macOS and iOS. The umbrella <IOSurface/IOSurface.h> is
+// macOS-only — iOS ships no umbrella header — so include the C header directly to
+// stay cross-Darwin (the core-on-iOS path reuses this same zero-copy helper).
+#import <IOSurface/IOSurfaceRef.h>
 #import <Metal/Metal.h>
 
 #include "maplibre_flutter_core_metal.h"
