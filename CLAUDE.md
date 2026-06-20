@@ -1075,4 +1075,31 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     `flutter build windows` green; `melos analyze` (`--fatal-infos`) + `format` green across all 10
     packages.
 
+- **2026-06-20 — Web-via-core (`mbgl-core` → WASM) feasibility validated; scaffolded as an opt-in,
+  build-time-flagged experiment that does NOT replace maplibre-gl-js.** Revisits the §3 lock
+  (Web = maplibre-gl-js) and the 2026-06-19 "rejected unify-on-one-pipeline" entry — but stays
+  **consistent with that entry's explicit escape hatch** (offer core rendering as an opt-in/
+  experimental path, A/B it, don't rip the SDK out up front). Motivation: render web through the same
+  `mbgl-core` the desktop tier uses, so feature parity is maintained once (in the core C ABI) with no
+  separate web SDK to track. **Feasibility = GO.** Deciding fact: our pinned submodule already vendors
+  mbgl-core's **WebGPU** backend (`platform/default/.../mbgl/webgpu/headless_backend.{hpp,cpp}`,
+  `option(MLN_WITH_WEBGPU)`, `cmake/webgpu.cmake` + Dawn) — selected by the **same backend-flag pattern
+  we already ship for the Windows Vulkan tier**; upstream released the WebGPU renderer Oct 2025
+  targeting an Emscripten web build, and mbgl-core already runs in browsers via WASM (Qt-for-WASM +
+  community `maplibre-native-wasm`). So the web target is "emcmake the existing engine with
+  `MLN_WITH_WEBGPU`, present into a `<canvas>`, bind the C ABI to JS" — not a new engine. Best perf =
+  WebGPU, with a WebGL2 (`MLN_WITH_OPENGL`) fallback for browser coverage. **Scaffolded this session
+  (gl-js untouched and still the default):** build flag `--dart-define=MAPLIBRE_WEB_CORE=true` selects
+  `MapLibreCoreWebController` in `MapLibreFlutterWeb` (compile-time const → the unused path
+  tree-shakes); new `packages/maplibre_flutter_web/lib/src/core_web/` — `core_wasm_interop.dart` (the
+  JS/WASM contract mirroring the C ABI), `core_wasm_loader.dart` (module load, clear error if the
+  artifact is missing), `core_web_controller.dart` (the `MapLibreMapController`, canvas-hosted;
+  gestures owned by the WASM/JS glue, so NO platform-interface or widget change). Full study +
+  architecture + phased plan + blockers in **`docs/experimental-web-core-wasm.md`**. **Deferred as
+  separate efforts (per the user):** the actual Emscripten build/artifact (the Phase-1 "build spike" —
+  needs the emsdk toolchain) and the "full core API" parity expansion. Key open blockers: a
+  canvas-targeted backend (the webgpu headless backend is offscreen), COOP/COEP for pthreads (or
+  single-thread jank), MBs download size vs gl-js's KBs, and a `fetch`-based file source (no curl under
+  WASM). Verified: `flutter analyze packages/maplibre_flutter_web` clean; gl-js default path unchanged.
+
 _Append new decisions here with date and rationale._
