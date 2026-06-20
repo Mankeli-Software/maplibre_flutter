@@ -94,6 +94,14 @@ inertia, accessibility) can be measured against the SDK before any commitment.
   impl per platform); out of scope for this POC.
 - **Gestures are pan + zoom only** (the shared desktop layer); the SDK's native rotate / pitch /
   fling-inertia are not yet reproduced — this is the main A/B delta to evaluate.
-- **Verified rendering + camera; native-feel A/B is the open question.** The core renders correctly
-  on the Simulator (and should on-device — same Metal path); the remaining evaluation is how the
-  shared Dart pan/zoom *feels* vs the SDK's native inertia/fling.
+- **⚠️ The iOS Simulator shows faint tile-boundary seams; a real device does not.** Zoomed in
+  (most visible on demotiles' solid overzoom fills), the Simulator draws thin white lines at tile
+  edges. This is a **simulator-only offscreen-Metal quirk**, not a bug in this package: the raw
+  mbgl frame is clean on macOS native Metal, all present configs (zero-copy/CPU, Continuous/Static)
+  show the *identical* seams, and the on-screen Apple SDK is clean — only the headless *offscreen*
+  render on the *sim* seams. **Confirmed clean on a physical iPhone** (iOS 26.5). So evaluate
+  rendering on a real device; treat sim seams as cosmetic. (If you ever see them on a *device*, the
+  fix would live in mbgl's `mtl::HeadlessBackend` offscreen pass.)
+- **Verified on a physical device.** Renders correctly, smooth, at proper retina density. The one
+  remaining subjective evaluation is how the shared Dart pan/zoom *feels* vs the SDK's native
+  inertia/fling.
