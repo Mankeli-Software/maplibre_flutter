@@ -1,8 +1,9 @@
 # Experimental: native-core web rendering (WASM)
 
-_Feasibility study → **working PoC**. Status: **mbgl-core renders an interactive map in the
-Flutter web example via WebAssembly (experimental, opt-in).** Last updated: 2026-06-20 (branch
-`feat/web-core-wasm-poc`)._
+_Feasibility study → **working PoC**. Status: **mbgl-core renders an interactive map
+(pan / zoom / style / fly-to) in the Flutter web example via WebAssembly — works, no crashes, but
+stuttery under tile load (Static mode). NEXT: Continuous-mode rendering (see "Continue here"
+below).** Last updated: 2026-06-20 (branch `feat/web-core-wasm-poc`)._
 
 ## TL;DR
 
@@ -85,10 +86,96 @@ PNG), `web/module_test.html` (the embind module renders to a canvas), `web/cdp_s
 - **Download size**: the ~9.4 MB `.wasm` vs gl-js's ~KBs — brotli, code-split, lazy-load.
 - **Deployment headers**: the threaded build needs COOP/COEP from the host (or ship a
   single-threaded build for header-less hosting).
-- **HTTP concurrency**: the synchronous fetch serialises tiles per worker — parallelise (a fetch
-  thread pool, or an async path that pumps the worker event loop).
+- **HTTP concurrency**: ✅ done — each request runs a sync fetch on its own short-lived worker
+  thread and delivers the Response async via the RunLoop (concurrent, contract-correct). A fixed
+  fetch-thread pool would be tidier than thread-per-request.
 - **Multiple maps per page**, and an **artifact distribution** story (build hook / CI / prebuilt,
   like the desktop core) so app consumers don't run `emcmake` themselves.
+
+---
+
+## ▶ Continue here — next session: Continuous-mode rendering
+
+**State to resume from:** the PoC is functionally complete and verified — it renders and is
+interactive (drag-pan, wheel-zoom, Demotiles⇄Liberty style swap, animated fly-to), console is clean,
+no crashes. The **one remaining issue is stutter under tile load**, because the web shim renders with
+mbgl **Static** mode. The mobile/desktop tiers use **Continuous** mode for smoothness; web should too.
+That is the next task.
+
+### Why it stutters (what to fix)
+In `src/web/maplibre_flutter_core_web.cpp` (`WebMap`), rendering is **`MapMode::Static` +
+`Map::renderStill`**, gated by a `rendering_` bool:
+- `renderStill` only completes once **every** tile for the view has loaded, and
+- while a `renderStill` is in flight (`rendering_ == true`) the per-frame `tick()` early-returns, so
+  **no intermediate frames are drawn** during a pan/zoom.
+So interaction advances in chunks (one per `renderStill` completion). The concurrent fetch just added
+helps latency, but the real fix is partial-frame rendering = **Continuous mode**.
+
+### The plan
+Switch `WebMap` to **`MapMode::Continuous`**, where mbgl emits frames continuously (partial → refine
+as tiles stream in) rather than one complete still per request.
+
+1. **Reference the desktop shim** — `src/maplibre_flutter_core.cpp` already has a Continuous path
+   (its `renderThreadMain` Continuous branch + a `MapObserver::onDidFinishRenderingFrame` that
+   publishes each frame). Mirror its structure, adapted to the web **main-thread tick** model (not a
+   blocking render thread).
+2. Construct the `Map` with `MapMode::Continuous` and a custom `MapObserver` (its
+   `onDidFinishRenderingFrame` signals a frame is ready to present; `onInvalidate`/needs-repaint
+   marks dirty).
+3. **Drive renders from the existing per-frame tick** (`globalTick → RunLoop::runOnce()` already runs
+   each animation frame). Check how `HeadlessFrontend` renders per frame in Continuous mode — it may
+   need an explicit `render()` per tick, or it self-drives via the run loop. Read
+   `gfx/headless_frontend.cpp` + how the desktop Continuous path triggers each render.
+4. **Present** as now — `present()` is already correct (mbgl renders into canvas FBO 0, so present is
+   a no-op blit-skip); just call it after each finished frame instead of in the renderStill callback.
+   Remove the `rendering_` / `renderStill` machinery.
+5. Keep `onReady` firing on the first finished frame.
+
+**Gotchas:** the run loop is the libuv-free one in `emscripten_run_loop.cpp` (main thread ticks;
+workers block on a condvar) — Continuous must drive renders from the **main-thread tick**, never a
+blocking loop. CLAUDE.md notes the desktop Continuous path "went blank twice" before being driven
+correctly (invalidateOnUpdate / reading partial frames too early) — expect to iterate, and verify
+with the screenshot harness after each change.
+
+### Build + test loop (all set up on this Windows box)
+- **Toolchain**: emsdk at `C:\emsdk`; real Python at
+  `C:\Users\juhot\AppData\Local\Programs\Python\Python312` (the `python` on PATH is the broken
+  Windows Store stub — use the full path or prepend this dir); cmake+ninja from VS2022
+  (`…\Common7\IDE\CommonExtensions\Microsoft\CMake\{CMake\bin, Ninja}`). In PowerShell: dot-source
+  `C:\emsdk\emsdk_env.ps1`, then prepend those three dirs to `$env:PATH`.
+- **Build the module** — use ABSOLUTE `-S`/`-B` paths (PowerShell CWD drifts into the submodule); log
+  with `Out-File -Encoding utf8` (NOT `Tee-Object`, which writes UTF-16 that breaks `grep`):
+  `emcmake cmake -G Ninja -S <repo>\packages\maplibre_flutter_core\web -B <repo>\packages\maplibre_flutter_core\build\wasm`
+  then `cmake --build <bld> --target maplibre_flutter_core_wasm`. (~0.5 MB `.js` + ~9.4 MB `.wasm`.)
+- **Deploy**: copy `build/wasm/maplibre_flutter_core.{js,wasm}` into BOTH
+  `packages/maplibre_flutter/example/web/` and `…/example/build/web/` (the latter is what's served;
+  both are git-ignored). Re-run `flutter build web --dart-define=MAPLIBRE_WEB_CORE=true
+  --dart-define=MAPLIBRE_WEB_CORE_URL=maplibre_flutter_core.js` **only when the Dart changes**.
+- **Serve with COOP/COEP**: `python packages/maplibre_flutter_core/web/serve.py <dir> <port>` (the
+  default Flutter server doesn't send them; SharedArrayBuffer / pthreads need them).
+- **Test headlessly** — no Chrome on this box; Edge Chromium is identical and at
+  `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`. Launch
+  `msedge --headless=new --guest --remote-debugging-port=PORT --remote-allow-origins=*
+  --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader --no-sandbox --disable-sync
+  --user-data-dir=<temp> http://127.0.0.1:PORT/`, then drive it with the `web/cdp_*.py` helpers
+  (need `pip install websocket-client`, already installed): `cdp_shot.py` (screenshot after a
+  real-time wait — the `--screenshot` flag fires too early for a network map), `cdp_diag.py`
+  (captures console + does drags — this is what surfaced the GL blit bug), `cdp_interact.py` (drag
+  before/after), `cdp_click.py` (click a button at x,y). **View the PNGs with the Read tool.** The
+  FAB coords in the example at 700×820: zoom + ≈(583,445), − ≈(583,510), Fly-to ≈(583,573), style
+  toggle ≈(583,637). Edge shows a one-time sign-in interstitial as a separate tab → use `--guest`
+  and the CDP scripts' URL-filter (they pick the `127.0.0.1` target).
+- **Standalone smoke** (no Flutter): `web/probe/` (engine → PNG) and `web/module_test.html` (the
+  embind module → canvas, reads back pixel count).
+
+### Key files (the web tier map)
+- `src/web/maplibre_flutter_core_web.cpp` — **the shim/embind module; the Continuous-mode change lives here.**
+- `src/web/emscripten_run_loop.cpp` — RunLoop/AsyncTask/Timer (main-thread tick + worker condvar).
+- `src/web/emscripten_http_file_source.cpp` — concurrent sync-fetch HTTP source (async delivery).
+- `src/web/emscripten_gl_backend.cpp` — WebGL2-on-canvas context; `emscripten_*_stub.cpp` + `include/GLES3/gl3ext.h` — sysroot gaps.
+- `web/CMakeLists.txt` — the Emscripten build; `web/serve.py`, `web/cdp_*.py`, `web/module_test.html`, `web/probe/` — the test harness.
+- `packages/maplibre_flutter_web/lib/src/core_web/` — Dart interop / loader / controller (likely
+  unchanged for Continuous — the module's JS API stays the same).
 
 ---
 
