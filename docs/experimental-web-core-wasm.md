@@ -1,7 +1,7 @@
 # Experimental: native-core web rendering (WASM)
 
-_Feasibility study → experimental build. Status: **GO — the core compiles to WASM; the
-platform-layer port is the remaining work.** Last updated: 2026-06-20 (branch
+_Feasibility study → **working PoC**. Status: **mbgl-core renders an interactive map in the
+Flutter web example via WebAssembly (experimental, opt-in).** Last updated: 2026-06-20 (branch
 `feat/web-core-wasm-poc`)._
 
 ## TL;DR
@@ -26,46 +26,69 @@ A/B it, don't rip the SDK out up front" escape hatch recorded in CLAUDE.md §12 
 
 ## Implementation status (2026-06-20, branch `feat/web-core-wasm-poc`)
 
-The experiment moved from paper feasibility to an **empirical build**. Headline result: the
-portable MapLibre engine **compiles to WebAssembly**.
+It works: the native MapLibre engine, compiled to WebAssembly, **renders and pans a map inside
+the Flutter web example** — no maplibre-gl-js. This is the path upstream's library-compilation
+effort ([maplibre/maplibre-native#2554](https://github.com/maplibre/maplibre-native/issues/2554),
+open/unsolved — "can't figure out how to run `emcmake` without errors") never reached.
 
-**Proven on hardware (Windows 11 + emsdk):**
+**Verified on hardware (Windows 11 + emsdk, headless Edge / SwiftShader WebGL):**
 
 | Step | Result |
 | ---- | ------ |
-| Emscripten toolchain (emsdk + Python + cmake/ninja) | ✅ set up |
-| `emcmake` **configure** of `mbgl-core` (`MLN_WITH_CORE_ONLY` + `MLN_WITH_OPENGL`) | ✅ succeeds |
-| **Compile** the whole core to WASM | ✅ 435/435 objects, **0 errors** → `libmbgl-core.a` (~17.5 MB) + vendored deps (freetype, harfbuzz, …) |
+| `emcmake` build: `mbgl-core` + platform layer + embind shim → `maplibre_flutter_core.js` (~0.5 MB) + `.wasm` (~9.4 MB) | ✅ links, 0 errors |
+| Render a map frame to a canvas | ✅ fully-painted demotiles (read back 11 498 distinct colours) |
+| Run in the **Flutter web example** behind `--dart-define=MAPLIBRE_WEB_CORE=true` | ✅ crisp full-world map renders |
+| **Interactive** | ✅ drag-pans (verified Atlantic→Asia), wheel-zooms, fly-to animates |
 
-Why this matters: upstream's library-compilation effort
-([maplibre/maplibre-native#2554](https://github.com/maplibre/maplibre-native/issues/2554)) is
-**open and unsolved** — its reporter "can't figure out how to run `emcmake` without errors." Our
-pinned core, with `CORE_ONLY` + the OpenGL backend, configures and compiles cleanly. The hardest
-unknown — _does the engine even build to WASM?_ — is now answered **yes**. The reproducible probe
-is at **`packages/maplibre_flutter_core/web/probe/`** (see that folder's README).
+**The platform layer that makes it work** (`packages/maplibre_flutter_core/src/web/`):
 
-**Remaining work — the platform layer + glue (this is where the effort is):**
+| Piece | How |
+| ----- | --- |
+| Run loop / async / timer | libuv-free `RunLoop`: non-blocking + per-frame tick on the main thread, blocking + condvar event-processing on mbgl worker threads (`emscripten_run_loop.cpp`) |
+| HTTP source | **synchronous** `emscripten_fetch` — mbgl's file-source worker blocks and can't pump an async callback (`emscripten_http_file_source.cpp`) |
+| GL context | WebGL2 on the canvas via `emscripten_webgl_*` (Emscripten EGL has no pbuffer) (`emscripten_gl_backend.cpp`) |
+| Present | blit mbgl's color FBO → the canvas default framebuffer (`maplibre_flutter_core_web.cpp`) |
+| Threads | Emscripten `-pthread`; `PTHREAD_POOL_SIZE` pre-allocated to avoid the main-thread thread-spawn deadlock |
+| Sysroot gaps | webp-decode stub, `sched_setscheduler` no-op, `<GLES3/gl3ext.h>` shim |
+| JS API | embind module `MaplibreFlutterCore` — `createMap/setStyle/setCamera/getCamera/resize/moveBy/scaleBy/animateTo/onReady/destroy` |
+| Canvas + gestures | canvas registered in `specialHTMLTargets`; auto-sized to CSS×DPR each frame; drag/wheel from raw pointer events drive moveBy/scaleBy |
+| Dart loader | injects the glue script + passes `mainScriptUrlOrBlob` (dynamic inject → no `document.currentScript`, else startup hangs at `library_fetch_init`) |
 
-| Gap | Today (desktop) | Web (WASM) needs | Size |
-| --- | --------------- | ---------------- | ---- |
-| HTTP file source | libcurl (`http_file_source.cpp`) | a `fetch` / `emscripten_fetch` source | medium |
-| Run loop | libuv (`run_loop.cpp`, `<uv.h>`) | a browser-event-loop `RunLoop` (`emscripten_set_main_loop` / async) | **hard — the key blocker** |
-| Threads | pthreads (`thread_local.cpp`) | Emscripten pthreads (`-pthread` + `SharedArrayBuffer` + COOP/COEP) | medium |
-| GL context | EGL pbuffer, offscreen (`headless_backend_egl.cpp`) | WebGL2 on the canvas (Emscripten EGL/GLES → `Module.canvas`) | medium |
-| Storage / offline | sqlite (`database_file_source`, `offline*`) | stub for the PoC (no ambient cache) | small |
-| C shim | render thread + readback/zero-copy present | web variant: render to canvas, no readback | medium |
-| JS API | ffigen (Dart FFI) | embind → the `MaplibreFlutterCore` JS module `core_wasm_interop.dart` expects | medium |
+### Build + run the example with the core renderer
 
-**Realistic effort:** with the core proven to compile, a rendering PoC is **week(s) of
-platform-port work** (the run loop being the riskiest piece) — not the multi-month "is it even
-possible" question it first looked like. A fully-rendering, gesture-complete parity PoC is **not**
-reached in this pass; what is delivered is the de-risked foundation: toolchain, the compile proof,
-the probe, and the Dart scaffold already conformed to the new `MapLibreMapPlatformController` API.
+```sh
+# 1. Build the WASM module (emsdk on PATH: `source emsdk_env`)
+cd packages/maplibre_flutter_core/web
+emcmake cmake -G Ninja -S . -B ../build/wasm
+cmake --build ../build/wasm --target maplibre_flutter_core_wasm
+#    -> ../build/wasm/maplibre_flutter_core.{js,wasm}
 
-**Suggested next steps, in order:** (1) an Emscripten `RunLoop` + scheduler; (2) a `fetch` HTTP
-source + stub storage; (3) the WebGL2 canvas backend; (4) a web C-shim + embind module satisfying
-`core_wasm_interop.dart`; (5) wire the example behind `MAPLIBRE_WEB_CORE` and render a frame;
-(6) gestures in the glue; (7) threads + COOP/COEP + a perf/size A/B vs maplibre-gl-js.
+# 2. Drop the artifact next to the app and build with the flag
+cp ../build/wasm/maplibre_flutter_core.js ../build/wasm/maplibre_flutter_core.wasm \
+   ../../maplibre_flutter/example/web/
+cd ../../maplibre_flutter/example
+flutter build web --dart-define=MAPLIBRE_WEB_CORE=true \
+                  --dart-define=MAPLIBRE_WEB_CORE_URL=maplibre_flutter_core.js
+
+# 3. Serve with COOP/COEP (SharedArrayBuffer); the default Flutter server doesn't set them
+python ../../maplibre_flutter_core/web/serve.py build/web 8100   # http://127.0.0.1:8100
+```
+
+Standalone verification harnesses live next to the build: `web/probe/` (engine renders to a
+PNG), `web/module_test.html` (the embind module renders to a canvas), `web/cdp_shot.py` /
+`web/cdp_interact.py` (headless screenshot + a scripted drag).
+
+### Remaining for production (not blockers to the PoC)
+
+- **WebGPU backend** for performance — already vendored (`MLN_WITH_WEBGPU`); the PoC uses the
+  portable OpenGL→WebGL2 path. WebGPU is the eventual default once it's solid.
+- **Download size**: the ~9.4 MB `.wasm` vs gl-js's ~KBs — brotli, code-split, lazy-load.
+- **Deployment headers**: the threaded build needs COOP/COEP from the host (or ship a
+  single-threaded build for header-less hosting).
+- **HTTP concurrency**: the synchronous fetch serialises tiles per worker — parallelise (a fetch
+  thread pool, or an async path that pumps the worker event loop).
+- **Multiple maps per page**, and an **artifact distribution** story (build hook / CI / prebuilt,
+  like the desktop core) so app consumers don't run `emcmake` themselves.
 
 ---
 
