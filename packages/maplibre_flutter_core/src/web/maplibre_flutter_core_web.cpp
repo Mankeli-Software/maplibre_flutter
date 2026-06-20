@@ -255,7 +255,12 @@ private:
 
         GLint srcFbo = 0;
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &srcFbo);
-
+        if (srcFbo == 0) {
+            // Our WebGL backend has no separate offscreen FBO — mbgl renders straight
+            // into the canvas default framebuffer, so the frame is already on screen.
+            // Blitting 0→0 would be a GL feedback-loop error every frame.
+            return;
+        }
         const auto w = static_cast<GLint>(size_.width);
         const auto h = static_cast<GLint>(size_.height);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
