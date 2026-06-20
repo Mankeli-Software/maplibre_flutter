@@ -83,8 +83,8 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _zoomIn() async {
     await _controller.onReady; // the native map is ready a moment after build
-    final camera = await _controller.getCamera();
-    await _controller.moveCamera(
+    final camera = await _controller.camera.getPosition();
+    await _controller.camera.move(
       camera.copyWith(zoom: camera.zoom + 2),
       duration: const Duration(milliseconds: 600),
     );

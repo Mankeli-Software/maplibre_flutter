@@ -17,18 +17,21 @@ import 'package:meta/meta.dart';
 ///
 /// // elsewhere:
 /// await controller.onReady;
-/// await controller.moveCamera(MapCamera(center: LatLng(51.5, -0.13), zoom: 6));
+/// await controller.camera.move(MapCamera(center: LatLng(51.5, -0.13), zoom: 6));
 /// ```
 ///
 /// The controller is **optional** — omit it and [MapLibreMap] creates and owns
 /// one internally. When you do provide one, you own it: call [dispose] when
 /// you are done (typically from your `State.dispose`).
 ///
+/// Imperative APIs are grouped into namespaces by sub-domain rather than flattened
+/// onto this class (the camera API alone is large): camera control lives under
+/// [camera]. The map's *style* is **not** here — it is a declarative property of
+/// the [MapLibreMap] widget (CLAUDE.md §3).
+///
 /// This is the app-facing controller. It wraps the per-platform
 /// [MapLibreMapPlatformController] that the registered platform creates when the
-/// widget mounts; everything imperative the public API needs (camera, queries,
-/// lifecycle) forwards to it. The map's *style* is **not** here — it is a
-/// declarative property of the [MapLibreMap] widget (CLAUDE.md §3).
+/// widget mounts; everything imperative the public API needs forwards to it.
 class MapLibreMapController {
   /// Creates an unbound controller. No native map exists until the controller
   /// is passed to a [MapLibreMap], which [attach]es it.
@@ -40,6 +43,12 @@ class MapLibreMapController {
   bool _attached = false;
   bool _disposed = false;
 
+  /// Camera control: move, animate, fly, fit, query, … See
+  /// [MapLibreCameraController]. Grouped into its own namespace because the
+  /// camera surface is large (the sub-manager pattern map SDKs use for big
+  /// sub-domains, e.g. Mapbox's annotation/style managers).
+  late final MapLibreCameraController camera = MapLibreCameraController._(this);
+
   /// Whether a native map is currently bound (true between [attach] and
   /// [detach]/[dispose]).
   bool get isAttached => _platform != null;
@@ -48,28 +57,10 @@ class MapLibreMapController {
   bool get isDisposed => _disposed;
 
   /// Completes once the native map exists and has loaded its initial style.
-  /// Until then [getCamera] reports the initial camera and [moveCamera] is a
-  /// best-effort no-op. Does not complete if the controller is disposed before
-  /// the map becomes ready.
+  /// Until then [MapLibreCameraController.getPosition] reports the initial camera
+  /// and [MapLibreCameraController.move] is a best-effort no-op. Does not complete
+  /// if the controller is disposed before the map becomes ready.
   Future<void> get onReady => _ready.future;
-
-  // ---------------------------------------------------------------------------
-  // Public imperative API
-  // ---------------------------------------------------------------------------
-
-  /// The current camera. Before the map is ready, reports the initial camera.
-  Future<MapCamera> getCamera() async {
-    final platform = _platform;
-    if (platform == null) {
-      return _options?.initialCamera ?? const MapCamera(center: LatLng(0, 0));
-    }
-    return platform.getCamera();
-  }
-
-  /// Moves the camera, animating over [duration] when non-null. A no-op before
-  /// the map is ready.
-  Future<void> moveCamera(MapCamera camera, {Duration? duration}) async =>
-      _platform?.moveCamera(camera, duration: duration);
 
   /// Releases the native map and this controller. Call this when you own the
   /// controller (you constructed it and passed it to a [MapLibreMap]). Safe to
@@ -160,4 +151,35 @@ class MapLibreMapController {
   @internal
   Future<void> resize(Size size, double devicePixelRatio) async =>
       _platform?.resize(size, devicePixelRatio);
+}
+
+/// Camera control for a [MapLibreMap], reached via [MapLibreMapController.camera].
+///
+/// Lives in its own namespace (rather than as flat methods on
+/// [MapLibreMapController]) because the camera API is large. Every method is a
+/// no-op / reports the initial camera until the map is ready
+/// ([MapLibreMapController.onReady]).
+class MapLibreCameraController {
+  MapLibreCameraController._(this._owner);
+
+  final MapLibreMapController _owner;
+
+  /// The current camera. Before the map is ready, reports the initial camera.
+  Future<MapCamera> getPosition() async {
+    final platform = _owner._platform;
+    if (platform == null) {
+      return _owner._options?.initialCamera ??
+          const MapCamera(center: LatLng(0, 0));
+    }
+    return platform.getCamera();
+  }
+
+  /// Moves the camera to [target], animating over [duration] when non-null.
+  /// A best-effort no-op before the map is ready.
+  Future<void> move(MapCamera target, {Duration? duration}) async =>
+      _owner._platform?.moveCamera(target, duration: duration);
+
+  // Further camera operations (flyTo, fitBounds, zoomBy/zoomTo, rotateBy,
+  // pitchBy, jumpTo, easeTo, …) are added here, each forwarding to the bound
+  // [MapLibreMapPlatformController].
 }

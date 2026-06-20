@@ -47,10 +47,10 @@ void main() {
     await controller.onReady.timeout(const Duration(seconds: 30));
 
     // Jump the camera, then read it back: exercises the Dart -> FFI -> Dart bridge.
-    await controller.moveCamera(
+    await controller.camera.move(
       const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
     );
-    final cam = await controller.getCamera();
+    final cam = await controller.camera.getPosition();
     expect(cam.center.latitude, closeTo(51.5, 0.5));
     expect(cam.center.longitude, closeTo(-0.13, 0.5));
     expect(cam.zoom, closeTo(6, 0.5));
@@ -59,7 +59,7 @@ void main() {
     // native map without throwing, and the map must keep reporting a camera.
     await pumpWithStyle(liberty);
     await tester.pump();
-    final after = await controller.getCamera();
+    final after = await controller.camera.getPosition();
     expect(after.zoom, closeTo(6, 0.5));
   });
 }

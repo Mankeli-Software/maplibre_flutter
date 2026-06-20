@@ -60,8 +60,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
   }
 
   Future<void> _zoomBy(double delta) async {
-    final camera = await _controller.getCamera();
-    await _controller.moveCamera(
+    final camera = await _controller.camera.getPosition();
+    await _controller.camera.move(
       camera.copyWith(zoom: camera.zoom + delta),
       duration: const Duration(milliseconds: 300),
     );
@@ -70,7 +70,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Future<void> _flyToNextPlace() async {
     final (_, center, zoom) = _places[_placeIndex];
     _placeIndex = (_placeIndex + 1) % _places.length;
-    await _controller.moveCamera(
+    await _controller.camera.move(
       MapCamera(center: center, zoom: zoom),
       duration: const Duration(milliseconds: 2000),
     );

@@ -40,21 +40,24 @@ void main() {
   late _FakePlatform platform;
   setUp(() => MapLibreFlutterPlatform.instance = platform = _FakePlatform());
 
-  test('getCamera before attach reports the default initial camera', () async {
+  test('camera.getPosition before attach reports the default camera', () async {
     final c = MapLibreMapController();
     expect(c.isAttached, isFalse);
-    final cam = await c.getCamera();
+    final cam = await c.camera.getPosition();
     expect(cam.center, const LatLng(0, 0));
   });
 
-  test('attach binds a platform controller and forwards getCamera', () async {
-    final c = MapLibreMapController();
-    await c.attach(style: 's', options: _attachOptions);
-    expect(c.isAttached, isTrue);
-    final cam = await c.getCamera();
-    expect(cam.center, const LatLng(10, 20)); // forwarded from the platform
-    await c.dispose();
-  });
+  test(
+    'attach binds a platform controller and forwards camera reads',
+    () async {
+      final c = MapLibreMapController();
+      await c.attach(style: 's', options: _attachOptions);
+      expect(c.isAttached, isTrue);
+      final cam = await c.camera.getPosition();
+      expect(cam.center, const LatLng(10, 20)); // forwarded from the platform
+      await c.dispose();
+    },
+  );
 
   test('onReady completes once attached', () async {
     final c = MapLibreMapController();
