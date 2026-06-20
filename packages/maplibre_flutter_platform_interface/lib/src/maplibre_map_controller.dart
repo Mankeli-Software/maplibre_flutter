@@ -1,5 +1,7 @@
 import 'dart:ui' show Size;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
+
 import 'camera.dart';
 import 'render_handle.dart';
 
@@ -40,4 +42,23 @@ abstract class MapLibreMapPlatformController {
 
   /// Release native resources, callbacks, and the texture/view registration.
   Future<void> dispose();
+}
+
+/// Optional capability for texture tiers whose produced frame can **lag** the
+/// widget box during a resize (the slow CPU-readback desktop present, i.e.
+/// Windows today). A controller that implements it exposes [textureSize] — the
+/// size of the frame currently in the texture — so the `MapLibreMap` widget can
+/// scale a still-old-size frame to the new box *uniformly* (`BoxFit.cover`)
+/// instead of stretching it, turning the resize warp into a brief crop while the
+/// render thread catches up.
+///
+/// Controllers that don't implement it (mobile/web own their surface; macOS
+/// zero-copy catches up within a frame) make the widget render the bare texture,
+/// so this stays an opt-in that doesn't ripple into the other implementations —
+/// the same pattern as [MapLibreGestureHandler].
+abstract interface class MapLibreTextureSizeProvider {
+  /// The size (device pixels — only the aspect ratio is used) of the frame
+  /// currently produced into the texture. Changes as the render thread catches
+  /// up after a [MapLibreMapPlatformController.resize].
+  ValueListenable<Size> get textureSize;
 }

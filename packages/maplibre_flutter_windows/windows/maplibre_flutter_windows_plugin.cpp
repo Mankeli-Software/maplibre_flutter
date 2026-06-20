@@ -56,6 +56,14 @@ int64_t ArgInt(const EncodableMap& m, const char* key) {
 // mutex guards the whole query+copy so the engine never reads a half-written
 // buffer, and `buffer`/`pb` outlive the returned pointer (kept until the next copy
 // and until UnregisterTexture's completion).
+//
+// `buffer` is the LAST-GOOD frame (what `pb` points at); a fresh frame is copied
+// into `scratch` first and only swapped into `buffer` on success, so a failed copy
+// (no frame yet, or the frame grew between the size query and the copy) never
+// corrupts the retained good frame. On a miss the callback re-presents `buffer`
+// instead of returning nullptr — a brief stale frame instead of a white flash on
+// resize (the macOS/iOS fallbackBuffer() behaviour from commit 9655316, which was
+// never ported to this CPU PixelBufferTexture path).
 struct MapTexture {
   void* map_handle = nullptr;
   MblCopyFrameFn copy_frame = nullptr;
@@ -63,7 +71,11 @@ struct MapTexture {
   flutter::TextureRegistrar* registrar = nullptr;  // borrowed (engine-lifetime)
   int64_t texture_id = -1;
   std::mutex mutex;
-  std::vector<uint8_t> buffer;  // RGBA; lives until the next copy
+  std::vector<uint8_t> buffer;   // last-good RGBA frame (pb points here)
+  std::vector<uint8_t> scratch;  // in-progress copy target; swapped in on success
+  bool has_frame = false;        // false until the first successful copy
+  uint32_t last_w = 0;
+  uint32_t last_h = 0;
   FlutterDesktopPixelBuffer pb{};
   // Zero-copy (GpuSurfaceTexture) path: the D3D handle getter + the descriptor we
   // hand back. A map uses either the pixel-buffer or the GPU-surface path, not both.
@@ -138,24 +150,38 @@ class MaplibreFlutterWindowsPlugin : public flutter::Plugin {
                    size_t /*height*/) -> const FlutterDesktopPixelBuffer* {
                 std::lock_guard<std::mutex> lock(tp->mutex);
                 uint32_t w = 0, h = 0, stride = 0;
-                // Query the current frame size first (null dst) so we follow core
-                // resizes, then copy the RGBA pixels.
-                if (tp->copy_frame(tp->map_handle, nullptr, 0, &w, &h, &stride) ==
-                        0 ||
-                    w == 0 || h == 0) {
-                  return nullptr;
+                // Try to pull a fresh frame into the scratch buffer: query the
+                // current frame size first (null dst) so we follow core resizes,
+                // then copy the RGBA pixels. On ANY failure — no frame yet, or the
+                // frame grew between the query and the copy so the capacity check
+                // rejects it (the resize torn-size window) — we leave the retained
+                // last-good `buffer` untouched and fall through to re-present it.
+                if (tp->copy_frame(tp->map_handle, nullptr, 0, &w, &h, &stride) !=
+                        0 &&
+                    w != 0 && h != 0) {
+                  const size_t need = static_cast<size_t>(w) * h * 4;
+                  if (tp->scratch.size() < need) {
+                    tp->scratch.resize(need);
+                  }
+                  if (tp->copy_frame(tp->map_handle, tp->scratch.data(),
+                                     tp->scratch.size(), &w, &h, &stride) != 0) {
+                    // Success: promote scratch to last-good (O(1) vector swap).
+                    std::swap(tp->buffer, tp->scratch);
+                    tp->last_w = w;
+                    tp->last_h = h;
+                    tp->has_frame = true;
+                  }
                 }
-                const size_t need = static_cast<size_t>(w) * h * 4;
-                if (tp->buffer.size() < need) {
-                  tp->buffer.resize(need);
-                }
-                if (tp->copy_frame(tp->map_handle, tp->buffer.data(),
-                                   tp->buffer.size(), &w, &h, &stride) == 0) {
+                // Present the last-good frame. Returning nullptr flashes the window
+                // background, so only do it before the very first frame exists (the
+                // one unavoidable case); during the resize gap re-present the last
+                // good frame instead — a brief stale frame, not a white blink.
+                if (!tp->has_frame) {
                   return nullptr;
                 }
                 tp->pb.buffer = tp->buffer.data();  // RGBA, packed (stride==w*4)
-                tp->pb.width = w;
-                tp->pb.height = h;
+                tp->pb.width = tp->last_w;
+                tp->pb.height = tp->last_h;
                 tp->pb.release_callback = nullptr;
                 tp->pb.release_context = nullptr;
                 return &tp->pb;
