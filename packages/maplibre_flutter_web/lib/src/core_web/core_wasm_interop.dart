@@ -101,6 +101,17 @@ extension type CoreMap._(JSObject _) implements JSObject {
   /// `mbl_map_scale_by` — shared-desktop-tier zoom primitive (logical pixels).
   external void scaleBy(double scale, double anchorX, double anchorY);
 
+  /// Eased camera transition over [durationMs] (the fly-to path), stepped by the
+  /// module's render loop.
+  external void animateTo(
+    double lat,
+    double lng,
+    double zoom,
+    double bearing,
+    double pitch,
+    double durationMs,
+  );
+
   /// Registers a one-shot [callback] fired once the initial style has loaded and
   /// the first frame is on screen — the web analogue of `mbl_map_await_frame` /
   /// the frame callback, used to complete the controller's `onReady`.
