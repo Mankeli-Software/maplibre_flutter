@@ -302,6 +302,17 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // Only fling if released faster than this (ignore slow/precise drags).
   static const double _inertiaStartSpeed = 120; // px/s
 
+  // We track the drag velocity ourselves (EMA of focal deltas over time) rather
+  // than trusting ScaleEndDetails.velocity, which is unreliable / often ~zero for
+  // single-pointer drags — that was why the fling never fired on the desktop/core
+  // tier. Mirrors the web-core C++ velocity tracking.
+  final Stopwatch _clock = Stopwatch()..start();
+  Offset _dragVelocity = Offset.zero; // logical px/s
+  int _lastMoveUs = 0;
+  // True once a gesture has zoomed (pinch / scale change). Such a gesture must not
+  // fling a pan on release — the focal drift of a zoom isn't a pan flick.
+  bool _gestureHadScale = false;
+
   void _stopInertia() {
     _inertiaTicker?.stop();
   }
@@ -310,6 +321,9 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     _stopInertia(); // a new gesture cancels any ongoing fling
     _lastFocalPoint = details.localFocalPoint;
     _lastScale = 1;
+    _dragVelocity = Offset.zero;
+    _lastMoveUs = _clock.elapsedMicroseconds;
+    _gestureHadScale = false;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
@@ -321,6 +335,24 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     }
     _lastFocalPoint = focal;
 
+    // A *scaling* gesture is a zoom (pinch) — detect by scale change, NOT by finger
+    // count: a two-finger drag with scale ≈ 1 is a pan and should still fling.
+    final zooming = (details.scale - 1.0).abs() > 0.02;
+    if (zooming) {
+      _gestureHadScale = true;
+    }
+
+    // Track a smoothed drag velocity for the release fling — only for a pure pan,
+    // so a zoom's focal drift never becomes pan velocity.
+    final nowUs = _clock.elapsedMicroseconds;
+    final dt = (nowUs - _lastMoveUs) / 1e6;
+    _lastMoveUs = nowUs;
+    if (!zooming && dt > 0 && dt < 0.1) {
+      final instant = Offset(dx / dt, dy / dt); // px/s
+      const a = 0.6; // EMA weight toward the most recent sample
+      _dragVelocity = _dragVelocity * (1 - a) + instant * a;
+    }
+
     if (details.scale > 0) {
       final relative = details.scale / _lastScale;
       if (relative != 1.0) {
@@ -331,12 +363,16 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
-    // Pan inertia only (not pinch-zoom). Single-pointer drag end carries the fling
-    // velocity in details.velocity.
-    if (details.pointerCount > 1) return;
-    final velocity = details.velocity.pixelsPerSecond;
-    if (velocity.distance < _inertiaStartSpeed) return;
-    _inertiaVelocity = velocity;
+    // Pan inertia only. Never fling a gesture that zoomed (its focal drift isn't a
+    // pan flick) — that was the "map also moves when zoomed" funkiness. A two-finger
+    // *pan* (no scale change) still flings. Fling only if released while still moving
+    // (not after a pause) and fast enough, using our tracked velocity, not the
+    // unreliable details.velocity.
+    if (_gestureHadScale) return;
+    final sinceMoveUs = _clock.elapsedMicroseconds - _lastMoveUs;
+    if (sinceMoveUs > 100000) return; // released after a pause → no fling
+    if (_dragVelocity.distance < _inertiaStartSpeed) return;
+    _inertiaVelocity = _dragVelocity;
     _lastInertiaElapsed = Duration.zero;
     // Reuse a single Ticker for the State's life — SingleTickerProviderStateMixin
     // forbids creating a second one, so a per-fling createTicker() throws on the
@@ -370,6 +406,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
+      _stopInertia(); // a scroll-zoom cancels any in-flight pan glide
       // Scroll up (negative dy) zooms in, about the pointer.
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
       if (factor != 1.0) {
