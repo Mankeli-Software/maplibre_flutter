@@ -1,9 +1,10 @@
 # Experimental: native-core web rendering (WASM)
 
 _Feasibility study → **working PoC**. Status: **mbgl-core renders an interactive map
-(pan / zoom / style / fly-to) in the Flutter web example via WebAssembly — works, no crashes, but
-stuttery under tile load (Static mode). NEXT: Continuous-mode rendering (see "Continue here"
-below).** Last updated: 2026-06-20 (branch `feat/web-core-wasm-poc`)._
+(pan / zoom / style / fly-to) in the Flutter web example via WebAssembly — now in **Continuous**
+render mode (partial frames stream in as tiles load, no full-frame stall), and the resize
+180°-flip bug is fixed.** Verified in headless Edge. Last updated: 2026-06-20
+(branch `feat/web-core-wasm-poc`)._
 
 ## TL;DR
 
@@ -46,9 +47,10 @@ open/unsolved — "can't figure out how to run `emcmake` without errors") never 
 | Piece | How |
 | ----- | --- |
 | Run loop / async / timer | libuv-free `RunLoop`: non-blocking + per-frame tick on the main thread, blocking + condvar event-processing on mbgl worker threads (`emscripten_run_loop.cpp`) |
-| HTTP source | **synchronous** `emscripten_fetch` — mbgl's file-source worker blocks and can't pump an async callback (`emscripten_http_file_source.cpp`) |
+| HTTP source | **synchronous** `emscripten_fetch` on a **bounded pool of 8 long-lived fetch worker threads** (queue-fed) — mbgl's file-source worker blocks and can't pump an async callback, so each fetch runs sync off the main thread and delivers the Response back via the RunLoop. The fixed pool (not thread-per-request) keeps fetch concurrency bounded so a request burst can't exhaust the Emscripten pthread pool (`emscripten_http_file_source.cpp`) |
 | GL context | WebGL2 on the canvas via `emscripten_webgl_*` (Emscripten EGL has no pbuffer) (`emscripten_gl_backend.cpp`) |
-| Present | blit mbgl's color FBO → the canvas default framebuffer (`maplibre_flutter_core_web.cpp`) |
+| Render mode | **Continuous** (default): mbgl invalidates on every camera/style change and as tiles stream in; the `HeadlessFrontend`'s `invalidateOnUpdate` renders a frame off the RunLoop and a `MapObserver` presents it (partial → refined). Static `renderStill` kept behind `continuous=false` (`maplibre_flutter_core_web.cpp`) |
+| Present | **1:1** blit (no flip) of mbgl's offscreen color FBO → the canvas default framebuffer, keeping mbgl's GL `State<>` cache truthful (`maplibre_flutter_core_web.cpp`) |
 | Threads | Emscripten `-pthread`; `PTHREAD_POOL_SIZE` pre-allocated to avoid the main-thread thread-spawn deadlock |
 | Sysroot gaps | webp-decode stub, `sched_setscheduler` no-op, `<GLES3/gl3ext.h>` shim |
 | JS API | embind module `MaplibreFlutterCore` — `createMap/setStyle/setCamera/getCamera/resize/moveBy/scaleBy/animateTo/onReady/destroy` |
@@ -86,56 +88,168 @@ PNG), `web/module_test.html` (the embind module renders to a canvas), `web/cdp_s
 - **Download size**: the ~9.4 MB `.wasm` vs gl-js's ~KBs — brotli, code-split, lazy-load.
 - **Deployment headers**: the threaded build needs COOP/COEP from the host (or ship a
   single-threaded build for header-less hosting).
-- **HTTP concurrency**: ✅ done — each request runs a sync fetch on its own short-lived worker
-  thread and delivers the Response async via the RunLoop (concurrent, contract-correct). A fixed
-  fetch-thread pool would be tidier than thread-per-request.
+- **HTTP concurrency**: ✅ done — a **fixed pool of 8 long-lived fetch worker threads** pulls
+  requests off a queue, runs a sync fetch, and delivers the Response async via the RunLoop
+  (concurrent, contract-correct). This replaced the original thread-per-request design, which could
+  spawn up to mbgl's 20 concurrent requests as Emscripten pthreads at once and — together with
+  mbgl's other threads — **exhaust the `PTHREAD_POOL_SIZE` pool** ("Tried to spawn a new thread, but
+  the thread pool is exhausted"), most visibly when switching to a heavy style (OpenFreeMap Liberty)
+  whose tile/glyph/sprite burst broke rendering. See the thread-budget note below.
 - **Multiple maps per page**, and an **artifact distribution** story (build hook / CI / prebuilt,
   like the desktop core) so app consumers don't run `emcmake` themselves.
 
 ---
 
-## ▶ Continue here — next session: Continuous-mode rendering
+## Continuous-mode rendering — DONE (2026-06-20)
 
-**State to resume from:** the PoC is functionally complete and verified — it renders and is
-interactive (drag-pan, wheel-zoom, Demotiles⇄Liberty style swap, animated fly-to), console is clean,
-no crashes. The **one remaining issue is stutter under tile load**, because the web shim renders with
-mbgl **Static** mode. The mobile/desktop tiers use **Continuous** mode for smoothness; web should too.
-That is the next task.
+The web shim now renders in mbgl **Continuous** mode (default), like the mobile/desktop tiers, so
+the map paints partial frames immediately and refines them as tiles stream in — no full-frame stall.
+The earlier Static `renderStill` path (one complete frame on demand) is kept behind `continuous=false`.
 
-### Why it stutters (what to fix)
-In `src/web/maplibre_flutter_core_web.cpp` (`WebMap`), rendering is **`MapMode::Static` +
-`Map::renderStill`**, gated by a `rendering_` bool:
-- `renderStill` only completes once **every** tile for the view has loaded, and
-- while a `renderStill` is in flight (`rendering_ == true`) the per-frame `tick()` early-returns, so
-  **no intermediate frames are drawn** during a pan/zoom.
-So interaction advances in chunks (one per `renderStill` completion). The concurrent fetch just added
-helps latency, but the real fix is partial-frame rendering = **Continuous mode**.
+**What changed** (all in `src/web/maplibre_flutter_core_web.cpp`):
+- `WebMap` honors the `continuous` createMap option (already plumbed from Dart via
+  `--dart-define=MAPLIBRE_CONTINUOUS`, default true). In Continuous mode it builds the
+  `HeadlessFrontend` with `invalidateOnUpdate=true` and constructs the `Map` with
+  `MapMode::Continuous` + a `WebFrameObserver` (a `mbgl::MapObserver`) whose
+  `onDidFinishRenderingFrame` presents each finished frame and completes `onReady` on the first.
+- The render is **driven by the existing per-frame tick**: every camera/style mutation and every
+  tile load invalidates the frontend, whose `asyncInvalidate` renders a frame off the libuv-free
+  RunLoop on the next `globalTick → runOnce()`. mbgl self-drives — no explicit per-tick `render()`
+  call is needed (it mirrors the desktop Continuous path, adapted to the main-thread tick). The
+  `rendering_`/`renderStill` machinery is bypassed in Continuous mode; `tick()` only does
+  `syncSize()` + `stepAnimation()` and lets mbgl render.
+- When idle (style loaded, all tiles in, no animation) mbgl stops invalidating, so it does **not**
+  busy-loop — confirmed by the camera-poll test below settling and staying put.
 
-### The plan
-Switch `WebMap` to **`MapMode::Continuous`**, where mbgl emits frames continuously (partial → refine
-as tiles stream in) rather than one complete still per request.
+**Verified in headless Edge** (SwiftShader WebGL): the example map renders, drag-pans, and a direct
+`animateTo(London, zoom 10, 2000 ms)` eases smoothly through progressive frames and lands exactly on
+target (`zoom 1.00→10.00`, `lat 0.00→51.51` over ~10 polled steps), then settles. Console clean.
 
-1. **Reference the desktop shim** — `src/maplibre_flutter_core.cpp` already has a Continuous path
-   (its `renderThreadMain` Continuous branch + a `MapObserver::onDidFinishRenderingFrame` that
-   publishes each frame). Mirror its structure, adapted to the web **main-thread tick** model (not a
-   blocking render thread).
-2. Construct the `Map` with `MapMode::Continuous` and a custom `MapObserver` (its
-   `onDidFinishRenderingFrame` signals a frame is ready to present; `onInvalidate`/needs-repaint
-   marks dirty).
-3. **Drive renders from the existing per-frame tick** (`globalTick → RunLoop::runOnce()` already runs
-   each animation frame). Check how `HeadlessFrontend` renders per frame in Continuous mode — it may
-   need an explicit `render()` per tick, or it self-drives via the run loop. Read
-   `gfx/headless_frontend.cpp` + how the desktop Continuous path triggers each render.
-4. **Present** as now — `present()` is already correct (mbgl renders into canvas FBO 0, so present is
-   a no-op blit-skip); just call it after each finished frame instead of in the renderStill callback.
-   Remove the `rendering_` / `renderStill` machinery.
-5. Keep `onReady` firing on the first finished frame.
+> **Headless caveat:** a *passive* fly-to (click the FAB, then wait) freezes mid-animation in
+> headless Edge because `requestAnimationFrame` goes idle when the page has no compositor and no
+> input — `stepAnimation` runs off rAF, so it stops stepping. This is a headless artifact, **not** a
+> code bug: in a real visible browser rAF fires continuously at 60 fps. To verify animation headlessly,
+> drive it from a page that keeps rAF alive (a self-perpetuating `requestAnimationFrame` loop) — see
+> `example/build/web/anim_test.html` + `build/cdp_console.py`, which is how completion was confirmed.
 
-**Gotchas:** the run loop is the libuv-free one in `emscripten_run_loop.cpp` (main thread ticks;
-workers block on a condvar) — Continuous must drive renders from the **main-thread tick**, never a
-blocking loop. CLAUDE.md notes the desktop Continuous path "went blank twice" before being driven
-correctly (invalidateOnUpdate / reading partial frames too early) — expect to iterate, and verify
-with the screenshot harness after each change.
+## The resize 180°-flip bug — FIXED (2026-06-20)
+
+**Symptom:** scaling the window flipped the map 180° vertically; it corrected itself on the next pan.
+
+**Root cause** (in `WebMap::present()`): mbgl's `gl::Context` caches the GL framebuffer binding in a
+write-through `State<>` wrapper and skips redundant `glBindFramebuffer` calls. The old `present()`
+ended with a raw `glBindFramebuffer(GL_FRAMEBUFFER, 0)`, leaving FBO 0 bound while mbgl's cache still
+believed its offscreen color FBO was bound. So the **next** render's `renderable.bind()` was a no-op
+(cache match) and mbgl rendered straight into FBO 0 (the canvas) — which is **upright** — and the
+`present()` blit early-returned (`srcFbo == 0`). That was the steady state, and it looked correct.
+A **resize** calls `HeadlessBackend::setSize → resource.reset()`, allocating a fresh offscreen FBO
+**id**; the next `bind()` then issues a *real* `glBindFramebuffer`, so for one frame mbgl genuinely
+rendered into the offscreen FBO — and the old blit **flipped it vertically** → one upside-down frame,
+until the next mutation desynced the cache back to FBO 0 and it "corrected."
+
+**Fix:** make `present()` deterministic and cache-truthful (same discipline as the desktop GL
+presenter's `GlStateGuard`): blit mbgl's offscreen color FBO → the canvas default framebuffer **1:1
+(no vertical flip)**, then **re-bind mbgl's color FBO** before returning so its `State<>` cache stays
+truthful. Now every frame reliably renders into the offscreen FBO and blits straight to the canvas,
+upright, including immediately after a resize. (The Y-flip was wrong for the on-screen canvas: it's
+the offscreen→CPU/texture convention the desktop CPU readback uses, not offscreen→canvas.) Verified:
+captured a screenshot *immediately after* a viewport resize (before any pan) — map stays upright.
+
+## Resize white-blink — FIXED (2026-06-20)
+
+**Symptom:** resizing the window made the map **blink white** (worse while dragging the edge).
+
+**Root cause:** the resize path set `canvas.width/height` (which **clears the WebGL drawing buffer to
+transparent** → the white page shows through) in one animation frame, but the new-size frame was only
+rendered + blitted on the *next* frame — so the browser composited the cleared canvas in between.
+
+**Fix:** the canvas backing-store resize moved out of `resize()` and **into `present()`, immediately
+before the blit** (guarded by `canvasW_/canvasH_` so it only fires on a real change). The clear and
+the repaint now happen in the **same animation-frame turn**, so the compositor never reads a cleared
+canvas. User-confirmed on real hardware: **no blink at all.**
+
+> **Verifying this headlessly is unreliable** — `drawImage`-based canvas pixel readback returns
+> spurious transparent frames under headless SwiftShader (a *static, non-resizing* map showed false
+> "blank" frames too), and `Page.startScreencast` throttles/coalesces away the transient. The
+> compositor screencast showed no white frames; the real test was a human resizing a real window.
+
+**Known remaining nit (not white):** for ~1 frame after a resize, the previous frame is CSS-scaled to
+the new size (a brief "skew"/stretch) before the correct-size frame renders, because the backing
+store lags the CSS size by one frame. It's minor (browsers do the same for `<canvas>`/`<video>`).
+Eliminating it would require rendering the new-size frame **synchronously** in the resize turn (pump
+the RunLoop right after `setSize` so `renderFrame`→`present` runs same-frame) — feasible but adds
+re-entrancy and depends on mbgl's `setSize`→`update` being synchronous; deferred as a polish item.
+
+## Zero-copy on web — already effectively in place; no work needed
+
+**Question:** should we build a zero-copy present for web like the desktop tiers, or is it already
+zero-copy?
+
+**Answer: it is already effectively zero-copy, and the desktop zero-copy machinery has no analogue
+on web.** The desktop "zero-copy" work
+(IOSurface on macOS / dmabuf on Linux / D3D11 shared handle on Windows) exists to (1) avoid a
+GPU→CPU **readback** and (2) bridge a GPU texture into Flutter's **`Texture` widget / engine texture
+registrar** without a CPU copy. Neither applies on web:
+
+- **The canvas _is_ the surface.** Flutter web embeds the map via `HtmlElementView`, which the engine
+  renders as a real **DOM `<canvas>`** (a child of `flt-glass-pane`, "slotted" into position) that the
+  **browser composites directly** alongside the Flutter scene. There is no Flutter `Texture` and no
+  engine texture bridge to feed — so there is nothing for IOSurface/dmabuf/shared-handle to plug into.
+- **No CPU readback in the live path.** mbgl (WebGL2) renders into a GPU framebuffer in the **same**
+  WebGL context that owns the canvas; `present()` is a single **intra-context GPU blit** (offscreen
+  color FBO → canvas default FBO). `readStillImage` (the GPU→CPU readback) is used only by the desktop
+  `render()` and the `web_render_probe`/test harness — never by the live web map.
+- **The final canvas→screen composite is the browser's job.** Per the WebGL spec, the browser presents
+  the canvas drawing buffer to the page compositor; on modern desktop GPUs that is GPU compositing
+  (zero-copy). Whether it's truly readback-free is a browser/hardware property, **not** something our
+  code controls — and it is identical for maplibre-gl-js. (Our `preserveDrawingBuffer=true`, needed so
+  an idle frame keeps showing the last paint, can cost the browser an extra buffer copy — a deliberate
+  trade, unrelated to a "zero-copy architecture.")
+
+**Possible micro-optimizations (low value, not pursued):**
+- Eliminate the one intra-context blit by rendering mbgl **directly into the canvas default
+  framebuffer** (no offscreen FBO). This is orientation-safe (direct-to-FBO-0 is upright) but requires
+  a custom GL `RendererBackend`/`Renderable` — mbgl's `HeadlessBackend` always allocates an offscreen
+  renderbuffer FBO. The blit is a GPU-local copy of a few MB, fully pipelined; removing it is not worth
+  forking the backend.
+- Drop `preserveDrawingBuffer` by rendering every browser frame instead of on-invalidation — trades a
+  possible compositor copy for always-on rendering (worse for battery). Not worth it.
+
+**The real web perf lever is not zero-copy** — it's the vendored **WebGPU backend**
+(`MLN_WITH_WEBGPU`) for faster rendering, plus threading/COOP-COEP and download-size work. See
+[Remaining for production](#remaining-for-production-not-blockers-to-the-poc).
+
+## Style-switch thread-pool exhaustion — FIXED (2026-06-20)
+
+**Symptom:** switching the style (e.g. Demotiles → OpenFreeMap Liberty) "broke" the map.
+
+**Root cause — the WASM pthread budget.** Emscripten pre-allocates a fixed `PTHREAD_POOL_SIZE`
+(32). mbgl's threads: the background tile pool is **4** (`ThreadPool = ParallelScheduler(3)`), plus
+the file-source / sequenced / database threads (~5) and the main thread. The original HTTP source
+spawned **one pthread per request**, and mbgl dispatches up to `DEFAULT_MAXIMUM_CONCURRENT_REQUESTS`
+= **20** at once — so a heavy style's tile/glyph/sprite burst pushed the live thread count to ~32,
+hitting *"Tried to spawn a new thread, but the thread pool is exhausted"* + *"Blocking on the main
+thread is very dangerous"* (deadlock risk → broken render).
+
+**Fix:** a **bounded fetch-thread pool** (8 long-lived workers pulling a queue) in
+`emscripten_http_file_source.cpp`, replacing thread-per-request. Fetch concurrency is now capped at
+8 regardless of mbgl's burst (excess requests queue), so the pool can't be exhausted. Verified:
+Demotiles ⇄ Liberty switches with **no "pool exhausted"** errors; Liberty renders correctly (full
+labelled world map) and switches back cleanly. (One benign `Blocking on the main thread` warning can
+still appear once on a switch — mbgl's old-style teardown briefly syncs on a background task; the map
+renders through it, no hang. Eliminating it would need mbgl patching / `PROXY_TO_PTHREAD`; not worth
+it.) If a future heavier style needs more headroom, raise `kFetchThreads` and/or `PTHREAD_POOL_SIZE`.
+
+## Fly-to zoom-out arc — DONE (2026-06-20)
+
+The web fly-to (`animateTo` → `stepAnimation`) previously did a straight eased lerp of zoom, so a
+long city→city flight at high zoom (e.g. London z10 → Tokyo z10) flew across the world *at z10*
+(lots of tiles, no overview). It now does a **zoom-out arc** like gl-js / the desktop tier: it
+computes the zoom that would fit both endpoints (`fitZoom` from the angular span vs. the CSS
+viewport width) and, **only when that's lower than both endpoints** (so +/- buttons and short hops
+don't overshoot — mirrors the macOS fly-to dip fix), dips the zoom toward it at the time-midpoint
+via `sin(πt)`. Verified: London z10 → Tokyo z10 dips to **z≈1.8** (≈world view) at the midpoint,
+then zooms back to z10.
 
 ### Build + test loop (all set up on this Windows box)
 - **Toolchain**: emsdk at `C:\emsdk`; real Python at

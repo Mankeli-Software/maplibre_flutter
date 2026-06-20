@@ -3,14 +3,20 @@
 // Exposes the `MaplibreFlutterCore` JS API that the Dart web controller drives
 // (see packages/maplibre_flutter_web/lib/src/core_web/core_wasm_interop.dart):
 //   const m = await MaplibreFlutterCore();          // MODULARIZE factory
-//   const map = m.createMap({canvas, styleUri, lat, lng, zoom, ...});
+//   const map = m.createMap({canvas, styleUri, lat, lng, zoom, ..., continuous});
 //   map.setCamera(...); map.setStyle(...); map.getCamera(); map.resize(...);
 //   map.moveBy(...); map.scaleBy(...); map.onReady(cb); map.destroy();
 //
 // All maps share one main-thread RunLoop, ticked once per animation frame by
-// emscripten_set_main_loop. Rendering is Static renderStill on demand (when a map
-// is dirty); each completed frame is presented by blitting mbgl's color FBO to the
-// canvas's default framebuffer (the same technique as the desktop GL presenter).
+// emscripten_set_main_loop. Rendering defaults to Continuous mode (like the
+// desktop tier): every camera/style change and each tile that streams in
+// invalidates mbgl, the HeadlessFrontend's asyncInvalidate renders a frame off
+// the RunLoop (driven by the per-frame runOnce), and a MapObserver presents each
+// finished frame — partial frames show immediately and refine as tiles arrive,
+// so pan/zoom stay smooth instead of stalling on a full renderStill. A Static
+// path (one complete frame on demand) is kept behind continuous=false. Each
+// finished frame is presented by blitting mbgl's color FBO to the canvas's
+// default framebuffer (the same technique as the desktop GL presenter).
 // Background tile work runs on the core's std::thread scheduler (Emscripten
 // pthreads).
 
@@ -20,6 +26,7 @@
 #include <emscripten/html5.h>
 
 #include <mbgl/gfx/backend_scope.hpp>
+#include <mbgl/gfx/headless_backend.hpp>
 #include <mbgl/gfx/renderable.hpp>
 #include <mbgl/gfx/renderer_backend.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
@@ -38,6 +45,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,6 +64,19 @@ bool g_loopStarted = false;
 int g_nextId = 0;
 
 class WebMap;
+
+// Observes a Continuous-mode map: each finished frame (partial → refined as tiles
+// stream in) is presented to the canvas. Mirrors the desktop FrameObserver. The
+// out-of-line method body (after WebMap) calls back into the owning map.
+class WebFrameObserver final : public mbgl::MapObserver {
+public:
+    explicit WebFrameObserver(WebMap* map) : map_(map) {}
+    void onDidFinishRenderingFrame(const RenderFrameStatus&) override;
+
+private:
+    WebMap* map_;
+};
+
 // Owns the live maps. createMap appends; WebMap::destroy() erases (and frees).
 std::vector<std::unique_ptr<WebMap>>& maps() {
     static std::vector<std::unique_ptr<WebMap>> m;
@@ -90,8 +111,9 @@ public:
            double zoom,
            double bearing,
            double pitch,
-           double pixelRatio)
-        : canvas_(canvas), pixelRatio_(static_cast<float>(pixelRatio)) {
+           double pixelRatio,
+           bool continuous)
+        : canvas_(canvas), pixelRatio_(static_cast<float>(pixelRatio)), continuous_(continuous) {
         ensureLoop();
 
         // Register the canvas in Emscripten's module-scope specialHTMLTargets map so
@@ -105,12 +127,29 @@ public:
 
         size_ = sizeFromCanvas(canvas_, mbgl::Size{1, 1});
 
-        frontend_ = std::make_unique<mbgl::HeadlessFrontend>(size_, pixelRatio_);
-        map_ = std::make_unique<mbgl::Map>(
-            *frontend_,
-            mbgl::MapObserver::nullObserver(),
-            mbgl::MapOptions().withMapMode(mbgl::MapMode::Static).withSize(size_).withPixelRatio(pixelRatio_),
-            mbgl::ResourceOptions::Default());
+        if (continuous_) {
+            // Continuous mode: mbgl renders partial frames immediately and refines
+            // them as tiles stream in. invalidateOnUpdate drives renderFrame off the
+            // RunLoop on every map mutation / tile load; the observer presents each
+            // finished frame. NoFlush: the present blit is same-context and ordered
+            // after the render, so no per-frame glFinish stall is needed.
+            observer_ = std::make_unique<WebFrameObserver>(this);
+            frontend_ = std::make_unique<mbgl::HeadlessFrontend>(
+                size_, pixelRatio_, mbgl::gfx::HeadlessBackend::SwapBehaviour::NoFlush,
+                mbgl::gfx::ContextMode::Unique, std::nullopt, /*invalidateOnUpdate=*/true);
+            map_ = std::make_unique<mbgl::Map>(
+                *frontend_, *observer_,
+                mbgl::MapOptions().withMapMode(mbgl::MapMode::Continuous).withSize(size_).withPixelRatio(pixelRatio_),
+                mbgl::ResourceOptions::Default());
+        } else {
+            // Static mode (fallback): one complete frame per renderStill, driven on
+            // demand by tick() when the map is dirty.
+            frontend_ = std::make_unique<mbgl::HeadlessFrontend>(size_, pixelRatio_);
+            map_ = std::make_unique<mbgl::Map>(
+                *frontend_, mbgl::MapObserver::nullObserver(),
+                mbgl::MapOptions().withMapMode(mbgl::MapMode::Static).withSize(size_).withPixelRatio(pixelRatio_),
+                mbgl::ResourceOptions::Default());
+        }
 
         map_->jumpTo(mbgl::CameraOptions()
                          .withCenter(mbgl::LatLng{lat, lng})
@@ -158,6 +197,22 @@ public:
         toZoom_ = zoom;
         toBearing_ = bearing;
         toPitch_ = pitch;
+
+        // Fly-to zoom-out arc ("zoom back"): for long flights, dip the zoom toward a
+        // level that fits both endpoints at the time-midpoint, then zoom back in —
+        // matching gl-js / the desktop tier. Only engage when fitting the two centers
+        // actually needs a lower zoom than both endpoints, so +/- buttons and short
+        // hops just lerp with no overshoot (mirrors the macOS fly-to dip fix).
+        double dLng = std::fabs(toLng_ - fromLng_);
+        if (dLng > 180.0) dLng = 360.0 - dLng; // shortest way around the globe
+        const double dLat = std::fabs(toLat_ - fromLat_);
+        const double span = std::max(std::max(dLng, dLat), 1e-6);
+        const double cssWidth = size_.width / (pixelRatio_ > 0.0f ? pixelRatio_ : 1.0f);
+        // Zoom at which `span` degrees fits the viewport (whole world = 512px·2^z = 360°).
+        const double fitZoom = std::log2(360.0 * cssWidth / (512.0 * span));
+        peakZoom_ = fitZoom < 0.0 ? 0.0 : fitZoom;
+        useDip_ = cssWidth >= 1.0 && peakZoom_ < std::min(fromZoom_, toZoom_) - 0.25;
+
         animStartMs_ = emscripten_get_now();
         animDurMs_ = durationMs > 1.0 ? durationMs : 1.0;
         animating_ = true;
@@ -180,9 +235,11 @@ public:
         const auto w = static_cast<uint32_t>(width > 0 ? width : 1);
         const auto h = static_cast<uint32_t>(height > 0 ? height : 1);
         size_ = mbgl::Size{w, h};
-        // Match the canvas backing store to the render size (blit target = canvas).
-        canvas_.set("width", static_cast<int>(w));
-        canvas_.set("height", static_cast<int>(h));
+        // NB: we do NOT resize the canvas backing store here. Setting canvas.width/
+        // height clears the WebGL drawing buffer to transparent; if we did it now, the
+        // browser would composite the cleared canvas before the next frame renders —
+        // a white blink on resize. Instead present() resizes the backing store right
+        // before the blit, so the clear and the blit are in the same turn (no blink).
         frontend_->setSize(size_);
         map_->setSize(size_);
         dirty_ = true;
@@ -213,10 +270,24 @@ public:
                   all.end());
     }
 
+    // Continuous mode: the observer calls this after mbgl finishes each frame.
+    // Present it to the canvas and complete onReady on the first frame.
+    void onFrameRendered() {
+        present();
+        signalReady();
+    }
+
     // Called each animation frame by globalTick.
     void tick() {
         syncSize();
         stepAnimation();
+        if (continuous_) {
+            // Continuous mode renders itself: camera/size mutations and tile loads
+            // invalidate the frontend, which renders off the RunLoop (driven by
+            // globalTick's runOnce); the observer presents. Nothing to do here.
+            return;
+        }
+        // Static mode: render one complete frame on demand when dirty.
         if (!dirty_ || rendering_) {
             return;
         }
@@ -228,12 +299,7 @@ public:
                 return;
             }
             present();
-            if (!ready_) {
-                ready_ = true;
-                if (!readyCb_.isUndefined()) {
-                    readyCb_();
-                }
-            }
+            signalReady();
         });
     }
 
@@ -242,31 +308,76 @@ public:
         emscripten_set_mousemove_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
         emscripten_set_mouseup_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
         emscripten_set_wheel_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
+        // Destroy the map before the frontend and observer it references.
         map_.reset();
         frontend_.reset();
+        observer_.reset();
         EM_ASM({ delete specialHTMLTargets[UTF8ToString($0)]; }, target_.c_str());
     }
 
 private:
-    // Blit mbgl's color FBO to the canvas default framebuffer (0), Y-flipped.
+    void signalReady() {
+        if (!ready_) {
+            ready_ = true;
+            if (!readyCb_.isUndefined()) {
+                readyCb_();
+            }
+        }
+    }
+
+    // Copy mbgl's offscreen color FBO into the canvas default framebuffer (0).
+    //
+    // ORIENTATION — copy straight, do NOT flip. mbgl's GL HeadlessBackend renders
+    // into an offscreen renderbuffer FBO, producing the same pixel layout it would
+    // draw straight into the default framebuffer (which the browser composits
+    // right-side-up). So a 1:1 blit (src rect == dst rect) keeps the map upright.
+    // A vertical flip here renders the map upside down — that was the orientation
+    // half of the "map flips 180° on resize" report.
+    //
+    // CACHE — keep mbgl's GL state truthful. mbgl's gl::Context caches the framebuffer
+    // binding in a write-through State<> wrapper and skips redundant glBindFramebuffer
+    // calls. If we leave a different framebuffer bound when we return, the cache
+    // desyncs and mbgl's NEXT render targets whatever is actually bound — FBO 0 —
+    // instead of its offscreen color FBO. That desync was the other half of the resize
+    // bug: in steady state the desync made mbgl render straight into FBO 0 (upright,
+    // and this blit early-returned), but a resize allocates a fresh offscreen FBO id,
+    // forcing one real render into the offscreen FBO — which this blit then flipped
+    // → one upside-down frame, until the next mutation desynced the cache back to
+    // FBO 0. We fix both halves: blit without a flip, and re-bind mbgl's color FBO
+    // before returning so its cache stays truthful (the desktop GL presenter's
+    // GlStateGuard discipline). Now every frame deterministically renders into the
+    // offscreen FBO and blits 1:1 to the canvas.
     void present() {
         mbgl::gfx::BackendScope guard{*frontend_->getBackend()};
+        // Bind mbgl's color renderable so the draw binding is reliably its color FBO
+        // (and so mbgl's State<> cache is set to that FBO), then read it back as the
+        // blit source.
         frontend_->getBackend()->getDefaultRenderable().getResource<mbgl::gfx::RenderableResource>().bind();
 
         GLint srcFbo = 0;
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &srcFbo);
         if (srcFbo == 0) {
-            // Our WebGL backend has no separate offscreen FBO — mbgl renders straight
-            // into the canvas default framebuffer, so the frame is already on screen.
-            // Blitting 0→0 would be a GL feedback-loop error every frame.
+            // mbgl already rendered into FBO 0; the frame is on screen. Blitting 0->0
+            // would be a GL feedback-loop error, so leave it as-is.
             return;
+        }
+        // Sync the canvas backing store to the render size here — immediately before
+        // the blit — so the clear it triggers and the blit happen in one turn (no
+        // resize white blink; see resize()). Guarded so we only touch it on a change.
+        if (canvasW_ != size_.width || canvasH_ != size_.height) {
+            canvas_.set("width", static_cast<int>(size_.width));
+            canvas_.set("height", static_cast<int>(size_.height));
+            canvasW_ = size_.width;
+            canvasH_ = size_.height;
         }
         const auto w = static_cast<GLint>(size_.width);
         const auto h = static_cast<GLint>(size_.height);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, w, h, 0, h, w, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        // Re-bind mbgl's color FBO (read+draw) so its State<> cache stays truthful —
+        // see the cache note above. This is the line that fixes the resize flip.
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
     }
 
     // Auto-size the render surface to the canvas's CSS size (× DPR) so the map is
@@ -299,9 +410,18 @@ private:
         }
         // easeInOutCubic
         const double e = t < 0.5 ? 4.0 * t * t * t : 1.0 - std::pow(-2.0 * t + 2.0, 3.0) / 2.0;
+        double zoom = lerp(fromZoom_, toZoom_, e);
+        if (useDip_) {
+            // Symmetric dip toward the fit zoom, peaking at the time-midpoint
+            // (sin(pi*t) is 0 at both ends, 1 at t=0.5). Uses linear t (not eased) so
+            // the zoom-out is centered in time.
+            constexpr double kPi = 3.14159265358979323846;
+            const double dipAmount = std::min(fromZoom_, toZoom_) - peakZoom_;
+            zoom -= dipAmount * std::sin(kPi * t);
+        }
         map_->jumpTo(mbgl::CameraOptions()
                          .withCenter(mbgl::LatLng{lerp(fromLat_, toLat_, e), lerp(fromLng_, toLng_, e)})
-                         .withZoom(lerp(fromZoom_, toZoom_, e))
+                         .withZoom(zoom)
                          .withBearing(lerp(fromBearing_, toBearing_, e))
                          .withPitch(lerp(fromPitch_, toPitch_, e)));
         dirty_ = true;
@@ -348,10 +468,18 @@ private:
     std::string target_;
     float pixelRatio_ = 1.0f;
     mbgl::Size size_{1, 1};
+    // Backing-store size currently applied to the canvas (synced lazily in present()
+    // to avoid the resize white blink — see resize()). 0 = not yet applied.
+    uint32_t canvasW_ = 0;
+    uint32_t canvasH_ = 0;
+    bool continuous_ = true;
+    // Continuous-mode frame observer; the Map holds a reference to it, so it is
+    // declared before (destroyed after) map_. nullptr in Static mode.
+    std::unique_ptr<WebFrameObserver> observer_;
     std::unique_ptr<mbgl::HeadlessFrontend> frontend_;
     std::unique_ptr<mbgl::Map> map_;
     bool dirty_ = false;
-    bool rendering_ = false;
+    bool rendering_ = false; // Static path only
     bool ready_ = false;
     val readyCb_ = val::undefined();
 
@@ -366,13 +494,22 @@ private:
     double animDurMs_ = 1;
     double fromLat_ = 0, fromLng_ = 0, fromZoom_ = 0, fromBearing_ = 0, fromPitch_ = 0;
     double toLat_ = 0, toLng_ = 0, toZoom_ = 0, toBearing_ = 0, toPitch_ = 0;
+    // Fly-to zoom-out arc: when useDip_, the eased step dips zoom toward peakZoom_
+    // (the level that fits both endpoints) at the time-midpoint.
+    bool useDip_ = false;
+    double peakZoom_ = 0;
 };
+
+void WebFrameObserver::onDidFinishRenderingFrame(const mbgl::MapObserver::RenderFrameStatus&) {
+    map_->onFrameRendered();
+}
 
 void globalTick() {
     if (g_loop != nullptr) {
         g_loop->runOnce();
     }
-    // Copy raw pointers first: a tick (renderStill callback) could destroy a map.
+    // Copy raw pointers first: a tick (renderStill callback / observer) could
+    // destroy a map.
     std::vector<WebMap*> snapshot;
     snapshot.reserve(maps().size());
     for (const auto& m : maps()) {
@@ -392,7 +529,8 @@ WebMap* createMap(val opts) {
         opts["zoom"].as<double>(),
         opts["bearing"].as<double>(),
         opts["pitch"].as<double>(),
-        opts["pixelRatio"].as<double>());
+        opts["pixelRatio"].as<double>(),
+        opts["continuous"].isUndefined() ? true : opts["continuous"].as<bool>());
     WebMap* raw = map.get();
     maps().push_back(std::move(map));
     return raw;

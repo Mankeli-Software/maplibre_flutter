@@ -1227,4 +1227,88 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   `docs/experimental-web-core-wasm.md`. Verified: web-package `flutter analyze` clean; `flutter build
   web` green; renders + interactive on device (headless Edge).
 
+- **2026-06-20 — Web-via-core WASM: Continuous-mode rendering + resize-flip fix + zero-copy research
+  (on `feat/web-core-wasm-poc`).** Finished the PoC's two remaining issues and answered the zero-copy
+  question. All in `packages/maplibre_flutter_core/src/web/maplibre_flutter_core_web.cpp` (one source
+  file; Dart already plumbed the flag). Verified in headless Edge.
+  - **Continuous mode (was Static `renderStill`).** `WebMap` now honors the `continuous` createMap
+    option (default true, from `--dart-define=MAPLIBRE_CONTINUOUS`): it builds the `HeadlessFrontend`
+    with `invalidateOnUpdate=true` and the `Map` with `MapMode::Continuous` + a `WebFrameObserver`
+    (`mbgl::MapObserver`) whose `onDidFinishRenderingFrame` presents each finished frame (partial →
+    refined as tiles stream in) and fires `onReady` on the first. **Key insight:** mbgl self-drives —
+    no per-tick `render()` call. Every map mutation / tile load invalidates the frontend, whose
+    `asyncInvalidate` renders off the existing libuv-free RunLoop on the next `globalTick → runOnce()`.
+    `tick()` in Continuous mode does only `syncSize()` + `stepAnimation()`; the `rendering_`/`renderStill`
+    machinery is bypassed (kept for `continuous=false`). Idle = mbgl stops invalidating (no busy-loop;
+    confirmed by a camera-poll settling). Fixes the stutter-under-tile-load the Static path had.
+  - **Resize 180°-flip bug FIXED.** Root cause in `present()`: mbgl's `gl::Context` caches the
+    framebuffer binding in a write-through `State<>` wrapper and skips redundant `glBindFramebuffer`
+    calls; the old `present()` ended with a raw `glBindFramebuffer(GL_FRAMEBUFFER, 0)`, desyncing the
+    cache. So mbgl's NEXT `renderable.bind()` was a no-op and it rendered straight into **FBO 0** (the
+    canvas) — **upright** — and `present()` early-returned (`srcFbo==0`). That was the (correct-looking)
+    steady state. A resize → `HeadlessBackend::setSize → resource.reset()` allocates a **new offscreen
+    FBO id**, so the next `bind()` issues a *real* glBindFramebuffer → for one frame mbgl rendered into
+    the offscreen FBO, which the old blit **Y-flipped** → one upside-down frame, until the next mutation
+    desynced back to FBO 0. **Two-part fix** (mirrors the desktop GL presenter's `GlStateGuard`): blit
+    the offscreen color FBO → canvas FBO 0 **1:1 (no flip)**, and **re-bind mbgl's color FBO** before
+    returning so the cache stays truthful. The Y-flip was the offscreen→CPU/texture convention (desktop
+    readback), **wrong** for offscreen→on-screen-canvas. Now every frame deterministically renders into
+    the offscreen FBO and blits upright — verified by screenshotting *immediately after* a resize
+    (before any pan): no flip.
+  - **Zero-copy on web: already effectively in place; NO work needed; the desktop machinery has no
+    analogue.** Desktop zero-copy (IOSurface/dmabuf/D3D11-shared-handle) exists to avoid a GPU→CPU
+    readback and bridge a GPU texture into Flutter's **`Texture`/engine texture registrar**. On web
+    neither applies: Flutter embeds the map via **`HtmlElementView`** = a real DOM `<canvas>` (child of
+    `flt-glass-pane`, slotted) the **browser composites directly** — there is no Flutter `Texture` to
+    feed. mbgl (WebGL2) renders into a GPU FBO in the **same** context that owns the canvas; `present()`
+    is a single **intra-context GPU blit** (offscreen FBO → canvas FBO 0); `readStillImage` (the only
+    CPU readback) is used solely by the desktop `render()` + the test probe, never the live web path.
+    The final canvas→screen composite is the browser's (GPU compositing on modern HW); not under our
+    control and identical for gl-js. Possible micro-opts (not pursued, negligible): render mbgl directly
+    into FBO 0 to drop the one blit (needs a custom GL backend — `HeadlessBackend` always makes an
+    offscreen FBO; orientation-safe since direct-to-FBO-0 is upright), or drop `preserveDrawingBuffer`.
+    **The real web perf lever is the vendored WebGPU backend, not zero-copy.**
+  - **No Dart/interface/binding changes** (the JS API is unchanged); `flutter analyze` of the web
+    package stays clean. Build/verify recap unchanged (emsdk + real Python + VS2022 cmake/ninja →
+    `emcmake` the `maplibre_flutter_core_wasm` target → deploy `.js`/`.wasm` → serve COOP/COEP →
+    headless Edge + `cdp_*.py`). **Headless caveat:** a passive fly-to freezes mid-flight because
+    headless `requestAnimationFrame` goes idle without a compositor/input (`stepAnimation` runs off
+    rAF); it is NOT a bug — a real browser runs rAF at 60fps, and an rAF-kept-alive page
+    (`anim_test.html`) confirmed `animateTo` eases smoothly to the exact target and settles.
+  - **Follow-up (same session) — style-switch thread-pool exhaustion FIXED + fly-to zoom-out arc
+    added.** On-device testing surfaced two more issues:
+    - **"Broke after switching tiles" = WASM pthread-pool exhaustion.** Switching to a heavy style
+      (OpenFreeMap Liberty) hit *"Tried to spawn a new thread, but the thread pool is exhausted"* +
+      *"Blocking on the main thread is very dangerous"* (deadlock risk → broken render). Root cause:
+      `PTHREAD_POOL_SIZE`=32, and the original `emscripten_http_file_source.cpp` spawned **one pthread
+      per request** while mbgl dispatches up to `DEFAULT_MAXIMUM_CONCURRENT_REQUESTS`=20 at once — so
+      Liberty's tile/glyph/sprite burst + mbgl's other threads (background pool=4, file-source/
+      sequenced/db ~5, main) hit ~32. Fix: a **bounded fetch-thread pool** (8 long-lived workers
+      pulling a queue) replacing thread-per-request — fetch concurrency is capped regardless of the
+      burst, excess requests queue. Verified in headless Edge: Demotiles ⇄ Liberty switches with no
+      "pool exhausted", Liberty renders a correct labelled world map and switches back cleanly. (A
+      benign one-time `Blocking on the main thread` from mbgl's old-style teardown can still log; the
+      map renders through it.) **Caching gotcha during verify:** a warm browser profile served the
+      cached pre-fix `.wasm` despite `Cache-Control: no-store`; relaunch headless Edge with a fresh
+      `--user-data-dir` to load a rebuilt module.
+    - **Fly-to "zoom-back" arc.** Web `animateTo` did a straight zoom lerp, so London z10 → Tokyo z10
+      flew across the world at z10. Added a zoom-out arc (in `stepAnimation`): compute the zoom that
+      fits both endpoints (`fitZoom` from angular span vs CSS viewport width) and dip toward it at the
+      time-midpoint via `sin(πt)`, **only when it's below both endpoints** (so +/- buttons / short
+      hops don't overshoot — mirrors the macOS fly-to dip fix). Verified: London→Tokyo dips to z≈1.8
+      mid-flight then back to z10. Both fixes are in the two web files only (no Dart/interface change).
+    - **Resize white-blink FIXED.** Resizing blinked white because the resize path set
+      `canvas.width/height` (which clears the WebGL drawing buffer → white page shows through) in one
+      animation frame, but rendered+blitted the new size only on the *next* frame, so the compositor
+      saw the cleared canvas in between. Fix: move the canvas backing-store resize **into `present()`,
+      right before the blit** (guarded by `canvasW_/canvasH_`), so clear+repaint are in the same rAF
+      turn — the compositor never sees a cleared canvas. **User-confirmed on real hardware: no blink.**
+      Verify note: headless can't measure this — `drawImage` WebGL readback returns spurious transparent
+      frames under SwiftShader (a *static* map showed false blanks), and `Page.startScreencast`
+      coalesces the transient; the compositor screencast showed no white. **Known nit (deferred):** a
+      ~1-frame stretch of the previous frame before the new-size frame renders (backing store lags CSS
+      by a frame); eliminating it needs a synchronous render in the resize turn.
+    - **Verified end-to-end on real hardware** (user, in-browser): continuous render is smooth,
+      resize no longer blinks, Demotiles⇄Liberty switches cleanly, fly-to arcs out and back.
+
 _Append new decisions here with date and rationale._

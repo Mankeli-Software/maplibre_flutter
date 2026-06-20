@@ -4,13 +4,26 @@
 //
 // mbgl drives this from OnlineFileSource's worker thread, whose RunLoop blocks
 // between events — so that thread can't pump its JS event loop to receive ASYNC
-// fetch callbacks. Each request therefore runs a **synchronous** fetch on its own
-// short-lived worker thread (sync fetch is allowed off the main thread), then
-// delivers the Response back **asynchronously** via the originating RunLoop. This:
+// fetch callbacks. Each request therefore runs a **synchronous** fetch (sync fetch
+// is allowed off the main thread), then delivers the Response back
+// **asynchronously** via the originating RunLoop. This:
 //   * satisfies mbgl's contract that the callback fires later, on the loop thread
 //     (NOT re-entrantly inside request()), and
 //   * lets mbgl's permitted concurrent requests actually run in parallel.
 // Tile servers must send permissive CORS (demotiles / OpenFreeMap do).
+//
+// FETCH POOL (why this isn't thread-per-request): mbgl dispatches up to
+// DEFAULT_MAXIMUM_CONCURRENT_REQUESTS (20) requests at once. A thread-per-request
+// design spawns up to 20 Emscripten pthreads (Web Workers) simultaneously — and
+// with mbgl's other threads (the 4-thread background pool, the file-source /
+// sequenced / database threads, the main thread) that overruns the fixed
+// PTHREAD_POOL_SIZE. The symptom is "Tried to spawn a new thread, but the thread
+// pool is exhausted" + "Blocking on the main thread is very dangerous", and it
+// bites hard when switching to a heavy style (e.g. OpenFreeMap Liberty) that fires
+// many tile/glyph/sprite requests at once. So instead we run a **fixed pool of
+// long-lived fetch worker threads** pulling from a queue: fetch concurrency is
+// bounded to kFetchThreads regardless of mbgl's request burst (excess requests
+// queue and run as workers free up), and no Worker is spawned per request.
 
 #include <mbgl/storage/http_file_source.hpp>
 #include <mbgl/storage/resource.hpp>
@@ -23,10 +36,14 @@
 #include <emscripten/fetch.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace mbgl {
 
@@ -42,6 +59,11 @@ public:
 
 namespace {
 
+// Concurrent fetch workers. Bounded so we never exhaust the Emscripten pthread pool
+// (see the file header). 8 keeps tile loading parallel-enough while leaving plenty
+// of headroom in PTHREAD_POOL_SIZE for mbgl's other threads.
+constexpr std::size_t kFetchThreads = 8;
+
 Response::Error::Reason reasonForStatus(uint16_t status) {
     if (status == 404) return Response::Error::Reason::NotFound;
     if (status == 429) return Response::Error::Reason::RateLimit;
@@ -50,8 +72,9 @@ Response::Error::Reason reasonForStatus(uint16_t status) {
     return Response::Error::Reason::Other;
 }
 
-// Shared between the request handle (held by mbgl) and the fetch thread. Destroying
-// the handle flips `cancelled`, so the delivered Response is dropped.
+// Shared between the request handle (held by mbgl) and the fetch worker. Destroying
+// the handle flips `cancelled`, so a queued request is skipped and a delivered
+// Response is dropped.
 struct RequestState {
     std::atomic<bool> cancelled{false};
     FileSource::Callback callback;
@@ -86,6 +109,81 @@ Response buildResponse(emscripten_fetch_t* fetch) {
     return response;
 }
 
+// A bounded pool of long-lived worker threads, each running synchronous fetches off
+// a shared queue. Created once, on first use, and never torn down (process lifetime).
+class FetchPool {
+public:
+    FetchPool() {
+        workers.reserve(kFetchThreads);
+        for (std::size_t i = 0; i < kFetchThreads; ++i) {
+            workers.emplace_back([this] { workerLoop(); });
+        }
+    }
+
+    void enqueue(std::shared_ptr<RequestState> state, std::string url) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            queue.push_back(Job{std::move(state), std::move(url)});
+        }
+        cv.notify_one();
+    }
+
+    static FetchPool& get() {
+        static FetchPool pool;
+        return pool;
+    }
+
+private:
+    struct Job {
+        std::shared_ptr<RequestState> state;
+        std::string url;
+    };
+
+    void workerLoop() {
+        for (;;) {
+            Job job;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv.wait(lock, [this] { return !queue.empty(); });
+                job = std::move(queue.front());
+                queue.pop_front();
+            }
+            // Skip work for an already-cancelled request (the handle was destroyed
+            // while this job waited in the queue).
+            if (job.state->cancelled.load(std::memory_order_acquire)) {
+                continue;
+            }
+
+            emscripten_fetch_attr_t attr;
+            emscripten_fetch_attr_init(&attr);
+            std::strcpy(attr.requestMethod, "GET");
+            attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+
+            emscripten_fetch_t* fetch = emscripten_fetch(&attr, job.url.c_str());
+            Response response = buildResponse(fetch);
+            if (fetch != nullptr) {
+                emscripten_fetch_close(fetch);
+            }
+
+            if (job.state->cancelled.load(std::memory_order_acquire)) {
+                continue; // cancelled while in flight — don't touch the (maybe-gone) loop
+            }
+            // Deliver on the originating RunLoop thread (async, not re-entrant).
+            auto state = job.state;
+            state->loop->invoke([state, response]() {
+                if (!state->cancelled.load(std::memory_order_acquire) && state->callback) {
+                    state->callback(response);
+                }
+            });
+        }
+    }
+
+    std::vector<std::thread> workers;
+    std::deque<Job> queue;
+    std::mutex mutex;
+    std::condition_variable cv;
+};
+
 } // namespace
 
 HTTPFileSource::HTTPFileSource(const ResourceOptions& resourceOptions, const ClientOptions& clientOptions)
@@ -98,29 +196,7 @@ std::unique_ptr<AsyncRequest> HTTPFileSource::request(const Resource& resource, 
     state->callback = std::move(callback);
     state->loop = util::RunLoop::Get();
 
-    const std::string url = resource.url;
-    std::thread([state, url]() {
-        emscripten_fetch_attr_t attr;
-        emscripten_fetch_attr_init(&attr);
-        std::strcpy(attr.requestMethod, "GET");
-        attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
-
-        emscripten_fetch_t* fetch = emscripten_fetch(&attr, url.c_str());
-        Response response = buildResponse(fetch);
-        if (fetch != nullptr) {
-            emscripten_fetch_close(fetch);
-        }
-
-        if (state->cancelled.load(std::memory_order_acquire)) {
-            return; // request cancelled while in flight — don't touch the (maybe-gone) loop
-        }
-        // Deliver on the originating RunLoop thread (async, not re-entrant).
-        state->loop->invoke([state, response]() {
-            if (!state->cancelled.load(std::memory_order_acquire) && state->callback) {
-                state->callback(response);
-            }
-        });
-    }).detach();
+    FetchPool::get().enqueue(state, resource.url);
 
     return std::make_unique<HTTPRequest>(state);
 }
