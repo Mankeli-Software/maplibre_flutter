@@ -22,14 +22,16 @@
 //    after a full ring cycle of presents — never under an in-flight raster import.
 #include "maplibre_flutter_core_gl.h"
 
-#if defined(_WIN32)
-// Windows present is CPU pixel-buffer only for now (CLAUDE.md §8): GPU zero-copy on
-// Windows would use a D3D11 shared texture and is a later step. The dmabuf presenter
-// below is Linux-kernel-specific (EGL_MESA_image_dma_buf_export, <unistd.h>), so on
-// Windows we compile no-op presenter stubs instead. mbl_gl_presenter_create()
-// returning NULL keeps the shared non-Apple shim on the CPU mbl_map_copy_frame path;
-// the other entry points exist only so the shim links — they are never reached at
-// runtime (the shim guards every presenter call on a non-null presenter).
+#if defined(_WIN32) || defined(__ANDROID__)
+// Windows + Android present is CPU pixel-buffer only for now (CLAUDE.md §8): GPU
+// zero-copy on Windows would use a D3D11 shared texture, and on Android the present is
+// an EGL window surface fed by the SurfaceProducer (a separate path, see the Android
+// arm), not this dmabuf exporter. The dmabuf presenter below is Linux-kernel-specific
+// (EGL_MESA_image_dma_buf_export, <unistd.h>), so on Windows/Android we compile no-op
+// presenter stubs instead. mbl_gl_presenter_create() returning NULL keeps the shared
+// non-Apple shim on the CPU mbl_map_copy_frame path; the other entry points exist only
+// so the shim links — they are never reached at runtime (the shim guards every
+// presenter call on a non-null presenter).
 extern "C" {
 MblGlPresenter *mbl_gl_presenter_create(void) { return nullptr; }
 int mbl_gl_presenter_resize(MblGlPresenter *, uint32_t, uint32_t) { return 0; }
