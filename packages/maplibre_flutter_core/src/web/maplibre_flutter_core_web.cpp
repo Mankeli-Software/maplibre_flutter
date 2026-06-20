@@ -393,6 +393,14 @@ private:
         glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        // Flush so the blit is actually submitted before this rAF callback returns.
+        // Without it, ANGLE/D3D11 (Edge on Windows, real GPU) could leave the blit
+        // unsubmitted and the browser composited a stale canvas — the map appeared
+        // "stuck" (rendering kept happening but wasn't shown, and interactions were
+        // registered but not drawn) until a resize forced a flush. Same root cause as
+        // the Liberty-switch "blank". glFlush is non-blocking (unlike glFinish), so
+        // it's cheap per frame.
+        glFlush();
         // Re-bind mbgl's color FBO (read+draw) so its State<> cache stays truthful —
         // see the cache note above. This is the line that fixes the resize flip.
         glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
@@ -532,18 +540,27 @@ void WebFrameObserver::onDidFinishRenderingFrame(const mbgl::MapObserver::Render
 }
 
 void globalTick() {
-    if (g_loop != nullptr) {
-        g_loop->runOnce();
-    }
-    // Copy raw pointers first: a tick (renderStill callback / observer) could
-    // destroy a map.
-    std::vector<WebMap*> snapshot;
-    snapshot.reserve(maps().size());
-    for (const auto& m : maps()) {
-        snapshot.push_back(m.get());
-    }
-    for (auto* m : snapshot) {
-        m->tick();
+    // Guard the whole frame: an uncaught exception here would propagate out of the
+    // emscripten main-loop callback and could stop rAF from being re-scheduled —
+    // silently killing all rendering. Log and continue instead.
+    try {
+        if (g_loop != nullptr) {
+            g_loop->runOnce();
+        }
+        // Copy raw pointers first: a tick (renderStill callback / observer) could
+        // destroy a map.
+        std::vector<WebMap*> snapshot;
+        snapshot.reserve(maps().size());
+        for (const auto& m : maps()) {
+            snapshot.push_back(m.get());
+        }
+        for (auto* m : snapshot) {
+            m->tick();
+        }
+    } catch (const std::exception& e) {
+        EM_ASM({ console.error("maplibre_flutter_core tick error: " + UTF8ToString($0)); }, e.what());
+    } catch (...) {
+        EM_ASM({ console.error("maplibre_flutter_core tick error (unknown)"); });
     }
 }
 
