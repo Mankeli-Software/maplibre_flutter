@@ -1355,10 +1355,22 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     "already connected to another API" (EGL_BAD_ALLOC); (2) the window config must be `EGL_WINDOW_BIT`+RGBA8
     and validated against mbgl's pbuffer-config context via a probe `eglMakeCurrent` (else EGL_BAD_MATCH).
     **Decision: keep zero-copy as opt-in (`--dart-define=MAPLIBRE_ZEROCOPY=true`, default false on Android);
-    the CPU present is the default so the app is never white.** The compositing wall is almost certainly an
-    emulator/Impeller-`SurfaceProducer` limitation — on real hardware the producer-EGL-surface path is the
-    standard one — so this needs a **physical device** to confirm (and the CPU path is likely already smooth
-    there, since the readback is fast on a real GPU). If it still fails on device, the alternative is an
-    `AHardwareBuffer`/`ImageReader` present or signaling `SurfaceProducer.scheduleFrame()` per frame.
+    the CPU present is the default so the app is never white.**
+  - **The white is a CONFIRMED emulator limitation, not a code bug — do not keep trying to fix it on an
+    emulator.** A web-research pass (flutter/engine source + issues) + exhaustive testing established it: on
+    API 29+ `createSurfaceProducer()` returns an **`ImageReaderSurfaceProducer`** (a `HardwareBuffer` /
+    `ImageFormat.PRIVATE` consumer), and frame acquisition is automatic via `OnImageAvailableListener` (so
+    **`scheduleFrame()` is NOT the trigger** — tried it, still white). The Android emulator's GL drivers can't
+    import a **GL-rendered HardwareBuffer produced by a *foreign* EGL context** as a sampled texture (a
+    CPU-written buffer is always importable — hence CPU composites, GPU/EGL doesn't); this is a well-documented
+    emulator bug (flutter/flutter #149328 blank-on-emulator, #143720 fence-never-signalled, #171992
+    near-white). **Everything was tried and ALL render white on the emulator:** the default ImageReader path,
+    `producer.scheduleFrame()` (periodic), forcing the legacy SurfaceTexture path
+    (`FlutterRenderer.debugForceSurfaceProducerGlTextures = true`), AND both emulator GPU modes
+    (`-gpu swiftshader_indirect` AND `-gpu host`). The producer-EGL-surface present is the *standard* path on
+    real hardware, so zero-copy needs a **physical device** to validate — there's no emulator workaround.
+    (Don't force the SurfaceTexture path in shipping code: it breaks under Impeller-Vulkan; the default
+    ImageReader producer is correct for real devices.) For the emulator, the CPU present is the only option;
+    its stutter is largely the emulator's slow GL readback (use a hardware-GPU emulator to reduce it).
 
 _Append new decisions here with date and rationale._
