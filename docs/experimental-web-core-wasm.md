@@ -173,16 +173,18 @@ canvas. User-confirmed on real hardware: **no blink at all.**
 > "blank" frames too), and `Page.startScreencast` throttles/coalesces away the transient. The
 > compositor screencast showed no white frames; the real test was a human resizing a real window.
 
-**Known remaining nit (not white):** for ~1 frame after a resize, the previous frame is CSS-scaled to
-the new size (a brief "skew"/stretch) before the correct-size frame renders. It's minor (browsers do
-the same for `<canvas>`/`<video>`) and deferred as polish. **What does NOT fix it** (tried, reverted):
-rendering the new-size frame synchronously in the resize turn (pump the RunLoop right after
-`setSize`). That collapses the detect→render gap, but the real lag is *Flutter resizing the canvas's
-CSS box → our `syncSize` polling noticing it one frame later* — so a synchronous render after
-detection is still a frame late, and the extra per-frame render made it slightly worse. **The proper
-fix** is a JS **`ResizeObserver`** on the canvas (as maplibre-gl-js uses): its callback fires after
-layout, before paint, so resizing the backing store + rendering there lands the correct-size frame in
-the same paint (zero lag). That's the path for a future session.
+**Resize "skew"/stretch — FIXED via `ResizeObserver` (2026-06-20).** After the blink fix there was a
+~1-frame artifact: the previous frame was CSS-scaled to the new size before the correct-size frame
+rendered. Root cause: the engine's per-tick `syncSize` *poll* notices Flutter's canvas CSS-box change
+one frame late. **What did NOT fix it** (tried, reverted): rendering the new-size frame synchronously
+in the resize turn — it collapses the detect→render gap, but detection itself is the frame-late part,
+and the extra per-frame render made it slightly worse. **The fix** (as maplibre-gl-js does): a JS
+**`ResizeObserver`** on the canvas, wired in `core_web_controller.dart`. Its callback fires *after
+layout, before paint*, and calls a new `resizeSync` embind method (`resize()` + one `runOnce()` →
+render+present in that same callback), so the correct-size frame is composited in the same paint —
+zero lag. The first `resizeSync` also flips the engine's `autoSize_` off so the laggy `syncSize` poll
+stops (no double-driving). User-confirmed on real hardware: resize is now smooth. (Edge case left:
+a pure devicePixelRatio change with no CSS-box resize won't trigger the observer; rare, acceptable.)
 
 ## Zero-copy on web — already effectively in place; no work needed
 

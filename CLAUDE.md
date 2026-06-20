@@ -1305,13 +1305,19 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
       turn — the compositor never sees a cleared canvas. **User-confirmed on real hardware: no blink.**
       Verify note: headless can't measure this — `drawImage` WebGL readback returns spurious transparent
       frames under SwiftShader (a *static* map showed false blanks), and `Page.startScreencast`
-      coalesces the transient; the compositor screencast showed no white. **Known nit (deferred):** a
-      ~1-frame stretch of the previous frame before the new-size frame renders (backing store lags CSS
-      by a frame). A synchronous render in the resize turn was **tried and reverted** — it doesn't fix
-      it (the lag is Flutter's CSS-box resize → our per-tick `syncSize` noticing it a frame later, not
-      detect→render) and the extra per-frame render made it slightly worse. The proper fix is a JS
-      `ResizeObserver` on the canvas (fires after layout, before paint — resize+render there for zero
-      lag, as gl-js does); deferred to a future session.
+      coalesces the transient; the compositor screencast showed no white. **Resize "skew"/stretch FIXED via
+      `ResizeObserver`.** After the blink fix, a ~1-frame stretch remained (prev frame CSS-scaled to
+      the new size before the new-size frame renders) because the engine's per-tick `syncSize` *poll*
+      notices Flutter's CSS-box change a frame late. A synchronous render in the resize turn was
+      **tried and reverted** (detection is the frame-late part, not detect→render; extra render made it
+      worse). Fix (as gl-js does): a JS `ResizeObserver` on the canvas (in `core_web_controller.dart`)
+      whose callback — fired after layout, before paint — calls a new `resizeSync` embind method
+      (`resize()` + one `runOnce()` → render+present in the same callback), so the correct-size frame
+      composits in the same paint (zero lag). First `resizeSync` flips the engine's `autoSize_` off so
+      the laggy poll stops (no double-driving). **User-confirmed: resize is now smooth.** This change
+      touches Dart too (interop `resizeSync` + the observer wiring + dispose `disconnect()`), so it
+      needs a `flutter build web` (not just the wasm rebuild). Edge case left: a pure DPR change with
+      no CSS resize won't trigger the observer (rare).
     - **Verified end-to-end on real hardware** (user, in-browser): continuous render is smooth,
       resize no longer blinks, Demotiles⇄Liberty switches cleanly, fly-to arcs out and back.
 

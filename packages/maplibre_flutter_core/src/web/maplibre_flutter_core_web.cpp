@@ -245,6 +245,24 @@ public:
         dirty_ = true;
     }
 
+    // Like resize(), but renders the new-size frame synchronously in this call. Called
+    // from the Dart canvas ResizeObserver, which fires after layout and before paint,
+    // so the correctly-sized frame is composited in the SAME paint — no 1-frame stretch
+    // (the per-tick syncSize polling notices a CSS-box change a frame late, which is
+    // what caused the stretch). The first call also hands sizing authority to the
+    // observer: it disables syncSize's polling so the two don't both drive sizing.
+    void resizeSync(double width, double height, double pixelRatio) {
+        autoSize_ = false;
+        resize(width, height, pixelRatio);
+        // map_->setSize() synchronously invalidates the frontend (Map::onUpdate →
+        // frontend.update → asyncInvalidate), so one runOnce() renders the new size now
+        // → the observer presents it. Not re-entrant: the ResizeObserver callback runs
+        // outside the rAF tick (after layout), not nested in globalTick.
+        if (continuous_ && g_loop != nullptr) {
+            g_loop->runOnce();
+        }
+    }
+
     void moveBy(double dx, double dy) {
         map_->moveBy(mbgl::ScreenCoordinate{dx, dy});
         dirty_ = true;
@@ -383,6 +401,12 @@ private:
     // Auto-size the render surface to the canvas's CSS size (× DPR) so the map is
     // crisp and correctly proportioned, following layout/resize without a Dart hop.
     void syncSize() {
+        // Once the Dart ResizeObserver has driven a resize (resizeSync), it owns sizing
+        // — it's timely (fires before paint) whereas this per-tick poll is a frame late
+        // (the stretch). Until then this is the fallback (initial size / no observer).
+        if (!autoSize_) {
+            return;
+        }
         double cssW = 0;
         double cssH = 0;
         if (emscripten_get_element_css_size(target_.c_str(), &cssW, &cssH) != EMSCRIPTEN_RESULT_SUCCESS) {
@@ -472,6 +496,9 @@ private:
     // to avoid the resize white blink — see resize()). 0 = not yet applied.
     uint32_t canvasW_ = 0;
     uint32_t canvasH_ = 0;
+    // True until the Dart ResizeObserver drives a resize; then syncSize stops polling
+    // (the observer is the timely, before-paint sizer). See resizeSync()/syncSize().
+    bool autoSize_ = true;
     bool continuous_ = true;
     // Continuous-mode frame observer; the Map holds a reference to it, so it is
     // declared before (destroyed after) map_. nullptr in Static mode.
@@ -544,6 +571,7 @@ EMSCRIPTEN_BINDINGS(maplibre_flutter_core) {
         .function("setCamera", &WebMap::setCamera)
         .function("getCamera", &WebMap::getCamera)
         .function("resize", &WebMap::resize)
+        .function("resizeSync", &WebMap::resizeSync)
         .function("moveBy", &WebMap::moveBy)
         .function("scaleBy", &WebMap::scaleBy)
         .function("animateTo", &WebMap::animateTo)
