@@ -17,6 +17,11 @@ dependencies:
   # jnigen control layer (CLAUDE.md §5a): Dart drives the native MapLibre map
   # over JNI, not method channels.
   jni: ^1.0.0
+  # Experimental core-on-Android path (CLAUDE.md §3): an UNCONDITIONAL dep so the
+  # core controller imports it; --dart-define=MAPLIBRE_EXPERIMENTAL_CORE only
+  # selects it at runtime. Like the iOS POC, the build hook can't see the
+  # dart-define, so the core .so bundles even in SDK-only builds (known POC cost).
+  maplibre_flutter_core: ^0.0.2
 
 dev_dependencies:
   flutter_lints: ^6.0.0

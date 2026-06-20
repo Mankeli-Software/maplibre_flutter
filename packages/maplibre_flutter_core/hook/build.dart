@@ -127,6 +127,11 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core_gl.cpp'),
       src.resolve('maplibre_flutter_core_vk.h'),
       src.resolve('maplibre_flutter_core_vk.cpp'),
+      src.resolve('maplibre_flutter_core_android.h'),
+      src.resolve('maplibre_flutter_core_android_http.cpp'),
+      src.resolve('maplibre_flutter_core_android_image_stubs.cpp'),
+      src.resolve('maplibre_flutter_core_android_present.h'),
+      src.resolve('maplibre_flutter_core_android_present.cpp'),
       src.resolve('CMakeLists.txt'),
     ]);
   });

@@ -19,7 +19,10 @@ android {
         applicationId = "com.example.maplibre_flutter"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // 26 (not flutter.minSdkVersion): the experimental mbgl-core .so references
+        // pthread_getname_np (bionic API 26). The maplibre_flutter_android impl
+        // declares the same floor. Harmless for the default SDK path.
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

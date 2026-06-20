@@ -60,6 +60,14 @@ is scaffolded vs. still TODO:
     has working zoom / fly-to / style-toggle buttons. `flutter build apk --debug` green;
     `libmaplibre.so` + `libdartjni.so` bundled. Milestone A render confirmed on device; B button
     behaviour pending a device run.
+    **Experimental core-on-Android POC** (`--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true`, default off):
+    the same package can alternatively render `mbgl-core` (GL ES3 + EGL) into a Flutter `Texture` like
+    the desktop tier, A/B-able against the SDK — the sanctioned §3 escape hatch. **Verified on the arm64
+    emulator** (Pixel 9 Pro, API 35): real demotiles + Liberty maps render, pan/zoom/style-swap work,
+    tiles stream over a custom OkHttp-over-JNI HTTP bridge; the SDK path still works with the core `.so`
+    co-bundled. NDK build reuses the Linux GL arm (libuv+libpng via FetchContent, JPEG/WebP stubbed,
+    minSdk 26, Android SDK cmake 3.31.4); present is a CPU `ANativeWindow` blit into a `SurfaceProducer`.
+    On `feat/android-core-poc`. See the 2026-06-20 Android decision-log entry.
   - **iOS — milestones A + B done.** Hybrid plugin packaged for **both SPM and CocoaPods**
     (§9): native module under `ios/maplibre_flutter_ios/` (`Package.swift` + `Sources/…`, plus
     `maplibre_flutter_ios.podspec`), MapLibre Apple SDK 6.27.0. `MaplibreFlutterIosPlugin`
@@ -1262,5 +1270,95 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     correct element sizes); Linux/Windows are the same mechanical change (iOS device + macOS verified)
     but their run-check needs that hardware. The four core controllers now duplicate this logic — a
     later DRY pass could hoist it into a shared base/mixin.
+
+- **2026-06-20 — Experimental core-on-Android POC (the §3 escape hatch), on `feat/android-core-poc`.**
+  Renders Android via the desktop `mbgl-core` tier (OpenGL ES3 + EGL → a Flutter `Texture`) instead of
+  the MapLibre Android SDK (`MapView`/`AndroidView`), gated behind
+  `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true` (default off; the SDK + `AndroidView` stays the default).
+  Mirrors the iOS core POC, including the same opt-in/A-B posture the 2026-06-19 "rejected unification"
+  decision sanctioned. **Verified on the arm64 Android emulator (Pixel 9 Pro, API 35, Impeller GLES):**
+  real demotiles **and** OpenFreeMap Liberty maps render, pan (gesture) + zoom + declarative style-swap
+  all work, tiles/glyphs stream over the OkHttp bridge, no crash. The SDK path (flag off) still renders
+  with the core `.so` co-bundled — no duplicate-symbol/`UnsatisfiedLink` crash (separate `.so`s, hidden
+  visibility; the iOS ObjC-runtime duplicate-class hazard doesn't recur on Android C++).
+  - **The Dart/widget/interface needed ZERO change** (same as iOS-core): the new Android core controller
+    (`maplibre_flutter_android_core_controller.dart`) is a near-verbatim port of the iOS-core controller —
+    `implements MapLibreMapPlatformController, MapLibreGestureHandler`, returns a `TextureHandle`, drives
+    `maplibre_flutter_core` over the **existing** ffigen-bound C ABI — so it reuses the whole shared
+    desktop Dart tier (gestures, the `flyCameraAt` arc, the camera namespace) with no interface/widget
+    edits. A `bool.fromEnvironment` branch in `maplibre_flutter_android.dart` selects it. **No
+    ffigen/jnigen regen:** the Dart layer uses the already-bound core API, and the new Android present/HTTP
+    C entries are plugin-native-only (never called from Dart). `maplibre_flutter_core: ^0.0.2` is an
+    UNCONDITIONAL dep (the `.so` bundles even on SDK-only builds — the known POC cost; the hook can't read
+    the dart-define).
+  - **Native build chain (`maplibre_flutter_core`): a new `elseif(ANDROID)` arm in `src/CMakeLists.txt`**,
+    a near-copy of the Linux GL/EGL arm (same default-platform sources + `gl/headless_backend` + the reused
+    `platform/linux/headless_backend_egl.cpp`, which mbgl's own `android.cmake` also reuses). Deltas: the
+    NDK ships none of curl/libuv/png/jpeg/webp, so **libuv + libpng are vendored via `FetchContent`** (zlib
+    from the NDK), **JPEG+WebP are stubbed** (`maplibre_flutter_core_android_image_stubs.cpp` — raster-only
+    formats a vector POC never fetches; libjpeg-turbo also refuses `add_subdirectory`), builtin ICU
+    (target-scoped form), and `EGL`/`GLESv3` are NDK system libs. The `_gl.cpp` dmabuf presenter is
+    no-op-stubbed on Android (`#if defined(_WIN32) || defined(__ANDROID__)`) so the shim links on the CPU
+    path. Gotchas: **minSdk bumped to 26** (mbgl's default `thread.cpp` calls `pthread_getname_np`, bionic
+    API 26); **mbgl's root CMake requires CMake ≥3.25** so the Android SDK's bundled 3.22.1 fails — install
+    `cmake;3.31.4` via `sdkmanager` (native_toolchain_cmake then prefers it); the `FetchContent` static
+    targets (`uv_a`/`png_static`) must be linked on the **shim**, not `mbgl-core` (mbgl `export()`s
+    mbgl-core and demands every privately-linked target be in an export set — `png_static` is not). The
+    build hook needs NO Android code (native_toolchain_cmake auto-injects the NDK toolchain).
+  - **HTTP = a custom `mbgl::HTTPFileSource` bridged to Kotlin OkHttp over JNI** (`*_android_http.cpp`),
+    replacing the curl source: the NDK has no curl/TLS and curl+CA-store+async-DNS is the trap Windows hit,
+    whereas OkHttp gives the system trust store + TLS for free (how the real Android SDK does HTTP) — but
+    decoupled from mbgl's heavy JNI framework. The core stays C-only: a tiny C API
+    (`mbl_android_http_set_handler`/`mbl_android_http_respond`, in `maplibre_flutter_core_android.h`, NOT
+    ffigen-bound) that the plugin's JNI layer `dlsym`s from the core `.so` and wires to OkHttp. The
+    handler is registered (via an `ensureHttpBridge` channel call) BEFORE `mbl_map_create`, because the
+    style's first requests fire immediately on the render thread. **THE bug that ate the session: the
+    response-delivery `loop->invoke` lambda held the request-registry mutex while calling mbgl's callback,
+    and that callback synchronously DELETES the `AsyncRequest` (the curl ref even warns "calling callback
+    may delete this"), whose destructor re-locks the same non-recursive mutex → the file-source thread
+    deadlocked mid-callback.** Symptom was maximally confusing: OkHttp got the style (200, 77 KB), my
+    `deliver alive=1` log fired, but mbgl never applied the style and requested zero tiles → blank map.
+    Fix: release the registry lock BEFORE `deliver`. After that, all 8 style/tilejson/tile/glyph requests
+    fired and the map rendered. **General rule: never hold a lock across an mbgl `FileSource::Callback` —
+    it can re-enter and destroy the request.**
+  - **Present = a pure-NDK `ANativeWindow` CPU blit** (`maplibre_flutter_android_jni.cpp`): the core
+    renders off-screen; its frame callback (registered via the FFI `setFrameCallback` address passed over
+    the registrar channel, like iOS) copies the latest RGBA frame and `ANativeWindow_lock` →
+    row-copy-honoring-stride → `unlockAndPost`s it into a Flutter **`SurfaceProducer`** Surface. Chose
+    `SurfaceProducer` (`TextureRegistry.createSurfaceProducer()`), NOT the legacy `SurfaceTexture` (broken
+    under Impeller). NO EGL window surface and NO new core C ABI for present — the existing `copyFrame` +
+    `setFrameCallback` suffice; the function addresses are reinterpret_cast from `jlong` (no dlsym, mirrors
+    iOS). The producer Surface is volatile (Impeller backs it with a fixed-size `ImageReader`), so the
+    plugin re-registers from `onSurfaceAvailable`/`onSurfaceCleanup` and on resize (the Dart `resize` sends
+    a `resizeTexture` channel call with the device-pixel size → `producer.setSize` + rebind). The plugin
+    JNI `.cpp` is built by a gradle `externalNativeBuild` CMake block (separate from the core hook) into
+    `libmaplibre_flutter_android_jni.so`; both `.so`s bundle into the APK's jniLibs via native-assets.
+    pixelRatio is correct (create at the real DPR, logical-point sizing) — labels are crisp, no seams.
+  - **NET POC RESULT: SUCCESS.** core-on-Android renders a real, interactive MapLibre map on the emulator
+    over the desktop `mbgl-core` tier (GL ES → Flutter `Texture`), gated behind the dart-define with the
+    SDK still default. Remaining before more than a POC: a separate opt-in package (the duplicate-mbgl /
+    always-bundled-`.so` + binary-size fix, same as iOS), JPEG/WebP for raster styles, the native
+    gesture-feel A/B vs the SDK, and a **physical-device** run (only the emulator is verified so far).
+  - **Zero-copy present attempted; works on the core side but the emulator's SurfaceProducer won't
+    composite it — opt-in, default off.** The CPU `ANativeWindow` blit present (`glReadPixels` every frame)
+    stutters, badly on the emulator (its software-translated GL makes the readback very slow). Built the
+    proper fix — an EGL window surface from the SurfaceProducer's `ANativeWindow`, blitting mbgl's FBO +
+    `eglSwapBuffers` (GPU→GPU, no readback): new `maplibre_flutter_core_android_present.{h,cpp}` + core C
+    entries `mbl_map_set_android_window`/`clear`/`android_zero_copy_active` (synchronous, render-thread;
+    the plugin `dlsym`s them and gates the CPU frame callback on the flag so only one producer writes the
+    window). **Instrumentation proved the core side is correct:** mbgl's user FBO holds the rendered frame
+    (sampled a real ocean pixel `216,242,255`), the blit is `glError`-free, and `eglSwapBuffers` succeeds —
+    yet **Flutter shows white.** So Flutter's Impeller `SurfaceProducer` does not composite buffers produced
+    by a *foreign* EGL window surface on the emulator (the CPU `ANativeWindow_lock/post` path composites
+    fine; the producer-side EGL path does not). Two gotchas found en route: (1) try zero-copy BEFORE any CPU
+    present — `ANativeWindow_lock` CPU-connects the window and `eglCreateWindowSurface` then fails
+    "already connected to another API" (EGL_BAD_ALLOC); (2) the window config must be `EGL_WINDOW_BIT`+RGBA8
+    and validated against mbgl's pbuffer-config context via a probe `eglMakeCurrent` (else EGL_BAD_MATCH).
+    **Decision: keep zero-copy as opt-in (`--dart-define=MAPLIBRE_ZEROCOPY=true`, default false on Android);
+    the CPU present is the default so the app is never white.** The compositing wall is almost certainly an
+    emulator/Impeller-`SurfaceProducer` limitation — on real hardware the producer-EGL-surface path is the
+    standard one — so this needs a **physical device** to confirm (and the CPU path is likely already smooth
+    there, since the readback is fast on a real GPU). If it still fails on device, the alternative is an
+    `AHardwareBuffer`/`ImageReader` present or signaling `SurfaceProducer.scheduleFrame()` per frame.
 
 _Append new decisions here with date and rationale._

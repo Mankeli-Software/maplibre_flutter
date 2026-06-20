@@ -52,6 +52,13 @@
 #include <mbgl/gfx/renderer_backend.hpp>
 #if defined(_WIN32)
 #include "maplibre_flutter_core_vk.h"
+#elif defined(__ANDROID__)
+// Android: the dmabuf GL presenter compiles as no-op stubs (so the shim links on the
+// CPU path), and the real zero-copy present is an EGL window surface fed by the
+// SurfaceProducer (maplibre_flutter_core_android_present.{h,cpp}).
+#include "maplibre_flutter_core_android.h"
+#include "maplibre_flutter_core_android_present.h"
+#include "maplibre_flutter_core_gl.h"
 #else
 #include "maplibre_flutter_core_gl.h"
 #endif
@@ -139,6 +146,15 @@ struct MblMap {
   MblGlDmabufFrame currentGlFrame{-1, 0, 0, 0, 0, 0, 0, 0, 0};
   bool glActive = false;
   bool glTearingDown = false;
+#endif
+
+#if defined(__ANDROID__)
+  // Zero-copy present into a Flutter SurfaceProducer's EGL window surface (render
+  // thread only). `androidZeroCopy` flips true once the presenter is created; the
+  // plugin's CPU frame callback no-ops while it is true (the core swaps directly).
+  MblAndroidPresenter *androidPresenter = nullptr;
+  void *androidWindow = nullptr;
+  bool androidZeroCopy = false;
 #endif
 
   // Current render-target size in device pixels (render thread only), used to size
@@ -523,11 +539,52 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
 // Render thread (Continuous). Publishes the frame already drawn into mbgl's
 // texture (present + swap have completed by the time the frame observer fires,
 // so the texture is final). Zero-copy blit when enabled, else a CPU readback.
+#if defined(__ANDROID__)
+// Render thread. Blits the already-rendered FBO into the SurfaceProducer's EGL window
+// surface and swaps (zero-copy, no GPU->CPU readback — the fix for the stuttery CPU
+// present). Bumps frameCount so awaitFrame()/onReady still fire even though no CPU
+// image is published. Returns false on failure (→ CPU readback fallback).
+bool presentAndroid(MblMap *m) {
+  if (m->androidPresenter == nullptr) {
+    return false;
+  }
+  {
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    // Bind mbgl's color renderable so GL_DRAW_FRAMEBUFFER_BINDING is mbgl's color FBO
+    // (the presenter blits from the bound draw framebuffer).
+    m->frontend->getBackend()
+        ->getDefaultRenderable()
+        .getResource<mbgl::gfx::RenderableResource>()
+        .bind();
+    if (mbl_android_presenter_present(m->androidPresenter) == 0) {
+      return false;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(m->frameMutex);
+    ++m->frameCount;
+  }
+  announceFrame(m);
+  return true;
+}
+#endif
+
 void publishCurrentFrame(MblMap *m) {
   if (m->map == nullptr || m->frontend == nullptr) {
     return;
   }
   try {
+#if defined(__ANDROID__)
+    if (m->androidZeroCopy && m->androidPresenter != nullptr) {
+      if (presentAndroid(m)) {
+        return;
+      }
+      fprintf(stderr, "maplibre_flutter_core: Android zero-copy present failed; "
+                      "falling back to CPU readback.\n");
+      // The plugin's CPU frame callback checks the flag and resumes presenting.
+      m->androidZeroCopy = false;
+    }
+#endif
 #if defined(__APPLE__)
     if (m->zeroCopy && m->blitter != nullptr) {
       auto *backend =
@@ -645,6 +702,14 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
     mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
     mbl_gl_presenter_destroy(m->glPresenter);
     m->glPresenter = nullptr;
+  }
+#endif
+#if defined(__ANDROID__)
+  if (m->androidPresenter != nullptr) {
+    m->androidZeroCopy = false;
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    mbl_android_presenter_destroy(m->androidPresenter);
+    m->androidPresenter = nullptr;
   }
 #endif
   m->map = nullptr;
@@ -1012,3 +1077,73 @@ void mbl_map_destroy(MblMap *m) {
   }
   delete m;
 }
+
+#if defined(__ANDROID__)
+// Zero-copy present (EGL window surface). These run a command on the render thread
+// (where mbgl's EGL context lives) and block until it completes, so the plugin can
+// safely sequence ANativeWindow ownership around them.
+int mbl_map_set_android_window(MblMap *m, void *native_window) {
+  // Zero-copy present is wired for the Continuous render loop only (the default);
+  // Static builds keep the CPU readback present.
+  if (m == nullptr || native_window == nullptr || !m->continuous ||
+      m->renderLoop == nullptr) {
+    return 0;
+  }
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool done = false;
+  int result = 0;
+  m->post([m, native_window, &mtx, &cv, &done, &result] {
+    MblAndroidPresenter *p = nullptr;
+    {
+      // mbgl's context current so the presenter can read the EGL display/context.
+      mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+      p = mbl_android_presenter_create(native_window);
+    }
+    m->androidWindow = native_window;
+    m->androidPresenter = p;
+    m->androidZeroCopy = (p != nullptr);
+    result = m->androidZeroCopy ? 1 : 0;
+    if (p != nullptr) {
+      presentAndroid(m); // immediate first frame (its own BackendScope)
+    }
+    {
+      std::lock_guard<std::mutex> lk(mtx);
+      done = true;
+    }
+    cv.notify_one();
+  });
+  std::unique_lock<std::mutex> lk(mtx);
+  cv.wait(lk, [&done] { return done; });
+  return result;
+}
+
+void mbl_map_clear_android_window(MblMap *m) {
+  if (m == nullptr || m->renderLoop == nullptr) {
+    return;
+  }
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool done = false;
+  m->post([m, &mtx, &cv, &done] {
+    m->androidZeroCopy = false;
+    if (m->androidPresenter != nullptr) {
+      mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+      mbl_android_presenter_destroy(m->androidPresenter);
+      m->androidPresenter = nullptr;
+    }
+    m->androidWindow = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(mtx);
+      done = true;
+    }
+    cv.notify_one();
+  });
+  std::unique_lock<std::mutex> lk(mtx);
+  cv.wait(lk, [&done] { return done; });
+}
+
+int mbl_map_android_zero_copy_active(MblMap *m) {
+  return (m != nullptr && m->androidZeroCopy) ? 1 : 0;
+}
+#endif // __ANDROID__

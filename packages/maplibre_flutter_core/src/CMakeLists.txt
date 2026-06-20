@@ -91,6 +91,16 @@ elseif(WIN32)
   set(MLN_WITH_OPENGL OFF CACHE BOOL "" FORCE)
   set(MLN_WITH_EGL OFF CACHE BOOL "" FORCE)
   set(MLN_WITH_VULKAN ON CACHE BOOL "" FORCE)
+elseif(ANDROID)
+  # OpenGL ES arm (Android NDK) — the experimental core-on-Android path (CLAUDE.md §3
+  # escape hatch). Same backend as Linux (GLES3 + EGL headless), built CORE_ONLY. The
+  # source attach below mirrors the Linux arm but FetchContent's libuv + the image libs
+  # (the NDK ships none of curl/libuv/png/jpeg/webp) and swaps curl for a custom
+  # JNI/OkHttp HTTP source (robust system TLS, no CA-bundle/DNS pitfalls).
+  set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
+  set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
+  set(MLN_WITH_OPENGL ON CACHE BOOL "" FORCE)
 else()
   # OpenGL arm (Linux). Build CORE_ONLY so mbgl's root CMake return()s early (no
   # glfw/test/benchmark/render-test apps + their deps), and hand-attach the default
@@ -213,6 +223,139 @@ if(APPLE)
     # macOS compiles std::filesystem and needs none of this.
     target_link_libraries(mbgl-core PRIVATE mbgl-vendor-filesystem)
   endif()
+
+elseif(ANDROID)
+  # ---- Attach the default platform + GL/EGL headless backend to mbgl-core for the
+  #      Android NDK (mirrors the Linux arm below: same default-platform primitives +
+  #      gl/headless_backend + the reused platform/linux EGL headless backend, which
+  #      mbgl's own android.cmake also reuses). Deltas vs Linux: the NDK ships none of
+  #      curl/libuv/png/jpeg/webp, so we FetchContent libuv + the image libs (zlib comes
+  #      from the NDK), and we use our own JNI/OkHttp HTTP source instead of curl. EGL +
+  #      GLESv3 are NDK system libs. ----
+  set(_def "${MLN_ROOT}/platform/default/src/mbgl")
+  set(_lnx "${MLN_ROOT}/platform/linux/src")
+
+  include(FetchContent)
+
+  # libuv (the default-platform run_loop/async_task/timer/thread need it; the NDK has
+  # none). Static, linked into mbgl-core.
+  set(LIBUV_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(libuv
+    GIT_REPOSITORY https://github.com/libuv/libuv.git
+    GIT_TAG v1.48.0 GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(libuv)
+
+  # zlib from the NDK sysroot (libpng + mbgl's compression.cpp need it).
+  find_package(ZLIB REQUIRED)
+
+  # libpng (sprite sheets + glyph atlases; mbl_map_write_png in the shim). Static.
+  set(PNG_SHARED OFF CACHE BOOL "" FORCE)
+  set(PNG_STATIC ON CACHE BOOL "" FORCE)
+  set(PNG_EXECUTABLES OFF CACHE BOOL "" FORCE)
+  set(PNG_TESTS OFF CACHE BOOL "" FORCE)
+  set(PNG_TOOLS OFF CACHE BOOL "" FORCE)
+  set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(libpng
+    GIT_REPOSITORY https://github.com/pnggroup/libpng.git
+    GIT_TAG v1.6.43 GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(libpng)
+
+  # NOTE: JPEG + WebP are intentionally NOT vendored. They decode *raster* tiles only,
+  # which the vector-style POC never fetches; libjpeg-turbo also refuses
+  # add_subdirectory/FetchContent. decodeJPEG/decodeWEBP are stubbed in
+  # maplibre_flutter_core_android_image_stubs.cpp (so image.cpp still links), and
+  # jpeg_reader.cpp/webp_reader.cpp are omitted from the source list below.
+
+  target_sources(mbgl-core PRIVATE
+    "${_def}/gfx/headless_backend.cpp"
+    "${_def}/gfx/headless_frontend.cpp"
+    "${_def}/i18n/collator.cpp"
+    "${_def}/i18n/number_format.cpp"
+    "${_def}/layermanager/layer_manager.cpp"
+    "${_def}/platform/time.cpp"
+    "${_def}/storage/asset_file_source.cpp"
+    "${_def}/storage/database_file_source.cpp"
+    "${_def}/storage/file_source_manager.cpp"
+    "${_def}/storage/file_source_request.cpp"
+    "${_def}/storage/local_file_request.cpp"
+    "${_def}/storage/local_file_source.cpp"
+    "${_def}/storage/mbtiles_file_source.cpp"
+    "${_def}/storage/main_resource_loader.cpp"
+    "${_def}/storage/offline.cpp"
+    "${_def}/storage/offline_database.cpp"
+    "${_def}/storage/offline_download.cpp"
+    "${_def}/storage/online_file_source.cpp"
+    "${_def}/storage/pmtiles_file_source.cpp"
+    "${_def}/storage/sqlite3.cpp"
+    "${_def}/text/bidi.cpp"
+    "${_def}/text/local_glyph_rasterizer.cpp"
+    "${_def}/util/async_task.cpp"
+    "${_def}/util/compression.cpp"
+    "${_def}/util/filesystem.cpp"
+    "${_def}/util/image.cpp"
+    "${_def}/util/logging_stderr.cpp"
+    "${_def}/util/monotonic_timer.cpp"
+    "${_def}/util/png_reader.cpp"
+    "${_def}/util/png_writer.cpp"
+    "${_def}/util/run_loop.cpp"
+    "${_def}/util/string_stdlib.cpp"
+    "${_def}/util/thread.cpp"
+    "${_def}/util/thread_local.cpp"
+    "${_def}/util/timer.cpp"
+    "${_def}/util/utf.cpp"
+    # Our HTTP source (replaces the default curl http_file_source.cpp): a custom
+    # mbgl::HTTPFileSource that bridges to the host app's OkHttp over a C callback.
+    "${CMAKE_CURRENT_SOURCE_DIR}/maplibre_flutter_core_android_http.cpp"
+    # JPEG/WebP decode stubs (raster-only formats the vector POC never fetches;
+    # jpeg_reader.cpp/webp_reader.cpp are omitted — see the note above).
+    "${CMAKE_CURRENT_SOURCE_DIR}/maplibre_flutter_core_android_image_stubs.cpp"
+    # GL headless backend (off-screen render target) + EGL context. The EGL headless
+    # backend is reused verbatim from platform/linux (mbgl's android.cmake does the same).
+    "${_def}/gl/headless_backend.cpp"
+    "${_lnx}/gl_functions.cpp"
+    "${_lnx}/headless_backend_egl.cpp"
+  )
+
+  target_include_directories(mbgl-core
+    PUBLIC
+      "${MLN_ROOT}/platform/default/include"
+    PRIVATE
+      # Belt-and-suspenders include dirs for the FetchContent deps (mbgl includes
+      # <uv.h>/<png.h>); the imported targets also carry these, but libpng's config
+      # header (pnglibconf.h) lands in the build dir.
+      "${libuv_SOURCE_DIR}/include"
+      "${libpng_SOURCE_DIR}" "${libpng_BINARY_DIR}"
+  )
+
+  include("${MLN_ROOT}/vendor/nunicode.cmake")
+  include("${MLN_ROOT}/vendor/sqlite.cmake")
+
+  # Builtin ICU (mbgl's android.cmake also uses it). Use the target-scoped form (the
+  # Linux arm's set_source_files_properties silently no-ops for an out-of-tree
+  # mbgl-core — see the Windows arm's note).
+  include("${MLN_ROOT}/vendor/icu.cmake")
+  target_compile_definitions(mbgl-core PRIVATE MBGL_USE_BUILTIN_ICU)
+  target_compile_definitions(mbgl-vendor-icu PRIVATE U_STATIC_IMPLEMENTATION)
+  target_include_directories(mbgl-core BEFORE PRIVATE "${MLN_ROOT}/vendor/icu/include")
+
+  find_library(EGL_LIB EGL)
+  find_library(GLESV3_LIB GLESv3)
+  find_library(LOG_LIB log)
+
+  # mbgl-core links only mbgl's own (already-exported) vendor targets + the imported
+  # ZLIB. The FetchContent statics (uv_a, png_static) and the NDK GL libs go on the
+  # SHIM instead (below), NOT here: mbgl-core is in mbgl's export() set, which demands
+  # every privately-linked *target* also be exported — uv_a happens to be exported by
+  # libuv, but png_static is not (SKIP_INSTALL_ALL). mbgl-core only needs their HEADERS
+  # to compile (include dirs above); the static symbols resolve when the shim — the
+  # real final consumer — links them into the .so.
+  target_link_libraries(mbgl-core PRIVATE
+    ZLIB::ZLIB
+    mbgl-vendor-icu
+    mbgl-vendor-nunicode
+    mbgl-vendor-sqlite
+  )
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # ---- Attach the default desktop platform + GL/EGL headless backend to
@@ -475,6 +618,14 @@ if(APPLE)
     # Metal stub omits, so the dylib links for the Simulator (see the file's header).
     list(APPEND _shim_sources maplibre_flutter_core_sim_stubs.mm)
   endif()
+elseif(ANDROID)
+  # maplibre_flutter_core_gl.cpp compiles as no-op presenter stubs on Android (its
+  # dmabuf path is Linux-only — see the file's guard), so the shared non-Apple shim
+  # links and stays on the CPU readback path. maplibre_flutter_core_android_present.cpp
+  # is the real zero-copy present: it blits mbgl's FBO into an EGL window surface fed
+  # by the Flutter SurfaceProducer (GPU→GPU, no readback).
+  list(APPEND _shim_sources maplibre_flutter_core_gl.cpp
+                            maplibre_flutter_core_android_present.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
   # EGLImage-backed texture ring exported as a dmabuf) — Linux/desktop-GL only.
@@ -507,6 +658,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # already found above (find_package(OpenGL REQUIRED EGL)).
   find_library(GLESV2_LIBRARY NAMES GLESv2)
   target_link_libraries(maplibre_flutter_core PRIVATE OpenGL::EGL ${GLESV2_LIBRARY})
+elseif(ANDROID)
+  # The shim (the final .so) is where the static deps mbgl-core compiled against get
+  # their symbols resolved: libuv (run loop), libpng (PNG decode/encode), zlib, and the
+  # NDK GL/EGL system libs the headless backend + gl_functions need. Keeping them here
+  # (not on mbgl-core) avoids the export-set coupling — see the mbgl-core link note.
+  target_link_libraries(maplibre_flutter_core PRIVATE
+    uv_a png_static ZLIB::ZLIB ${EGL_LIB} ${GLESV3_LIB} ${LOG_LIB})
 elseif(WIN32)
   # The shim's Vulkan->D3D11 zero-copy present (maplibre_flutter_core_vk.cpp) imports
   # mbgl's rendered Vulkan image into a ring of shared D3D11 textures and publishes DXGI
