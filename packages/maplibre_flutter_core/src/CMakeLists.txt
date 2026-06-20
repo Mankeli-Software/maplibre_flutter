@@ -47,6 +47,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(_apple_is_ios TRUE)
 endif()
 
+# The iOS Simulator's Metal stub library omits two device-only symbols mbgl's mtl.cpp
+# references (MTLIOErrorDomain/MTLTensorDomain), so the core dylib won't link for the
+# Simulator. mbgl links Metal strongly itself, so `-weak_framework Metal` can't relax it;
+# instead we compile maplibre_flutter_core_sim_stubs.mm (which defines those two symbols
+# locally) into the dylib for the Simulator only. On an Apple-Silicon Mac the Simulator
+# has a real host-GPU Metal, so the core then renders there too.
+set(_apple_is_ios_sim FALSE)
+if(_apple_is_ios AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+  set(_apple_is_ios_sim TRUE)
+endif()
+
 if(APPLE)
   # Metal arm: build CORE_ONLY (skip the bazel/SDK Darwin branch) + ObjC++ for the
   # Apple-native helpers and the zero-copy Metal present helper.
@@ -459,6 +470,11 @@ if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
   list(APPEND _shim_sources maplibre_flutter_core_metal.mm)
+  if(_apple_is_ios_sim)
+    # Defines the two device-only Metal symbols mbgl references but the Simulator's
+    # Metal stub omits, so the dylib links for the Simulator (see the file's header).
+    list(APPEND _shim_sources maplibre_flutter_core_sim_stubs.mm)
+  endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # maplibre_flutter_core_gl.cpp is the GL zero-copy present helper (GPU blit into an
   # EGLImage-backed texture ring exported as a dmabuf) — Linux/desktop-GL only.
