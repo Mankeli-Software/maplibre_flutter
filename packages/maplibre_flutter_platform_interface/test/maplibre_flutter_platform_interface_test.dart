@@ -3,7 +3,7 @@ import 'dart:ui' show Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-class _FakeController implements MapLibreMapController {
+class _FakeController implements MapLibreMapPlatformController {
   @override
   MapLibreRenderHandle get renderHandle => const TextureHandle(textureId: 1);
   @override
@@ -22,8 +22,10 @@ class _FakeController implements MapLibreMapController {
 
 class _FakePlatform extends MapLibreFlutterPlatform {
   @override
-  Future<MapLibreMapController> createMap(MapOptions options) async =>
-      _FakeController();
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) async => _FakeController();
 }
 
 /// Does not extend [MapLibreFlutterPlatform], so the token guard must reject it.
@@ -40,10 +42,8 @@ void main() {
   test('a valid implementation can register and create a map', () async {
     MapLibreFlutterPlatform.instance = _FakePlatform();
     final controller = await MapLibreFlutterPlatform.instance.createMap(
-      const MapOptions(
-        styleUri: 'https://demotiles.maplibre.org/style.json',
-        initialCamera: MapCamera(center: LatLng(0, 0)),
-      ),
+      style: 'https://demotiles.maplibre.org/style.json',
+      options: const MapOptions(initialCamera: MapCamera(center: LatLng(0, 0))),
     );
     expect(controller.renderHandle, isA<TextureHandle>());
   });

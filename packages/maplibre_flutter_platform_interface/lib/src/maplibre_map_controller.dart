@@ -3,11 +3,14 @@ import 'dart:ui' show Size;
 import 'camera.dart';
 import 'render_handle.dart';
 
-/// Handle to one live map instance.
+/// Handle to one live native map instance, created by a platform implementation.
 ///
-/// Returned by [MapLibreFlutterPlatform.createMap]. The contract is identical
-/// on every platform; only [renderHandle] reveals how the map is embedded.
-abstract class MapLibreMapController {
+/// Returned by [MapLibreFlutterPlatform.createMap]. App code does **not** use
+/// this directly — it uses the app-facing `MapLibreMapController` (in the
+/// `maplibre_flutter` package), which wraps one of these. The contract is
+/// identical on every platform; only [renderHandle] reveals how the map is
+/// embedded.
+abstract class MapLibreMapPlatformController {
   /// How the app-facing widget should embed this map (view vs texture vs DOM).
   MapLibreRenderHandle get renderHandle;
 
@@ -24,7 +27,8 @@ abstract class MapLibreMapController {
   /// Move the camera. Implementations animate when [duration] is non-null.
   Future<void> moveCamera(MapCamera camera, {Duration? duration});
 
-  /// Replace the active style (URL, asset path, or inline JSON).
+  /// Replace the active style (URL, asset path, or inline JSON). Driven by the
+  /// widget's declarative `style` property — app code changes that, not this.
   Future<void> setStyle(String styleUri);
 
   /// Reports the embedding view's logical [size] and [devicePixelRatio] so the

@@ -17,11 +17,13 @@ const String kIosMapViewType = 'maplibre_flutter/ios';
 /// `MapLibreController` in `MapRegistry` under that id, which this resolves over
 /// the swiftgen bindings ([bindings.MapRegistry.get]) to drive the map. No
 /// data-path method channel is involved (CLAUDE.md §10).
-class MapLibreFlutterIosController implements MapLibreMapController {
-  MapLibreFlutterIosController(this._options) : _mapId = _nextMapId++ {
+class MapLibreFlutterIosController implements MapLibreMapPlatformController {
+  MapLibreFlutterIosController(this._style, this._options)
+    : _mapId = _nextMapId++ {
     _pollReady();
   }
 
+  final String _style;
   final MapOptions _options;
   final int _mapId;
 
@@ -49,7 +51,7 @@ class MapLibreFlutterIosController implements MapLibreMapController {
     final camera = _options.initialCamera;
     return <String, Object?>{
       'mapId': _mapId,
-      'styleUri': _options.styleUri,
+      'styleUri': _style,
       'lat': camera.center.latitude,
       'lng': camera.center.longitude,
       'zoom': camera.zoom,

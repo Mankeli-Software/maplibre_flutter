@@ -40,8 +40,15 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
     _instance = value;
   }
 
-  /// Create a map and return a controller bound to its render handle.
-  Future<MapLibreMapController> createMap(MapOptions options) {
+  /// Create a map and return a platform controller bound to its render handle.
+  ///
+  /// [style] is the initial MapLibre style document (URL, asset path, or inline
+  /// JSON); it is passed separately from [options] because style is a mutable,
+  /// declarative property of the widget (CLAUDE.md §3), not init-only config.
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) {
     throw UnimplementedError('createMap() has not been implemented.');
   }
 }
