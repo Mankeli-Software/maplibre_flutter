@@ -69,6 +69,19 @@ final class MapLibreCoreTexture: NSObject, FlutterTexture {
   // past a couple of ring sizes (i.e. after surface-set churn from a resize).
   private var bufferCache: [UnsafeRawPointer: CVPixelBuffer] = [:]
 
+  // The last buffer successfully handed to the engine (either present path).
+  // Returned as a fallback when a fresh frame isn't ready yet — chiefly mid-resize,
+  // when the core hasn't rendered the new size — so the texture briefly shows a
+  // stale/stretched image instead of flashing the white background.
+  private var lastBuffer: CVPixelBuffer?
+
+  /// A `+1` on the last good buffer, or nil if we've never produced one (first
+  /// frame). Used so a transient failure presents the previous frame, not white.
+  private func fallbackBuffer() -> Unmanaged<CVPixelBuffer>? {
+    if let last = lastBuffer { return Unmanaged.passRetained(last) }
+    return nil
+  }
+
   init(
     mapHandle: UnsafeMutableRawPointer, copyFrameAddress: Int,
     setFrameCallbackAddress: Int, currentIOSurfaceAddress: Int,
@@ -141,11 +154,27 @@ final class MapLibreCoreTexture: NSObject, FlutterTexture {
     if let iosurfaceFn = currentIOSurfaceFn,
       let surfacePtr = iosurfaceFn(mapHandle)
     {
-      if let cached = bufferCache[surfacePtr] {
+      // The getter hands us a +1 retained surface so a concurrent ring teardown on
+      // the render thread can't free it mid-wrap (was an EXC_BAD_ACCESS on resize).
+      // Balance that +1 on every exit; CVPixelBufferCreateWithIOSurface and the
+      // cache take their own refs, so the surface stays alive while we use it.
+      let surfaceHandle = Unmanaged<IOSurfaceRef>.fromOpaque(surfacePtr)
+      defer { surfaceHandle.release() }
+      let surface = surfaceHandle.takeUnretainedValue()
+
+      // Reuse a cached CVPixelBuffer for this surface, but only while it still
+      // matches the surface's live size: a resize recreates the ring and the
+      // allocator may reuse a freed address, which would otherwise hit a stale
+      // (wrong-size) cache entry.
+      if let cached = bufferCache[surfacePtr],
+        CVPixelBufferGetWidth(cached) == IOSurfaceGetWidth(surface),
+        CVPixelBufferGetHeight(cached) == IOSurfaceGetHeight(surface)
+      {
+        lastBuffer = cached
         return Unmanaged.passRetained(cached)
       }
-      let surface = Unmanaged<IOSurfaceRef>.fromOpaque(surfacePtr)
-        .takeUnretainedValue()
+      bufferCache.removeValue(forKey: surfacePtr)
+
       var pixelBuffer: Unmanaged<CVPixelBuffer>?
       if CVPixelBufferCreateWithIOSurface(
         kCFAllocatorDefault, surface, nil, &pixelBuffer) == kCVReturnSuccess,
@@ -155,6 +184,7 @@ final class MapLibreCoreTexture: NSObject, FlutterTexture {
         let pb = buffer.takeRetainedValue()
         if bufferCache.count >= 6 { bufferCache.removeAll() }
         bufferCache[surfacePtr] = pb
+        lastBuffer = pb
         return Unmanaged.passRetained(pb)
       }
     }
@@ -165,25 +195,25 @@ final class MapLibreCoreTexture: NSObject, FlutterTexture {
     var h: UInt32 = 0
     var stride: UInt32 = 0
     guard copyFrameFn(mapHandle, nil, 0, &w, &h, &stride) != 0, w > 0, h > 0
-    else { return nil }
+    else { return fallbackBuffer() }
     let width = Int(w)
     let height = Int(h)
 
     guard let pool = pixelBufferPool(width: width, height: height) else {
-      return nil
+      return fallbackBuffer()
     }
     var pixelBuffer: CVPixelBuffer?
     guard
       CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
         == kCVReturnSuccess, let buffer = pixelBuffer
-    else { return nil }
+    else { return fallbackBuffer() }
 
     CVPixelBufferLockBaseAddress(buffer, [])
     defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
     guard
       let base = CVPixelBufferGetBaseAddress(buffer)?
         .assumingMemoryBound(to: UInt8.self)
-    else { return nil }
+    else { return fallbackBuffer() }
 
     let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
     let tightRow = width * 4
@@ -201,7 +231,8 @@ final class MapLibreCoreTexture: NSObject, FlutterTexture {
         }
       }
     }
-    if ok == 0 { return nil }
+    if ok == 0 { return fallbackBuffer() }
+    lastBuffer = buffer
     return Unmanaged.passRetained(buffer)
   }
 }

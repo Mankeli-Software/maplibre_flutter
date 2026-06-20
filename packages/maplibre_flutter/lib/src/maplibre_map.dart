@@ -168,11 +168,16 @@ class _TextureMapView extends StatelessWidget {
       builder: (context, constraints) {
         final size = constraints.biggest;
         final dpr = MediaQuery.devicePixelRatioOf(context);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (size.isFinite && !size.isEmpty) {
-            controller.resize(size, dpr);
-          }
-        });
+        // Drive the resize during layout (before paint), NOT in a post-frame
+        // callback (which runs after this frame has already rasterized). Posting
+        // the new size a full pipeline phase earlier gives the core's render thread
+        // time to produce the correctly-sized frame before the raster thread samples
+        // the texture — otherwise the texture is one frame behind and Flutter
+        // stretches/squeezes the stale frame to the new box on every resize. This is
+        // the desktop-core analog of the web tier's ResizeObserver-driven resize.
+        if (size.isFinite && !size.isEmpty) {
+          controller.resize(size, dpr);
+        }
         return map;
       },
     );

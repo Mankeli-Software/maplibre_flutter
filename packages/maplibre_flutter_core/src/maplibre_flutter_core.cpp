@@ -230,6 +230,17 @@ void blitDone(void *user, IOSurfaceRef surface) {
   auto *m = static_cast<MblMap *>(user);
   {
     std::lock_guard<std::mutex> lk(m->frameMutex);
+    // Hold our own ref on the published surface so it outlives the blitter's ring.
+    // A window resize recreates (and CFReleases) the ring on the render thread,
+    // but the raster thread may still be wrapping this surface in copyPixelBuffer.
+    // This publish-ref plus the getter's per-read retain bridge that gap — without
+    // them the ring free races the raster retain (EXC_BAD_ACCESS on resize).
+    if (surface != nullptr) {
+      CFRetain(surface);
+    }
+    if (m->currentSurface != nullptr) {
+      CFRelease(m->currentSurface);
+    }
     m->currentSurface = surface;
     ++m->frameCount;
   }
@@ -532,6 +543,12 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
     mbl_metal_blitter_destroy(m->blitter);
     m->blitter = nullptr;
   }
+  // The blitter is gone and the render thread has drained — no further blitDone can
+  // fire, so drop the lingering publish-ref on the last surface (see blitDone).
+  if (m->currentSurface != nullptr) {
+    CFRelease(m->currentSurface);
+    m->currentSurface = nullptr;
+  }
 #endif
   // map / frontend / loop are destroyed here, on the render thread.
 }
@@ -718,6 +735,12 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
   if (m->blitter != nullptr) {
     mbl_metal_blitter_destroy(m->blitter);
     m->blitter = nullptr;
+  }
+  // The blitter is gone and the render thread has drained — no further blitDone can
+  // fire, so drop the lingering publish-ref on the last surface (see blitDone).
+  if (m->currentSurface != nullptr) {
+    CFRelease(m->currentSurface);
+    m->currentSurface = nullptr;
   }
 #endif
 }
@@ -960,6 +983,13 @@ void *mbl_map_current_iosurface(MblMap *m) {
     return nullptr;
   }
   std::lock_guard<std::mutex> lk(m->frameMutex);
+  // Hand the caller (Flutter's raster thread) its own +1 ref so the surface can't
+  // be freed mid-wrap by a concurrent ring teardown on the render thread. The
+  // caller MUST release it once it has retained the surface itself (see
+  // MapLibreTexture.copyPixelBuffer, which releases after CVPixelBufferCreate...).
+  if (m->currentSurface != nullptr) {
+    CFRetain(m->currentSurface);
+  }
   return (void *)m->currentSurface;
 #else
   (void)m;
