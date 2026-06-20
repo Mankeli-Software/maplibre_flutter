@@ -16,6 +16,7 @@
 
 #include <emscripten/bind.h>
 #include <emscripten/emscripten.h>
+#include <emscripten/em_asm.h>
 #include <emscripten/html5.h>
 
 #include <mbgl/gfx/backend_scope.hpp>
@@ -34,6 +35,7 @@
 #include <GLES3/gl3.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -119,6 +121,14 @@ public:
             map_->getStyle().loadURL(style);
         }
         dirty_ = true;
+
+        // Canvas pointer gestures: drag pans, wheel zooms. mbgl-core has no gesture
+        // recognition, so we drive moveBy/scaleBy from raw events (as gl-js does
+        // internally). Registered on the canvas; a drag that leaves it ends.
+        emscripten_set_mousedown_callback(target_.c_str(), this, EM_FALSE, &WebMap::onMouseDown);
+        emscripten_set_mousemove_callback(target_.c_str(), this, EM_FALSE, &WebMap::onMouseMove);
+        emscripten_set_mouseup_callback(target_.c_str(), this, EM_FALSE, &WebMap::onMouseUp);
+        emscripten_set_wheel_callback(target_.c_str(), this, EM_FALSE, &WebMap::onWheel);
     }
 
     void setStyle(const std::string& uri) {
@@ -132,6 +142,25 @@ public:
                          .withZoom(zoom)
                          .withBearing(bearing)
                          .withPitch(pitch));
+        dirty_ = true;
+    }
+
+    // Eased camera transition over [durationMs] (the fly-to path). Stepped in tick().
+    void animateTo(double lat, double lng, double zoom, double bearing, double pitch, double durationMs) {
+        const mbgl::CameraOptions cam = map_->getCameraOptions();
+        fromLat_ = cam.center ? cam.center->latitude() : lat;
+        fromLng_ = cam.center ? cam.center->longitude() : lng;
+        fromZoom_ = cam.zoom.value_or(zoom);
+        fromBearing_ = cam.bearing.value_or(bearing);
+        fromPitch_ = cam.pitch.value_or(pitch);
+        toLat_ = lat;
+        toLng_ = lng;
+        toZoom_ = zoom;
+        toBearing_ = bearing;
+        toPitch_ = pitch;
+        animStartMs_ = emscripten_get_now();
+        animDurMs_ = durationMs > 1.0 ? durationMs : 1.0;
+        animating_ = true;
         dirty_ = true;
     }
 
@@ -186,6 +215,8 @@ public:
 
     // Called each animation frame by globalTick.
     void tick() {
+        syncSize();
+        stepAnimation();
         if (!dirty_ || rendering_) {
             return;
         }
@@ -207,6 +238,10 @@ public:
     }
 
     ~WebMap() {
+        emscripten_set_mousedown_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
+        emscripten_set_mousemove_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
+        emscripten_set_mouseup_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
+        emscripten_set_wheel_callback(target_.c_str(), nullptr, EM_FALSE, nullptr);
         map_.reset();
         frontend_.reset();
         EM_ASM({ delete specialHTMLTargets[UTF8ToString($0)]; }, target_.c_str());
@@ -229,6 +264,81 @@ private:
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
+    // Auto-size the render surface to the canvas's CSS size (× DPR) so the map is
+    // crisp and correctly proportioned, following layout/resize without a Dart hop.
+    void syncSize() {
+        double cssW = 0;
+        double cssH = 0;
+        if (emscripten_get_element_css_size(target_.c_str(), &cssW, &cssH) != EMSCRIPTEN_RESULT_SUCCESS) {
+            return;
+        }
+        if (cssW < 1.0 || cssH < 1.0) {
+            return;
+        }
+        const auto w = static_cast<uint32_t>(cssW * pixelRatio_);
+        const auto h = static_cast<uint32_t>(cssH * pixelRatio_);
+        if (w == size_.width && h == size_.height) {
+            return;
+        }
+        resize(static_cast<double>(w), static_cast<double>(h), pixelRatio_);
+    }
+
+    void stepAnimation() {
+        if (!animating_) {
+            return;
+        }
+        double t = (emscripten_get_now() - animStartMs_) / animDurMs_;
+        if (t >= 1.0) {
+            t = 1.0;
+            animating_ = false;
+        }
+        // easeInOutCubic
+        const double e = t < 0.5 ? 4.0 * t * t * t : 1.0 - std::pow(-2.0 * t + 2.0, 3.0) / 2.0;
+        map_->jumpTo(mbgl::CameraOptions()
+                         .withCenter(mbgl::LatLng{lerp(fromLat_, toLat_, e), lerp(fromLng_, toLng_, e)})
+                         .withZoom(lerp(fromZoom_, toZoom_, e))
+                         .withBearing(lerp(fromBearing_, toBearing_, e))
+                         .withPitch(lerp(fromPitch_, toPitch_, e)));
+        dirty_ = true;
+    }
+
+    static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+
+    static EM_BOOL onMouseDown(int, const EmscriptenMouseEvent* e, void* ud) {
+        auto* m = static_cast<WebMap*>(ud);
+        m->dragging_ = true;
+        m->lastX_ = e->targetX;
+        m->lastY_ = e->targetY;
+        m->animating_ = false; // a press cancels any in-flight fly-to
+        return EM_TRUE;
+    }
+    static EM_BOOL onMouseMove(int, const EmscriptenMouseEvent* e, void* ud) {
+        auto* m = static_cast<WebMap*>(ud);
+        if (!m->dragging_) {
+            return EM_FALSE;
+        }
+        const double dx = (e->targetX - m->lastX_) * m->pixelRatio_;
+        const double dy = (e->targetY - m->lastY_) * m->pixelRatio_;
+        m->lastX_ = e->targetX;
+        m->lastY_ = e->targetY;
+        m->map_->moveBy(mbgl::ScreenCoordinate{dx, dy});
+        m->dirty_ = true;
+        return EM_TRUE;
+    }
+    static EM_BOOL onMouseUp(int, const EmscriptenMouseEvent*, void* ud) {
+        static_cast<WebMap*>(ud)->dragging_ = false;
+        return EM_FALSE;
+    }
+    static EM_BOOL onWheel(int, const EmscriptenWheelEvent* e, void* ud) {
+        auto* m = static_cast<WebMap*>(ud);
+        const double factor = std::pow(2.0, -e->deltaY / 120.0 * 0.5);
+        m->map_->scaleBy(factor,
+                         mbgl::ScreenCoordinate{e->mouse.targetX * m->pixelRatio_,
+                                                e->mouse.targetY * m->pixelRatio_});
+        m->dirty_ = true;
+        return EM_TRUE;
+    }
+
     val canvas_;
     std::string target_;
     float pixelRatio_ = 1.0f;
@@ -239,6 +349,18 @@ private:
     bool rendering_ = false;
     bool ready_ = false;
     val readyCb_ = val::undefined();
+
+    // Gesture state.
+    bool dragging_ = false;
+    double lastX_ = 0;
+    double lastY_ = 0;
+
+    // Fly-to animation state.
+    bool animating_ = false;
+    double animStartMs_ = 0;
+    double animDurMs_ = 1;
+    double fromLat_ = 0, fromLng_ = 0, fromZoom_ = 0, fromBearing_ = 0, fromPitch_ = 0;
+    double toLat_ = 0, toLng_ = 0, toZoom_ = 0, toBearing_ = 0, toPitch_ = 0;
 };
 
 void globalTick() {
@@ -281,6 +403,7 @@ EMSCRIPTEN_BINDINGS(maplibre_flutter_core) {
         .function("resize", &WebMap::resize)
         .function("moveBy", &WebMap::moveBy)
         .function("scaleBy", &WebMap::scaleBy)
+        .function("animateTo", &WebMap::animateTo)
         .function("onReady", &WebMap::onReady)
         .function("destroy", &WebMap::destroy);
 

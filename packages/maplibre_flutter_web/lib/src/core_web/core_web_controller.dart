@@ -117,16 +117,25 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
   Future<void> moveCamera(MapCamera camera, {Duration? duration}) async {
     final map = _map;
     if (map == null || _disposed) return;
-    // TODO(web-core): honour `duration` with an animated transition (reuse the
-    // shared desktop fly-arc, or a JS-side easeTo). For now this is instant —
-    // see docs/experimental-web-core-wasm.md.
-    map.setCamera(
-      camera.center.latitude,
-      camera.center.longitude,
-      camera.zoom,
-      camera.bearing,
-      camera.pitch,
-    );
+    final ms = duration?.inMilliseconds ?? 0;
+    if (ms > 0) {
+      map.animateTo(
+        camera.center.latitude,
+        camera.center.longitude,
+        camera.zoom,
+        camera.bearing,
+        camera.pitch,
+        ms.toDouble(),
+      );
+    } else {
+      map.setCamera(
+        camera.center.latitude,
+        camera.center.longitude,
+        camera.zoom,
+        camera.bearing,
+        camera.pitch,
+      );
+    }
   }
 
   @override
