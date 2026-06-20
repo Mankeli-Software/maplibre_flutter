@@ -115,13 +115,15 @@ class MapLibreFlutterAndroidCoreController
       // Initial producer size in DEVICE pixels (mbgl renders Size * dpr).
       'widthPx': (_initialWidth * dpr).round(),
       'heightPx': (_initialHeight * dpr).round(),
-      // Zero-copy present (EGL window surface, no readback) is OPT-IN on Android:
-      // it produces correct frames but the emulator's Impeller SurfaceProducer
-      // doesn't composite foreign-EGL buffers (white). Default off → the CPU
-      // ANativeWindow present. Enable on a real device for the smooth path.
+      // Try the zero-copy present (EGL window surface, no readback) by default —
+      // real-device GPUs composite it (the smooth path). The core auto-falls-back to
+      // the CPU ANativeWindow present on GL renderers that can't composite a
+      // foreign-EGL buffer in a Flutter SurfaceProducer (the Android emulator /
+      // software GL render white), so the map still shows there. Set
+      // --dart-define=MAPLIBRE_ZEROCOPY=false to force the CPU present everywhere.
       'zeroCopy': const bool.fromEnvironment(
         'MAPLIBRE_ZEROCOPY',
-        defaultValue: false,
+        defaultValue: true,
       ),
     });
 
