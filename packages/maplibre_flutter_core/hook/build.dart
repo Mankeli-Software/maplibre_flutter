@@ -75,32 +75,15 @@ void main(List<String> args) async {
     final src = packageRoot.resolve('src/');
     final targetOS = input.config.code.targetOS;
 
-    // iOS is the EXPERIMENTAL core-on-mobile path (CLAUDE.md §3): the mobile tier
-    // ships the MapLibre Apple SDK by default, and a dart-define selects the mbgl-core
-    // path at the Dart layer. The build hook can't see dart-defines (nor shell env vars:
-    // on iOS Flutter runs this hook from an Xcode build phase with a sanitized
-    // environment), so the only reliable signal is the build CONFIG. We therefore skip
-    // the one config we can detect that the core can never use, and build otherwise:
-    //   * Simulator: ALWAYS skip. The simulator can't headless-render Metal, and its
-    //     Metal stub omits newer symbols mbgl references (MTLIOErrorDomain/MTLTensorDomain,
-    //     present only in the device SDK), so the dylib cannot even LINK there. Skipping
-    //     keeps the default SDK path (and the fast Simulator dev loop) building, and is
-    //     safe: the SDK path never calls core FFI and the @Native symbols resolve lazily.
-    //   * Device (iphoneos): build mbgl-core. The dart-define then selects core-vs-SDK at
-    //     runtime. KNOWN POC LIMITATION: this means SDK-only DEVICE builds also bundle
-    //     mbgl-core (build time + ~binary size). The production fix is a separate opt-in
-    //     package (federation allows one endorsed impl per platform) so SDK-only apps never
-    //     pull the core — out of scope for this proof of concept.
-    // Other platforms (macOS/Linux/Windows) always build.
-    if (targetOS == OS.iOS &&
-        input.config.code.iOS?.targetSdk == IOSSdk.iPhoneSimulator) {
-      logger.info(
-        'maplibre_flutter_core: skipping the iOS Simulator build — the experimental '
-        'core path needs a real device (no headless Metal; the simulator Metal stub also '
-        'omits symbols mbgl references). The default MapLibre Apple SDK path is unaffected.',
-      );
-      return;
-    }
+    // iOS is the EXPERIMENTAL core-on-mobile path (CLAUDE.md §3): the mobile tier ships
+    // the MapLibre Apple SDK by default, and a dart-define selects the mbgl-core path at
+    // the Dart layer. mbgl-core is built for BOTH iOS device and Simulator: the CMake arm
+    // weak-links Metal on the Simulator (whose stub omits MTLIOErrorDomain/MTLTensorDomain),
+    // and Apple-Silicon Simulators have a real host-GPU Metal, so the core renders there
+    // too. KNOWN POC LIMITATION: the hook can't see the dart-define, so SDK-only iOS builds
+    // also bundle mbgl-core (build time + ~binary size); the production fix is a separate
+    // opt-in package (federation endorses one impl per platform). Other platforms
+    // (macOS/Linux/Windows) always build.
 
     // Windows: mbgl-core's deps (ANGLE for EGL/GLES, curl, libpng/jpeg/webp, libuv,
     // dlfcn-win32) come from vcpkg. Provision them and hand CMake the vcpkg toolchain
@@ -139,6 +122,7 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core.h'),
       src.resolve('maplibre_flutter_core_metal.h'),
       src.resolve('maplibre_flutter_core_metal.mm'),
+      src.resolve('maplibre_flutter_core_sim_stubs.mm'),
       src.resolve('maplibre_flutter_core_gl.h'),
       src.resolve('maplibre_flutter_core_gl.cpp'),
       src.resolve('maplibre_flutter_core_vk.h'),

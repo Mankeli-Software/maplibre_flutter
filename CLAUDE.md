@@ -1191,21 +1191,27 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     everything the file uses). (4) `mbgl/mtl.cpp`'s static init references `MTLIOErrorDomain` /
     `MTLTensorDomain`, which exist in the iphoneos Metal SDK but **NOT the iphonesimulator stub**, so
     the dylib can't even link for the simulator.
-  - **Gating: skip the iOS *Simulator* build, always build for *device* (the dart-define picks the
-    path at runtime).** First tried gating the native build on an env var, but **on iOS Flutter runs
-    the build hook inside an Xcode build phase with a sanitized environment**, so neither dart-defines
-    NOR shell env vars reach `hook/build.dart` — the only signal it can trust is the build CONFIG. So
-    the hook keys on `input.config.code.iOS?.targetSdk`: `iPhoneSimulator` → skip (can't link/render
-    Metal there anyway; keeps the default SDK path + fast Simulator dev loop working), `iPhoneOS` →
-    build. KNOWN POC LIMITATION: SDK-only *device* builds therefore also bundle mbgl-core (build time
-    + ~7 MB). Production fix = a **separate opt-in package** (federation endorses one impl per
-    platform), deferred — out of scope for a POC.
-  - **Still device-gated (the user's manual step):** does mbgl's `mtl::HeadlessBackend` render a
-    **non-blank** frame on a real iOS GPU under CORE_ONLY+Metal, does `CVPixelBufferCreateWithIOSurface`
-    present through the iOS external-texture pipeline, and how does the shared pan/zoom gesture layer
-    *feel* vs the SDK's native inertia/fling (the headline A/B). The Simulator cannot answer these (no
-    headless Metal). Per the §7 rule, an on-device check must assert real map content, not just "a
-    frame came back."
+  - **Gating + the Simulator: it RENDERS on the Simulator too.** The hook builds mbgl-core for every
+    iOS target (it can't read the dart-define — on iOS Flutter runs the hook from an Xcode build phase
+    with a sanitized environment, so neither dart-defines nor shell env vars reach `hook/build.dart`;
+    KNOWN POC LIMITATION: SDK-only iOS builds therefore also bundle mbgl-core, ~7 MB — production fix
+    is a separate opt-in package). The Simulator first failed to LINK: mbgl's `mtl.cpp` static init
+    references `MTLIOErrorDomain`/`MTLTensorDomain`, which exist in the iphoneos Metal SDK but are
+    ABSENT from the iphonesimulator Metal stub, and mbgl links Metal strongly so `-weak_framework Metal`
+    can't relax it. Fix: a Simulator-only `maplibre_flutter_core_sim_stubs.mm` that defines those two
+    symbols locally (mbgl only captures the constants, never uses MTLIO/tensors for rendering); the
+    device SDK exports the real ones (the file is empty under `!TARGET_OS_SIMULATOR`). Wired via a new
+    CMake `_apple_is_ios_sim` (`CMAKE_OSX_SYSROOT MATCHES Simulator`).
+  - **Verified ON THE SIMULATOR (iPhone 17, iOS 26.4) — the device-gated unknowns are answered.**
+    `flutter run -d <sim> --dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true` launches and a `simctl`
+    screenshot shows a correct demotiles world map (land/water colours right → BGRA/RGBA swizzle
+    correct), no runtime errors. So: mbgl `mtl::HeadlessBackend` **renders a non-blank frame** under
+    CORE_ONLY+Metal on the **Apple-Silicon Simulator's real host-GPU Metal**, and
+    `CVPixelBufferCreateWithIOSurface` **presents through the iOS external-texture pipeline** — both
+    confirmed, not just assumed (and a real device shares the same Metal path). Remaining open item is
+    only the native-FEEL A/B: how the shared Dart pan/zoom compares to the SDK's inertia/fling. (§7:
+    this was a real-content visual check, not just "a frame came back".) Camera/move/fly-to/style FFI
+    is already covered by `test:native`.
   - **Approach was workflow-driven:** a fan-out understanding pass over the macOS/iOS/core/interface
     tiers + an adversarial stress pass on the four riskiest native assumptions (iOS native-asset
     bundling, mbgl iOS CMake, Metal→FlutterTexture present, dart-define gating) front-ran the build
