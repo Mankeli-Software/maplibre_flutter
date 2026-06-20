@@ -1216,5 +1216,31 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     tiers + an adversarial stress pass on the four riskiest native assumptions (iOS native-asset
     bundling, mbgl iOS CMake, Metal→FlutterTexture present, dart-define gating) front-ran the build
     and called every fix above before the first compile.
+  - **On-device-sim verification + two render findings (the iOS controller hardcoded the wrong
+    pixelRatio; a residual seam is sim-specific).** Ran the core path on the iPhone-17 Simulator and
+    found two things:
+    1. **pixelRatio bug (FIXED).** The iOS core controller created the map at `pixelRatio: 1` and
+       resized to *device* pixels — but the shim builds the framebuffer as mbgl `Size × pixelRatio`,
+       so at pr=1 the map rendered as a low-density 1× map blown up (3× the area, tiny labels) and
+       tile/line geometry landed on fractional device pixels. Fixed to pass the **real DPR** (from
+       `PlatformDispatcher.instance.implicitView`) + LOGICAL-point sizing (resize/moveBy/scaleBy drop
+       the `× DPR`), matching the Apple SDK. User-confirmed on device-sim: map now renders at proper
+       retina density and is smooth. (The macOS/Linux/Windows controllers share the pr=1 pattern —
+       likely the same latent issue; not yet changed, out of the iOS POC's scope.)
+    2. **Residual tile seams are SIMULATOR-specific (offscreen Metal), not the present path.** Faint
+       1-px tile-boundary seams remain on the sim (subtle on Liberty, obvious on demotiles' solid
+       overzoom fills, zoom-dependent). Bisected exhaustively: the raw mbgl frame on **macOS native
+       Metal is clean** at every zoom; **all four iOS present configs** (zero-copy/CPU × Continuous/
+       Static) show the **identical** seams (so it is NOT zero-copy, Continuous, or Flutter's Texture
+       compositing — `FilterQuality.none` made no difference); and the **iOS SDK** (on-screen
+       MLNMapView, same mbgl Metal) is clean at the same view. So the seam is specifically our
+       **headless OFFSCREEN Metal render on the iOS Simulator** — macOS native Metal (headless) is
+       clean and the iOS on-screen drawable is clean, only iOS-sim offscreen seams. Strong evidence
+       this is a **simulator Metal-translation quirk** that a real device (native Apple-Silicon Metal,
+       like macOS) would not show; the definitive check is a physical-device run. If it DOES
+       reproduce on device, the fix lives in mbgl's `mtl::HeadlessBackend` (offscreen pass setup —
+       tile clip/scissor or MSAA), a deeper submodule patch. Verification method: a brightness-spike
+       seam detector over `simctl` screenshots (the seams are 1-px hairlines lost to viewer
+       downscaling; quantitative column/row profiles caught them).
 
 _Append new decisions here with date and rationale._
