@@ -1320,5 +1320,23 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
       no CSS resize won't trigger the observer (rare).
     - **Verified end-to-end on real hardware** (user, in-browser): continuous render is smooth,
       resize no longer blinks, Demotiles⇄Liberty switches cleanly, fly-to arcs out and back.
+    - **Map "stuck"/blank on a REAL GPU FIXED — present() must `glFlush`.** A later A/B (native vs
+      gl-js, real GPU) surfaced: the map intermittently stopped *displaying* (pans registered but not
+      drawn; a window resize made it jump to the correct position), and switching to Liberty went
+      blank. The engine was fine — a canvas pixel read-back showed the canvas *had* the rendered map
+      (~16k colours for Liberty), and both the standalone engine and the **headless** Flutter app
+      (ANGLE→SwiftShader) rendered Liberty correctly; it only broke in the **Flutter app on a real
+      GPU** (ANGLE→D3D11, Edge/Windows). Root cause: `present()` blitted (offscreen FBO → canvas) but
+      never flushed, so on ANGLE/D3D11 the blit could sit unsubmitted at the end of the rAF callback
+      and the browser composited a **stale** canvas. A resize "fixed" it only because `resizeSync`
+      does an explicit `runOnce()` + `canvas.width` change (forces flush+recomposite). Fix:
+      **`glFlush()` after the blit** in `present()` (non-blocking, cheap per frame) so the compositor
+      always gets the latest frame; also wrapped `globalTick` in **try/catch** so an uncaught
+      exception can't stop rAF. Found via a temporary heartbeat (tick/present counters) that showed
+      the loop kept firing while "stuck" → a composite problem, not a dead loop. **User-confirmed:
+      cannot reproduce the stuck or the Liberty blank after the fix.** **General rule:** on web, after
+      blitting to the canvas in an rAF callback, `glFlush()` — don't assume the implicit
+      pre-composite flush submits a `glBlitFramebuffer`, especially under ANGLE/D3D11 with a second
+      WebGL context (Flutter's CanvasKit) on the page.
 
 _Append new decisions here with date and rationale._

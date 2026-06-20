@@ -186,6 +186,33 @@ zero lag. The first `resizeSync` also flips the engine's `autoSize_` off so the 
 stops (no double-driving). User-confirmed on real hardware: resize is now smooth. (Edge case left:
 a pure devicePixelRatio change with no CSS-box resize won't trigger the observer; rare, acceptable.)
 
+## Map "stuck"/blank on a real GPU — FIXED via `glFlush` in present() (2026-06-20)
+
+**Symptom (surfaced during an A/B vs maplibre-gl-js, real GPU):** the map intermittently went
+"stuck" — it stopped *displaying* updates, user pans/zooms were *registered* but not drawn, and
+**resizing the window made it jump to the correct current position**. Switching to OpenFreeMap
+Liberty also went **blank**.
+
+**Why it was confusing:** the engine was fine. A direct canvas pixel read-back showed the canvas
+*did* contain the rendered map (e.g. Liberty: ~16k distinct colours), and the standalone engine
+(`libtest.html`) and the **headless** Flutter app (ANGLE→SwiftShader) both rendered Liberty
+correctly. It only broke in the **Flutter app on a real GPU** (ANGLE→D3D11, Edge/Windows). A resize
+"fixed" it because `resizeSync` does an explicit `runOnce()` **and** a `canvas.width` change, which
+forces a flush + recomposite.
+
+**Root cause:** `present()` did `glBlitFramebuffer` (offscreen FBO → canvas) but never flushed. On
+ANGLE/D3D11 the blit could sit unsubmitted at the end of the rAF callback, so the browser composited
+a **stale** canvas — rendering kept happening into the drawing buffer but wasn't shown. SwiftShader
+and the standalone page happened to flush/compose differently, hiding it.
+
+**Fix:** add **`glFlush()` after the blit** in `present()` (non-blocking, unlike `glFinish` — cheap
+per frame) so the blit is submitted before the callback returns and the compositor always picks up
+the latest frame. Also wrapped `globalTick` in **try/catch** so an uncaught exception can't propagate
+out of the emscripten main-loop callback and stop rAF (another way the loop could silently die).
+**How found:** a temporary heartbeat (tick/present counters logged ~2 s) showed the render loop kept
+firing while "stuck" → a present/composite problem, not a dead loop. User-confirmed: cannot
+reproduce the stuck or the Liberty blank after the fix.
+
 ## Zero-copy on web — already effectively in place; no work needed
 
 **Question:** should we build a zero-copy present for web like the desktop tiers, or is it already
