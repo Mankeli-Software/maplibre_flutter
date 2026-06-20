@@ -41,6 +41,9 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
   final Completer<void> _ready = Completer<void>();
 
   CoreMap? _map;
+  // Observes canvas size changes to drive timely (before-paint) resizes; held against
+  // GC and disconnected on dispose.
+  web.ResizeObserver? _resizeObserver;
   bool _disposed = false;
 
   /// Loads the WASM module, registers a view factory that builds the map into a
@@ -87,6 +90,28 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
       );
 
       controller._map = map;
+
+      // Observe canvas size changes and push the new size to the engine with a
+      // synchronous render. ResizeObserver fires after layout / before paint, so the
+      // correctly-sized frame is composited in the same paint — no 1-frame stretch
+      // (the engine's per-tick auto-size notices a CSS-box change a frame late). It
+      // also fires once on observe(), covering the initial size. Held against GC and
+      // disconnected on dispose.
+      final observer = web.ResizeObserver(
+        (JSArray<JSAny?> entries, web.ResizeObserver obs) {
+          if (controller._disposed) return;
+          final m = controller._map;
+          if (m == null) return;
+          final dpr = web.window.devicePixelRatio;
+          final rect = canvas.getBoundingClientRect();
+          final w = rect.width * dpr;
+          final h = rect.height * dpr;
+          if (w >= 1 && h >= 1) m.resizeSync(w, h, dpr);
+        }.toJS,
+      );
+      observer.observe(canvas);
+      controller._resizeObserver = observer;
+
       return canvas;
     });
 
@@ -159,6 +184,8 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _resizeObserver?.disconnect();
+    _resizeObserver = null;
     _map?.destroy();
     _map = null;
   }

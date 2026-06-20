@@ -95,6 +95,11 @@ extension type CoreMap._(JSObject _) implements JSObject {
   /// `mbl_map_resize`. [width]/[height] are device pixels.
   external void resize(double width, double height, double pixelRatio);
 
+  /// Resize + render synchronously. Called from the canvas `ResizeObserver` (fires
+  /// after layout, before paint) so the new-size frame lands in the same paint —
+  /// avoids the 1-frame stretch the per-tick auto-size has. [width]/[height] device px.
+  external void resizeSync(double width, double height, double pixelRatio);
+
   /// `mbl_map_move_by` — shared-desktop-tier pan primitive (logical pixels).
   external void moveBy(double dx, double dy);
 
