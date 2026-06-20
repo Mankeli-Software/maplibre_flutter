@@ -46,3 +46,21 @@ Nothing is required for the map itself. Two things to know:
    [`PointerInterceptor`](https://pub.dev/packages/pointer_interceptor) or their taps leak through to
    the map (see the example app's controls). This is **not** needed for the map widget itself — it
    receives pointer / scroll events natively.
+
+## Experimental: native-core rendering (WASM)
+
+An **opt-in, build-time-flagged** path renders web through the same native MapLibre engine
+(`mbgl-core`) the desktop tier uses, compiled to WebAssembly, instead of maplibre-gl-js — so feature
+parity can be maintained in one engine with no separate web SDK. It **works** (renders an interactive
+map: pan / zoom / fly-to / style) but is **experimental and off by default**; it needs a separately
+built WASM artifact and a host that sends COOP/COEP headers (for `SharedArrayBuffer`):
+
+```bash
+flutter build web --dart-define=MAPLIBRE_WEB_CORE=true \
+                  --dart-define=MAPLIBRE_WEB_CORE_URL=maplibre_flutter_core.js
+```
+
+With the flag off (the default), nothing changes — maplibre-gl-js renders as described above. The
+[design doc](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/docs/experimental-web-core-wasm.md)
+has the full build-and-run steps, architecture, and the production-remaining list (WebGPU perf,
+download size, deployment headers).
