@@ -298,8 +298,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   static const double _inertiaStartSpeed = 120; // px/s
 
   void _stopInertia() {
-    _inertiaTicker?.dispose();
-    _inertiaTicker = null;
+    _inertiaTicker?.stop();
   }
 
   void _onScaleStart(ScaleStartDetails details) {
@@ -334,7 +333,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     if (velocity.distance < _inertiaStartSpeed) return;
     _inertiaVelocity = velocity;
     _lastInertiaElapsed = Duration.zero;
-    _inertiaTicker = createTicker(_onInertiaTick)..start();
+    // Reuse a single Ticker for the State's life — SingleTickerProviderStateMixin
+    // forbids creating a second one, so a per-fling createTicker() throws on the
+    // second pan-release. Stop (no-op if idle) then restart from elapsed zero.
+    (_inertiaTicker ??= createTicker(_onInertiaTick))
+      ..stop()
+      ..start();
   }
 
   void _onInertiaTick(Duration elapsed) {
@@ -354,7 +358,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   @override
   void dispose() {
-    _stopInertia();
+    _inertiaTicker?.stop();
+    _inertiaTicker?.dispose();
     super.dispose();
   }
 
