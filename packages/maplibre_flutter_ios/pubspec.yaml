@@ -14,6 +14,13 @@ dependencies:
   flutter:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
+  # Experimental core-on-iOS path (MAPLIBRE_EXPERIMENTAL_CORE, CLAUDE.md §3 escape
+  # hatch): renders mbgl-core into a Flutter Texture instead of MLNMapView/UiKitView,
+  # mirroring the macOS desktop tier. The Dart dep is unconditional (the core controller
+  # imports it); the core's build hook builds the native mbgl-core for iOS *device*
+  # targets and skips the iOS Simulator (where Metal can't link/headless-render). The
+  # dart-define selects core-vs-SDK at runtime; an unused core just isn't called.
+  maplibre_flutter_core: ^0.0.2
   # swiftgen control layer (CLAUDE.md §5b): Dart drives the native MapLibre map
   # over the Objective-C runtime, not method channels.
   #

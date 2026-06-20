@@ -56,3 +56,44 @@ Because the bindings use `ObjCCompatibleSwiftFileInput`, swiftgen emits **no Obj
 in practice, so SPM's "no mixed Swift + ObjC in one target" rule never bites and the bindings work
 purely over the Objective-C runtime. The example app builds green under both integrations; see the
 repository [CONTRIBUTING.md](../../CONTRIBUTING.md) for toggling SPM and the codesigning setup.
+
+## Experimental: core renderer (`MAPLIBRE_EXPERIMENTAL_CORE`)
+
+> 🧪 **Proof of concept.** Off by default; APIs and behaviour will change. This exists to
+> A/B the desktop C++ engine against the Apple SDK on the same device, not for production.
+
+By default this package renders with the MapLibre Apple SDK (above). To switch to the core
+renderer, run on a **real device** with the dart-define:
+
+```
+flutter run -d <device> --dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true
+```
+
+mbgl-core builds for iOS automatically on a device target (the core's build hook skips the
+iOS Simulator, where it can neither link nor headless-render Metal). iOS then renders
+**`mbgl-core`** (the desktop tier's C++ engine, via
+[`maplibre_flutter_core`](../maplibre_flutter_core)) into a Flutter `Texture` — exactly like
+macOS. `createMap` returns a `TextureHandle` from `MapLibreFlutterIosCoreController` instead of a
+`PlatformViewHandle`, so the app-facing widget composites a `Texture` and the **shared desktop Dart
+gesture + fly-to tier** drives pan/zoom and the eased camera arc (no widget or platform-interface
+change). The native plugin gains a texture-registrar channel (`maplibre_flutter/ios/registrar`)
+beside the `UiKitView` factory; the per-frame path is FFI + a Metal/IOSurface→`CVPixelBuffer`
+present ported from the macOS tier. Zero-copy and Continuous render mode obey the same
+`--dart-define=MAPLIBRE_ZEROCOPY` / `MAPLIBRE_CONTINUOUS` flags as the desktop packages.
+
+This is the sanctioned **core-on-mobile escape hatch** (CLAUDE.md §3, 2026-06-19 decision): the
+mobile tier keeps the SDK by default; the core path is opt-in so its native feel (gestures,
+inertia, accessibility) can be measured against the SDK before any commitment.
+
+**Caveats / known limits of the POC:**
+
+- **Real device only.** The iOS Simulator cannot headless-render Metal, and its Metal stub even
+  omits symbols mbgl references (`MTLIOErrorDomain` / `MTLTensorDomain`, present only in the device
+  SDK), so the core dylib is never built for the simulator — the build hook skips it (the SDK path
+  keeps working there). Build and run the core path on a physical device.
+- **SDK-only device builds also bundle mbgl-core.** Because a build hook can't read the dart-define,
+  the hook builds the core for any iOS *device* target, so even SDK-path device builds pay the
+  core's build time + binary size. The production fix is a separate opt-in package (federation
+  allows one endorsed impl per platform); out of scope for this POC.
+- **Gestures are pan + zoom only** (the shared desktop layer); the SDK's native rotate / pitch /
+  fling-inertia are not yet reproduced — this is the main A/B delta to evaluate.

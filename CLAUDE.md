@@ -72,6 +72,12 @@ is scaffolded vs. still TODO:
     see the MapLibre framework (Section 5b). Bindings committed at
     `lib/src/maplibre_flutter_ios_bindings.g.dart` (`tool/swiftgen.dart`). Example buttons work
     on iOS unchanged. SPM **and** CocoaPods example builds green; device frame pending a sim run.
+    **Experimental core-on-iOS POC** (`--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true`, default off):
+    the same package can alternatively render `mbgl-core` into a Flutter `Texture` like the desktop
+    tier, A/B-able against the SDK on one device — the sanctioned §3 escape hatch. Build chain
+    verified on this Mac (mbgl-core compiles for iphoneos incl. the Metal headless backend, links,
+    and Flutter frameworks+signs the dylib into the device app); on-device render/gestures pending a
+    physical device. See the 2026-06-20 decision-log entry.
   - **macOS — desktop tier complete; smooth on device.** `maplibre_flutter_core` drives `mbgl-core`
     (vendored submodule, pinned `MBGL_CORE_VERSION`) over a C-shim + ffigen, built via
     `native_toolchain_cmake` in `hook/build.dart`, on a dedicated render thread. Two perf wins make
@@ -1144,5 +1150,65 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     detach-reuse); integration tests (web/windows) construct a controller and swap style by re-pumping
     with a new `style`. Verified on this Mac: `melos analyze` (`--fatal-infos`) + `test` (VM) +
     `test:web` (Chrome) + `test:native` (source-build) + `format` all green; READMEs updated.
+
+- **2026-06-20 — Experimental core-on-iOS POC (the §3 escape hatch), on `feat/ios-core-poc`.**
+  Built a proof of concept that renders iOS via the desktop `mbgl-core` tier (Metal + a Flutter
+  `Texture`) instead of the MapLibre Apple SDK, gated behind `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE`
+  (default off), to A/B core-vs-SDK on one device before any commitment. This is exactly the
+  opt-in/experimental path the 2026-06-19 "rejected unification" decision sanctioned — NOT a default
+  change; the SDK + `UiKitView` stays the iOS default. Scoped to **interactive parity with the
+  desktop tier** (frame + camera + Dart-stepped fly-to + style swap + pan/zoom gestures).
+  - **The Dart/widget/interface needed ZERO change.** `_MapEmbed` already maps `TextureHandle →
+    Texture` with no platform guard, so an iOS controller that returns a `TextureHandle` and
+    `implements MapLibreGestureHandler` reuses the entire shared desktop Dart tier (gestures, the
+    `flyCameraAt` arc, the camera namespace) automatically. New files are a Dart controller
+    (`maplibre_flutter_ios_core_controller.dart`, a near-verbatim port of the macOS controller),
+    a Swift `MapLibreCoreTexture.swift` (port of macOS `MapLibreTexture.swift`, `FlutterMacOS →
+    Flutter`), a texture-registrar handler added to `MaplibreFlutterIosPlugin` beside the UiKitView
+    factory (`maplibre_flutter/ios/registrar`; `messenger()`/`textures()` are METHODS on iOS), and a
+    `bool.fromEnvironment` branch in `maplibre_flutter_ios.dart` `createMap`. `maplibre_flutter_core`
+    is an unconditional dep; the Metal blitter + shim + ffigen bindings port as-is (they are
+    Metal/IOSurface/CoreVideo/Foundation only, no AppKit, and `#if defined(__APPLE__)` already covers
+    iOS). `sharedDarwinSource` stays banned (§3), so the Swift texture file is a fresh copy.
+  - **The only real work was the native build chain — and it's verified at the build level on this
+    Mac.** `mbgl-core` now compiles for **iphoneos including `mtl/headless_backend.cpp`**, the shim
+    links, and Flutter **auto-wraps the `DynamicLoadingBundled` dylib into a code-signed
+    `maplibre_flutter_core.framework`** bundled into the device `.app` (the feared App-Store "no loose
+    dylib" issue is handled by Flutter, as the pre-build adversarial review predicted). Verified
+    green: `flutter build ios --no-codesign` (device) bundles the core (app 22.9 → 30.3 MB; binary is
+    arm64/iOS-device/minos 13); the default `flutter build ios --simulator` (SDK path) still builds;
+    `melos analyze` 10/10, `format`, VM `test`, and `test:native` (macOS still renders a non-blank
+    frame — the shared `metal.mm` change is safe) all pass.
+  - **Four iOS-only deltas found + fixed in `maplibre_flutter_core` (all on the shared Apple arm,
+    macOS unaffected):** (1) `if(APPLE)` in `src/CMakeLists.txt` is true for iOS too under
+    native_toolchain_cmake's leetal toolchain, so split with `CMAKE_SYSTEM_NAME STREQUAL "iOS"` and
+    drop `-framework CoreServices`/`IOKit` + the `platform/macos/src` include (AppKit-tied, unused by
+    the headless path). (2) mbgl hard-codes `ghc::filesystem` on iOS (`TARGET_OS_IPHONE` in
+    `action_journal_impl.cpp`) vs `std::filesystem` on macOS, so link `mbgl-vendor-filesystem` for iOS
+    (as upstream `platform/ios/ios.cmake` does; the target exists in CORE_ONLY). (3)
+    `maplibre_flutter_core_metal.mm` used `<IOSurface/IOSurface.h>` (the macOS-only umbrella); iOS
+    ships no umbrella, so use `<IOSurface/IOSurfaceRef.h>` (the C API exists on both Darwins, provides
+    everything the file uses). (4) `mbgl/mtl.cpp`'s static init references `MTLIOErrorDomain` /
+    `MTLTensorDomain`, which exist in the iphoneos Metal SDK but **NOT the iphonesimulator stub**, so
+    the dylib can't even link for the simulator.
+  - **Gating: skip the iOS *Simulator* build, always build for *device* (the dart-define picks the
+    path at runtime).** First tried gating the native build on an env var, but **on iOS Flutter runs
+    the build hook inside an Xcode build phase with a sanitized environment**, so neither dart-defines
+    NOR shell env vars reach `hook/build.dart` — the only signal it can trust is the build CONFIG. So
+    the hook keys on `input.config.code.iOS?.targetSdk`: `iPhoneSimulator` → skip (can't link/render
+    Metal there anyway; keeps the default SDK path + fast Simulator dev loop working), `iPhoneOS` →
+    build. KNOWN POC LIMITATION: SDK-only *device* builds therefore also bundle mbgl-core (build time
+    + ~7 MB). Production fix = a **separate opt-in package** (federation endorses one impl per
+    platform), deferred — out of scope for a POC.
+  - **Still device-gated (the user's manual step):** does mbgl's `mtl::HeadlessBackend` render a
+    **non-blank** frame on a real iOS GPU under CORE_ONLY+Metal, does `CVPixelBufferCreateWithIOSurface`
+    present through the iOS external-texture pipeline, and how does the shared pan/zoom gesture layer
+    *feel* vs the SDK's native inertia/fling (the headline A/B). The Simulator cannot answer these (no
+    headless Metal). Per the §7 rule, an on-device check must assert real map content, not just "a
+    frame came back."
+  - **Approach was workflow-driven:** a fan-out understanding pass over the macOS/iOS/core/interface
+    tiers + an adversarial stress pass on the four riskiest native assumptions (iOS native-asset
+    bundling, mbgl iOS CMake, Metal→FlutterTexture present, dart-define gating) front-ran the build
+    and called every fix above before the first compile.
 
 _Append new decisions here with date and rationale._

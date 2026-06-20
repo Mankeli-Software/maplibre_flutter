@@ -75,6 +75,33 @@ void main(List<String> args) async {
     final src = packageRoot.resolve('src/');
     final targetOS = input.config.code.targetOS;
 
+    // iOS is the EXPERIMENTAL core-on-mobile path (CLAUDE.md §3): the mobile tier
+    // ships the MapLibre Apple SDK by default, and a dart-define selects the mbgl-core
+    // path at the Dart layer. The build hook can't see dart-defines (nor shell env vars:
+    // on iOS Flutter runs this hook from an Xcode build phase with a sanitized
+    // environment), so the only reliable signal is the build CONFIG. We therefore skip
+    // the one config we can detect that the core can never use, and build otherwise:
+    //   * Simulator: ALWAYS skip. The simulator can't headless-render Metal, and its
+    //     Metal stub omits newer symbols mbgl references (MTLIOErrorDomain/MTLTensorDomain,
+    //     present only in the device SDK), so the dylib cannot even LINK there. Skipping
+    //     keeps the default SDK path (and the fast Simulator dev loop) building, and is
+    //     safe: the SDK path never calls core FFI and the @Native symbols resolve lazily.
+    //   * Device (iphoneos): build mbgl-core. The dart-define then selects core-vs-SDK at
+    //     runtime. KNOWN POC LIMITATION: this means SDK-only DEVICE builds also bundle
+    //     mbgl-core (build time + ~binary size). The production fix is a separate opt-in
+    //     package (federation allows one endorsed impl per platform) so SDK-only apps never
+    //     pull the core — out of scope for this proof of concept.
+    // Other platforms (macOS/Linux/Windows) always build.
+    if (targetOS == OS.iOS &&
+        input.config.code.iOS?.targetSdk == IOSSdk.iPhoneSimulator) {
+      logger.info(
+        'maplibre_flutter_core: skipping the iOS Simulator build — the experimental '
+        'core path needs a real device (no headless Metal; the simulator Metal stub also '
+        'omits symbols mbgl references). The default MapLibre Apple SDK path is unaffected.',
+      );
+      return;
+    }
+
     // Windows: mbgl-core's deps (ANGLE for EGL/GLES, curl, libpng/jpeg/webp, libuv,
     // dlfcn-win32) come from vcpkg. Provision them and hand CMake the vcpkg toolchain
     // file (CLAUDE.md §9). macOS uses system frameworks and Linux uses pkg-config /
