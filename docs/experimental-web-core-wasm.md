@@ -174,11 +174,15 @@ canvas. User-confirmed on real hardware: **no blink at all.**
 > compositor screencast showed no white frames; the real test was a human resizing a real window.
 
 **Known remaining nit (not white):** for ~1 frame after a resize, the previous frame is CSS-scaled to
-the new size (a brief "skew"/stretch) before the correct-size frame renders, because the backing
-store lags the CSS size by one frame. It's minor (browsers do the same for `<canvas>`/`<video>`).
-Eliminating it would require rendering the new-size frame **synchronously** in the resize turn (pump
-the RunLoop right after `setSize` so `renderFrame`→`present` runs same-frame) — feasible but adds
-re-entrancy and depends on mbgl's `setSize`→`update` being synchronous; deferred as a polish item.
+the new size (a brief "skew"/stretch) before the correct-size frame renders. It's minor (browsers do
+the same for `<canvas>`/`<video>`) and deferred as polish. **What does NOT fix it** (tried, reverted):
+rendering the new-size frame synchronously in the resize turn (pump the RunLoop right after
+`setSize`). That collapses the detect→render gap, but the real lag is *Flutter resizing the canvas's
+CSS box → our `syncSize` polling noticing it one frame later* — so a synchronous render after
+detection is still a frame late, and the extra per-frame render made it slightly worse. **The proper
+fix** is a JS **`ResizeObserver`** on the canvas (as maplibre-gl-js uses): its callback fires after
+layout, before paint, so resizing the backing store + rendering there lands the correct-size frame in
+the same paint (zero lag). That's the path for a future session.
 
 ## Zero-copy on web — already effectively in place; no work needed
 

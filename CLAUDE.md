@@ -1307,7 +1307,11 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
       frames under SwiftShader (a *static* map showed false blanks), and `Page.startScreencast`
       coalesces the transient; the compositor screencast showed no white. **Known nit (deferred):** a
       ~1-frame stretch of the previous frame before the new-size frame renders (backing store lags CSS
-      by a frame); eliminating it needs a synchronous render in the resize turn.
+      by a frame). A synchronous render in the resize turn was **tried and reverted** — it doesn't fix
+      it (the lag is Flutter's CSS-box resize → our per-tick `syncSize` noticing it a frame later, not
+      detect→render) and the extra per-frame render made it slightly worse. The proper fix is a JS
+      `ResizeObserver` on the canvas (fires after layout, before paint — resize+render there for zero
+      lag, as gl-js does); deferred to a future session.
     - **Verified end-to-end on real hardware** (user, in-browser): continuous render is smooth,
       resize no longer blinks, Demotiles⇄Liberty switches cleanly, fly-to arcs out and back.
 
