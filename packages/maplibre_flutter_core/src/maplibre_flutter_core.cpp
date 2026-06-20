@@ -162,6 +162,20 @@ struct MblMap {
   uint32_t renderWidth = 0;
   uint32_t renderHeight = 0;
 
+  // Resize coalescing. `pendingResize{W,H}` is the latest size requested by
+  // mbl_map_resize (written from any thread under `resizeMutex`); `appliedResize{W,H}`
+  // is the size last pushed to mbgl (render thread only). Each posted resize task
+  // applies the LATEST pending size and skips when it is unchanged, so a fast
+  // drag-resize collapses its burst of intermediate sizes into one setSize+render
+  // per actually-new size — the texture tracks the live drag size ~1 render behind
+  // instead of falling N CPU readbacks behind it (that growing backlog is what read
+  // as resize "jitter", worst on the slow CPU-readback path with no zero-copy).
+  std::mutex resizeMutex;
+  uint32_t pendingResizeW = 0;
+  uint32_t pendingResizeH = 0;
+  uint32_t appliedResizeW = 0;
+  uint32_t appliedResizeH = 0;
+
   // Continuous mode (vs the default Static). In Continuous mode the render
   // thread runs `renderLoop` (which drives renderFrame on invalidation + tile
   // loads), and commands are marshaled onto it via RunLoop::invoke instead of
@@ -813,11 +827,35 @@ void mbl_map_resize(MblMap *m, uint32_t width, uint32_t height) {
   if (m == nullptr || width == 0 || height == 0) {
     return;
   }
-  m->post([m, width, height] {
-    m->frontend->setSize(mbgl::Size{width, height});
-    m->map->setSize(mbgl::Size{width, height});
-    m->renderWidth = width;
-    m->renderHeight = height;
+  {
+    std::lock_guard<std::mutex> lk(m->resizeMutex);
+    m->pendingResizeW = width;
+    m->pendingResizeH = height;
+  }
+  // Coalesce on the render thread: apply the LATEST requested size (read here,
+  // not captured), and skip when the map is already at it. A fast drag-resize
+  // posts many tasks, but only those observing a genuinely new size do a
+  // setSize+render, so the texture tracks the live drag size instead of the
+  // backlog of stale intermediate readbacks falling further behind the window
+  // edge. The unchanged-skip also avoids invalidating mbgl in Continuous mode
+  // when nothing changed (no idle busy-loop). All mbgl access stays on the
+  // render thread; only the pending size crosses threads.
+  m->post([m] {
+    uint32_t w, h;
+    {
+      std::lock_guard<std::mutex> lk(m->resizeMutex);
+      w = m->pendingResizeW;
+      h = m->pendingResizeH;
+    }
+    if (w == 0 || h == 0 || (w == m->appliedResizeW && h == m->appliedResizeH)) {
+      return;
+    }
+    m->appliedResizeW = w;
+    m->appliedResizeH = h;
+    m->frontend->setSize(mbgl::Size{w, h});
+    m->map->setSize(mbgl::Size{w, h});
+    m->renderWidth = w;
+    m->renderHeight = h;
     m->renderRequested = true;
   });
 }

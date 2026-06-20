@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -27,7 +28,10 @@ const MethodChannel _registrar = MethodChannel(
 ///
 /// NOTE: not yet run on real Windows hardware — see CLAUDE.md §8.
 class MapLibreFlutterWindowsController
-    implements MapLibreMapPlatformController, MapLibreGestureHandler {
+    implements
+        MapLibreMapPlatformController,
+        MapLibreGestureHandler,
+        MapLibreTextureSizeProvider {
   MapLibreFlutterWindowsController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -44,6 +48,21 @@ class MapLibreFlutterWindowsController
   static const int _initialHeight = 512;
   int _renderWidth = _initialWidth;
   int _renderHeight = _initialHeight;
+
+  // The texture's currently-produced frame size (device px; only the aspect is
+  // used). It lags [resize] on the CPU-readback present, so the widget cover-fits
+  // a stale frame to the new window box instead of stretching it. Polled after
+  // each resize until the produced size catches up (or a short safety cap).
+  final ValueNotifier<Size> _textureSize = ValueNotifier<Size>(
+    Size(_initialWidth.toDouble(), _initialHeight.toDouble()),
+  );
+  Timer? _sizePoll;
+  // Drag-resize debounce: while the window is actively being dragged we hold the
+  // core at its current size (so the produced frame stays frozen and the widget
+  // can cover-fit it without stretching), and apply the real resize only once the
+  // drag settles. _firstResizeApplied makes the initial sizing immediate.
+  Timer? _resizeDebounce;
+  bool _firstResizeApplied = false;
 
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
@@ -154,6 +173,9 @@ class MapLibreFlutterWindowsController
   MapLibreRenderHandle get renderHandle => TextureHandle(textureId: _textureId);
 
   @override
+  ValueListenable<Size> get textureSize => _textureSize;
+
+  @override
   Future<void> get onReady => _ready.future;
 
   @override
@@ -213,7 +235,64 @@ class MapLibreFlutterWindowsController
     if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
     _renderWidth = w;
     _renderHeight = h;
-    _coreMap.resize(w, h);
+    if (!_firstResizeApplied) {
+      // Apply the initial size immediately so the map fills the window on load,
+      // not the 512² placeholder cover-fit for a debounce interval.
+      _firstResizeApplied = true;
+      _applyResize();
+      return;
+    }
+    // Debounce live drag-resizes. Resizing the core on every layout made its
+    // *produced* frame chase the window, so by the time a frame was displayed the
+    // widget box had moved on and Flutter stretched it — and the cover-fit had a
+    // size that raced ahead of the actually-displayed frame, so it masked nothing.
+    // Holding the core (and thus the produced + displayed frame) at one size while
+    // the window is actively dragged lets the widget cover-fit that stable frame
+    // to the moving box *uniformly* (a small crop, no stretch). The real resize
+    // fires once the drag settles and the texture catches up to the final size.
+    _resizeDebounce?.cancel();
+    _resizeDebounce = Timer(const Duration(milliseconds: 100), _applyResize);
+  }
+
+  /// Pushes the latest requested size to the core and converges [textureSize] to
+  /// it. Called immediately for the first sizing and on each drag settle.
+  void _applyResize() {
+    if (_disposed) return;
+    _coreMap.resize(_renderWidth, _renderHeight);
+    _pollTextureSize(_renderWidth / _renderHeight);
+  }
+
+  /// After a resize, polls the core's *produced* frame size and publishes it to
+  /// [textureSize], stopping once the produced aspect matches [targetAspect]
+  /// (the render thread has caught up) or after a short safety cap. The widget's
+  /// cover-fit needs the aspect, not the exact size — and aspect is DPR-invariant,
+  /// so the produced device-pixel frame compares cleanly to the requested logical
+  /// aspect. This is what turns the resize *stretch* into a brief uniform crop:
+  /// the published size trails the window, so the texture is cover-fit (not
+  /// stretched) until a same-size frame arrives.
+  void _pollTextureSize(double targetAspect) {
+    _sizePoll?.cancel();
+    var ticks = 0;
+    _sizePoll = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+      if (_disposed) {
+        timer.cancel();
+        return;
+      }
+      final fs = _coreMap.frameSize();
+      if (fs != null && fs.height > 0) {
+        _textureSize.value = Size(fs.width.toDouble(), fs.height.toDouble());
+        if ((fs.width / fs.height - targetAspect).abs() < 0.001) {
+          timer.cancel();
+          _sizePoll = null;
+          return;
+        }
+      }
+      if (++ticks > 90) {
+        // ~1.5s cap so a map that idles mid-resize doesn't spin the poll forever.
+        timer.cancel();
+        _sizePoll = null;
+      }
+    });
   }
 
   @override
@@ -236,6 +315,11 @@ class MapLibreFlutterWindowsController
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _resizeDebounce?.cancel();
+    _resizeDebounce = null;
+    _sizePoll?.cancel();
+    _sizePoll = null;
+    _textureSize.dispose();
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);
     _coreMap.dispose();
   }

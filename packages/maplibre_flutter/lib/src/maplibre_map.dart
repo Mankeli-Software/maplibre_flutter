@@ -160,10 +160,6 @@ class _TextureMapView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget map = Texture(textureId: textureId);
-    if (controller.gestureHandler case final gestures?) {
-      map = _DesktopMapGestures(handler: gestures, child: map);
-    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = constraints.biggest;
@@ -177,6 +173,51 @@ class _TextureMapView extends StatelessWidget {
         // the desktop-core analog of the web tier's ResizeObserver-driven resize.
         if (size.isFinite && !size.isEmpty) {
           controller.resize(size, dpr);
+        }
+
+        Widget map = Texture(textureId: textureId);
+
+        // Mask the resize stretch on tiers whose texture can lag the widget box
+        // (the Windows CPU-readback present): scale a still-old-size frame to the
+        // new box UNIFORMLY (cover) using the texture's *produced* aspect ratio,
+        // so it crops slightly instead of stretching while the render thread
+        // catches up. In steady state the produced aspect equals the box aspect,
+        // so cover is an exact uniform scale (no crop) — pixel-identical to the
+        // bare texture. textureSize is null on tiers without lag (mobile/web own
+        // their surface; macOS zero-copy catches up within a frame), where the
+        // bare texture fills the box as before. Gestures wrap OUTSIDE this fit
+        // stack so pointer coordinates stay in widget-box (logical) space.
+        if (controller.textureSize case final textureSizeListenable?) {
+          map = ValueListenableBuilder<Size>(
+            valueListenable: textureSizeListenable,
+            child: map,
+            builder: (context, produced, child) {
+              if (produced.isEmpty ||
+                  !produced.isFinite ||
+                  size.isEmpty ||
+                  !size.isFinite) {
+                return child!;
+              }
+              return SizedBox.fromSize(
+                size: size,
+                child: ClipRect(
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    clipBehavior: Clip.hardEdge,
+                    child: SizedBox(
+                      width: produced.width,
+                      height: produced.height,
+                      child: child,
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        }
+
+        if (controller.gestureHandler case final gestures?) {
+          map = _DesktopMapGestures(handler: gestures, child: map);
         }
         return map;
       },
