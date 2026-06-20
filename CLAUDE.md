@@ -1192,4 +1192,39 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   finished this pass. Full status + ordered next steps in `docs/experimental-web-core-wasm.md`.
   maplibre-gl-js remains the default; nothing here affects it.
 
+- **2026-06-20 — Web-via-core WASM PoC COMPLETE: mbgl-core renders an interactive map in Flutter web
+  (experimental, opt-in; on `feat/web-core-wasm-poc`).** Followed the 2026-06-20 feasibility decision
+  through to a working build of the whole platform-layer port. The native MapLibre engine, compiled to
+  WebAssembly, **renders + pans a map in the Flutter web example** — verified in headless Edge (crisp
+  full-world demotiles map; a scripted drag pans Atlantic→Asia; module read-back showed a fully-painted
+  canvas). Solves what upstream maplibre-native#2554 left open. **What was built**
+  (`packages/maplibre_flutter_core/src/web/` + `web/`):
+  - **Run loop** (`emscripten_run_loop.cpp`): libuv-free `RunLoop`/`AsyncTask`/`Timer`. The main thread
+    doesn't block (per-frame `runOnce()` tick via `emscripten_set_main_loop`); **mbgl worker threads**
+    (`util::Thread`, e.g. `OnlineFileSource`) block on a condvar and process their queue — the key
+    insight, since a futex-blocked pthread can't pump its JS event loop.
+  - **HTTP source** (`emscripten_http_file_source.cpp`): **synchronous** `emscripten_fetch` — same
+    reason: the file-source worker blocks, so it can't receive an async callback. (Serialises tiles per
+    worker; parallelism is a production follow-up.)
+  - **GL backend** (`emscripten_gl_backend.cpp`): WebGL2 on the canvas via `emscripten_webgl_*`
+    (Emscripten EGL has no pbuffer). Present = blit mbgl's color FBO → the canvas default framebuffer.
+  - **embind module** (`maplibre_flutter_core_web.cpp`): `MaplibreFlutterCore` →
+    `createMap/setStyle/setCamera/getCamera/resize/moveBy/scaleBy/animateTo/onReady/destroy`. Canvas
+    registered via `specialHTMLTargets` (decoupled from DOM-attach), auto-sized to CSS×DPR each frame,
+    gestures from raw pointer/wheel events; fly-to eased in the render loop.
+  - **Sysroot-gap stubs**: webp-decode, `sched_setscheduler` no-op, `<GLES3/gl3ext.h>` shim.
+  - **Build**: standalone `emcmake` (NOT `hook/build.dart`) → `maplibre_flutter_core.js` (~0.5 MB) +
+    `.wasm` (~9.4 MB), `-pthread`, served with COOP/COEP. **Dart loader** passes `mainScriptUrlOrBlob`
+    (the glue `<script>` is injected dynamically → no `document.currentScript`, else startup hangs at
+    `library_fetch_init`).
+  - **Gotchas**: `PTHREAD_POOL_SIZE` must be pre-allocated (a synchronous thread spawn from a blocking
+    main thread deadlocks otherwise — "thread pool is exhausted"); append `-Wno-error` to
+    `mbgl-compiler-options` (Emscripten's newer clang flags warnings upstream's `-Werror` CI doesn't —
+    same family as the Windows `/WX-` trick); GDI/SwiftShader caveats moot here (real WebGL via Edge).
+  gl-js stays the **default**; the core path is opt-in `--dart-define=MAPLIBRE_WEB_CORE=true`. Full
+  how-to-build/run + the production-remaining list (WebGPU backend for perf — already vendored; ~9.4 MB
+  download size; COOP/COEP deployment; serial-fetch parallelism; multi-map; artifact distribution) in
+  `docs/experimental-web-core-wasm.md`. Verified: web-package `flutter analyze` clean; `flutter build
+  web` green; renders + interactive on device (headless Edge).
+
 _Append new decisions here with date and rationale._
