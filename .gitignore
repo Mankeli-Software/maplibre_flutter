@@ -34,3 +34,7 @@ coverage/
 .gradle/
 .kotlin/
 .cxx/
+
+# Experimental web-core WASM artifact (built separately, not committed)
+packages/maplibre_flutter/example/web/maplibre_flutter_core.js
+packages/maplibre_flutter/example/web/maplibre_flutter_core.wasm
