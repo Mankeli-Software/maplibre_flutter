@@ -7,7 +7,9 @@
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
 
+#include <cctype>
 #include <cstdio>
+#include <string>
 
 struct MblAndroidPresenter {
   EGLDisplay display = EGL_NO_DISPLAY;
@@ -27,6 +29,28 @@ extern "C" MblAndroidPresenter* mbl_android_presenter_create(void* native_window
   EGLSurface mbglRead = eglGetCurrentSurface(EGL_READ);
   if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
     return nullptr;
+  }
+
+  // Auto-fall-back to the CPU present on GL renderers that cannot import a
+  // foreign-EGL-context's GL-rendered HardwareBuffer into a Flutter SurfaceProducer
+  // texture (the buffer composites as white). This is a known limitation of the
+  // Android emulator + software GL — confirmed across both emulator GPU modes and
+  // every SurfaceProducer path. On real-device GPUs the producer-EGL-surface present
+  // is the standard path and works, so zero-copy stays on there. (context is current
+  // here — the shim calls this inside a BackendScope.)
+  if (const char *r = reinterpret_cast<const char *>(glGetString(GL_RENDERER))) {
+    std::string lower(r);
+    for (char &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.find("emulator") != std::string::npos ||
+        lower.find("swiftshader") != std::string::npos ||
+        lower.find("llvmpipe") != std::string::npos ||
+        lower.find("software") != std::string::npos) {
+      fprintf(stderr,
+              "maplibre_flutter_core: GL renderer '%s' can't composite foreign-EGL "
+              "buffers in a Flutter SurfaceProducer; using the CPU present\n",
+              r);
+      return nullptr;
+    }
   }
 
   // A window-capable ES3 RGBA8 config. It must be compatible with mbgl's context
