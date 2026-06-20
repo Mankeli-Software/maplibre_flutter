@@ -1253,8 +1253,14 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     smooth, retina, correct — over the desktop mbgl-core tier (Metal → Flutter Texture), gated behind
     `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE` with the Apple SDK still the default. The build→bundle→
     codesign→run chain works on device. The escape hatch is proven viable; remaining before it could
-    be more than a POC: a separate opt-in package (duplicate-symbol + binary-size fix), the native
-    gesture-feel A/B vs the SDK (inertia/fling), and porting the pixelRatio fix to the desktop
-    controllers (same latent pr=1).
+    be more than a POC: a separate opt-in package (duplicate-symbol + binary-size fix) and the native
+    gesture-feel A/B vs the SDK (inertia/fling).
+  - **pixelRatio fix ported to the desktop controllers (macOS/Linux/Windows had the same latent
+    pr=1).** Applied the identical change (create at the real DPR from `PlatformDispatcher.implicitView`
+    + logical-point sizing/gestures, drop the per-call `× DPR`) to all three desktop controllers, so
+    they render at proper retina density instead of a 1× map blown up. **macOS user-confirmed** (smooth,
+    correct element sizes); Linux/Windows are the same mechanical change (iOS device + macOS verified)
+    but their run-check needs that hardware. The four core controllers now duplicate this logic — a
+    later DRY pass could hoist it into a shared base/mixin.
 
 _Append new decisions here with date and rationale._
