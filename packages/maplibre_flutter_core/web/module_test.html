@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!-- Standalone test of the embind maplibre_flutter_core.js module: instantiate the
+     module, create a map on a canvas, and verify the FBO->canvas present works by
+     reading back canvas pixels. Serve with serve.py (COOP/COEP) and open in a
+     browser, or run headless. Not shipped. -->
+<html>
+<head><meta charset="utf-8"><title>maplibre_flutter_core module test</title></head>
+<body>
+<canvas id="c" width="512" height="512" style="width:512px;height:512px;border:1px solid #ccc"></canvas>
+<script src="maplibre_flutter_core.js"></script>
+<script>
+function log(m) { console.log("MODTEST: " + m); }
+log("loading");
+MaplibreFlutterCore().then(function (m) {
+  log("instantiated");
+  var canvas = document.getElementById('c');
+  var map = m.createMap({
+    canvas: canvas,
+    styleUri: "https://demotiles.maplibre.org/style.json",
+    lat: 30, lng: 10, zoom: 2, bearing: 0, pitch: 0, pixelRatio: 1, continuous: true
+  });
+  log("map created");
+  map.onReady(function () {
+    log("READY");
+    // Verify the canvas actually shows content: copy into a 2D canvas and inspect.
+    try {
+      var probe = document.createElement('canvas');
+      probe.width = canvas.width; probe.height = canvas.height;
+      var ctx = probe.getContext('2d');
+      ctx.drawImage(canvas, 0, 0);
+      var data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      var nonzero = 0, distinct = {};
+      for (var i = 0; i < data.length; i += 4) {
+        if (data[i] || data[i+1] || data[i+2]) nonzero++;
+        distinct[(data[i]<<16)|(data[i+1]<<8)|data[i+2]] = 1;
+      }
+      log("PIXELS nonzero=" + nonzero + "/" + (data.length/4) +
+          " distinctColors=" + Object.keys(distinct).length);
+    } catch (e) { log("pixelcheck error " + e); }
+    // Exercise the rest of the API.
+    var cam = map.getCamera();
+    log("camera lat=" + cam.lat.toFixed(2) + " lng=" + cam.lng.toFixed(2) + " zoom=" + cam.zoom.toFixed(2));
+  });
+  setInterval(function () { log("hb"); }, 5000);
+}).catch(function (e) { log("factory error " + e); });
+</script>
+</body>
+</html>

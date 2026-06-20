@@ -1116,6 +1116,33 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     `flutter build windows` green; `melos analyze` (`--fatal-infos`) + `format` green across all 10
     packages.
 
+- **2026-06-20 — Web-via-core (`mbgl-core` → WASM) feasibility validated; scaffolded as an opt-in,
+  build-time-flagged experiment that does NOT replace maplibre-gl-js.** Revisits the §3 lock
+  (Web = maplibre-gl-js) and the 2026-06-19 "rejected unify-on-one-pipeline" entry — but stays
+  **consistent with that entry's explicit escape hatch** (offer core rendering as an opt-in/
+  experimental path, A/B it, don't rip the SDK out up front). Motivation: render web through the same
+  `mbgl-core` the desktop tier uses, so feature parity is maintained once (in the core C ABI) with no
+  separate web SDK to track. **Feasibility = GO.** Deciding fact: our pinned submodule already vendors
+  mbgl-core's **WebGPU** backend (`platform/default/.../mbgl/webgpu/headless_backend.{hpp,cpp}`,
+  `option(MLN_WITH_WEBGPU)`, `cmake/webgpu.cmake` + Dawn) — selected by the **same backend-flag pattern
+  we already ship for the Windows Vulkan tier**; upstream released the WebGPU renderer Oct 2025
+  targeting an Emscripten web build, and mbgl-core already runs in browsers via WASM (Qt-for-WASM +
+  community `maplibre-native-wasm`). So the web target is "emcmake the existing engine with
+  `MLN_WITH_WEBGPU`, present into a `<canvas>`, bind the C ABI to JS" — not a new engine. Best perf =
+  WebGPU, with a WebGL2 (`MLN_WITH_OPENGL`) fallback for browser coverage. **Scaffolded this session
+  (gl-js untouched and still the default):** build flag `--dart-define=MAPLIBRE_WEB_CORE=true` selects
+  `MapLibreCoreWebController` in `MapLibreFlutterWeb` (compile-time const → the unused path
+  tree-shakes); new `packages/maplibre_flutter_web/lib/src/core_web/` — `core_wasm_interop.dart` (the
+  JS/WASM contract mirroring the C ABI), `core_wasm_loader.dart` (module load, clear error if the
+  artifact is missing), `core_web_controller.dart` (the platform controller `MapLibreMapPlatformController`, canvas-hosted;
+  gestures owned by the WASM/JS glue, so NO platform-interface or widget change). Full study +
+  architecture + phased plan + blockers in **`docs/experimental-web-core-wasm.md`**. **Deferred as
+  separate efforts (per the user):** the actual Emscripten build/artifact (the Phase-1 "build spike" —
+  needs the emsdk toolchain) and the "full core API" parity expansion. Key open blockers: a
+  canvas-targeted backend (the webgpu headless backend is offscreen), COOP/COEP for pthreads (or
+  single-thread jank), MBs download size vs gl-js's KBs, and a `fetch`-based file source (no curl under
+  WASM). Verified: `flutter analyze packages/maplibre_flutter_web` clean; gl-js default path unchanged.
+
 - **2026-06-20 — Public API reshaped to controller-on-widget + declarative style (§3 "Public API
   shape"; on `feat/controller-on-widget-api`).** Replaced the `onMapCreated`-returns-controller API
   (google_maps_flutter/maplibre_gl style) with the `webview_flutter` split: a user-constructible
@@ -1372,5 +1399,171 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     (Don't force the SurfaceTexture path in shipping code: it breaks under Impeller-Vulkan; the default
     ImageReader producer is correct for real devices.) For the emulator, the CPU present is the only option;
     its stutter is largely the emulator's slow GL readback (use a hardware-GPU emulator to reduce it).
+- **2026-06-20 — Web-via-core WASM: empirical build started; the engine compiles to WebAssembly (on
+  `feat/web-core-wasm-poc`).** Acting on the 2026-06-20 feasibility decision, branched off latest main
+  (after merging the controller-on-widget API rework and conforming the web scaffold:
+  `MapLibreMapController`→`MapLibreMapPlatformController`; `createMap`/`create` now take
+  `(style, options)`). Set up the Emscripten toolchain on the Windows box: **emsdk** + a real Python
+  (the winget Python is shadowed by the Windows Store `python.exe` execution alias — point
+  `EMSDK_PYTHON` at `…\Programs\Python\Python312\python.exe`) + VS2022's bundled cmake/ninja. **Key
+  result: `mbgl-core` both configures AND compiles to WASM** with `MLN_WITH_CORE_ONLY` +
+  `MLN_WITH_OPENGL` — 435/435 objects, **0 errors** → `libmbgl-core.a` (~17.5 MB) + vendored deps
+  (freetype/harfbuzz/…). This contradicts the upstream blocker
+  ([maplibre-native#2554](https://github.com/maplibre/maplibre-native/issues/2554), "can't run
+  emcmake without errors" — still open/unsolved): our pinned core builds cleanly. Reproducible probe
+  at `packages/maplibre_flutter_core/web/probe/` (its `../build/` is git-ignored). **Remaining work =
+  the platform layer + glue, NOT the core:** curl→`fetch` HTTP source; libuv→browser `RunLoop` (the
+  hard part); pthreads (Emscripten + COOP/COEP); EGL-pbuffer→WebGL2-on-canvas; sqlite/offline stub; a
+  web C-shim; and an embind JS module matching `core_wasm_interop.dart`. Realistic effort to a
+  rendering PoC: **week(s)** of platform-port work (run loop riskiest) — materially de-risked but not
+  finished this pass. Full status + ordered next steps in `docs/experimental-web-core-wasm.md`.
+  maplibre-gl-js remains the default; nothing here affects it.
+
+- **2026-06-20 — Web-via-core WASM PoC COMPLETE: mbgl-core renders an interactive map in Flutter web
+  (experimental, opt-in; on `feat/web-core-wasm-poc`).** Followed the 2026-06-20 feasibility decision
+  through to a working build of the whole platform-layer port. The native MapLibre engine, compiled to
+  WebAssembly, **renders + pans a map in the Flutter web example** — verified in headless Edge (crisp
+  full-world demotiles map; a scripted drag pans Atlantic→Asia; module read-back showed a fully-painted
+  canvas). Solves what upstream maplibre-native#2554 left open. **What was built**
+  (`packages/maplibre_flutter_core/src/web/` + `web/`):
+  - **Run loop** (`emscripten_run_loop.cpp`): libuv-free `RunLoop`/`AsyncTask`/`Timer`. The main thread
+    doesn't block (per-frame `runOnce()` tick via `emscripten_set_main_loop`); **mbgl worker threads**
+    (`util::Thread`, e.g. `OnlineFileSource`) block on a condvar and process their queue — the key
+    insight, since a futex-blocked pthread can't pump its JS event loop.
+  - **HTTP source** (`emscripten_http_file_source.cpp`): **synchronous** `emscripten_fetch` — same
+    reason: the file-source worker blocks, so it can't receive an async callback. (Serialises tiles per
+    worker; parallelism is a production follow-up.)
+  - **GL backend** (`emscripten_gl_backend.cpp`): WebGL2 on the canvas via `emscripten_webgl_*`
+    (Emscripten EGL has no pbuffer). Present = blit mbgl's color FBO → the canvas default framebuffer.
+  - **embind module** (`maplibre_flutter_core_web.cpp`): `MaplibreFlutterCore` →
+    `createMap/setStyle/setCamera/getCamera/resize/moveBy/scaleBy/animateTo/onReady/destroy`. Canvas
+    registered via `specialHTMLTargets` (decoupled from DOM-attach), auto-sized to CSS×DPR each frame,
+    gestures from raw pointer/wheel events; fly-to eased in the render loop.
+  - **Sysroot-gap stubs**: webp-decode, `sched_setscheduler` no-op, `<GLES3/gl3ext.h>` shim.
+  - **Build**: standalone `emcmake` (NOT `hook/build.dart`) → `maplibre_flutter_core.js` (~0.5 MB) +
+    `.wasm` (~9.4 MB), `-pthread`, served with COOP/COEP. **Dart loader** passes `mainScriptUrlOrBlob`
+    (the glue `<script>` is injected dynamically → no `document.currentScript`, else startup hangs at
+    `library_fetch_init`).
+  - **Gotchas**: `PTHREAD_POOL_SIZE` must be pre-allocated (a synchronous thread spawn from a blocking
+    main thread deadlocks otherwise — "thread pool is exhausted"); append `-Wno-error` to
+    `mbgl-compiler-options` (Emscripten's newer clang flags warnings upstream's `-Werror` CI doesn't —
+    same family as the Windows `/WX-` trick); GDI/SwiftShader caveats moot here (real WebGL via Edge).
+  gl-js stays the **default**; the core path is opt-in `--dart-define=MAPLIBRE_WEB_CORE=true`. Full
+  how-to-build/run + the production-remaining list (WebGPU backend for perf — already vendored; ~9.4 MB
+  download size; COOP/COEP deployment; serial-fetch parallelism; multi-map; artifact distribution) in
+  `docs/experimental-web-core-wasm.md`. Verified: web-package `flutter analyze` clean; `flutter build
+  web` green; renders + interactive on device (headless Edge).
+
+- **2026-06-20 — Web-via-core WASM: Continuous-mode rendering + resize-flip fix + zero-copy research
+  (on `feat/web-core-wasm-poc`).** Finished the PoC's two remaining issues and answered the zero-copy
+  question. All in `packages/maplibre_flutter_core/src/web/maplibre_flutter_core_web.cpp` (one source
+  file; Dart already plumbed the flag). Verified in headless Edge.
+  - **Continuous mode (was Static `renderStill`).** `WebMap` now honors the `continuous` createMap
+    option (default true, from `--dart-define=MAPLIBRE_CONTINUOUS`): it builds the `HeadlessFrontend`
+    with `invalidateOnUpdate=true` and the `Map` with `MapMode::Continuous` + a `WebFrameObserver`
+    (`mbgl::MapObserver`) whose `onDidFinishRenderingFrame` presents each finished frame (partial →
+    refined as tiles stream in) and fires `onReady` on the first. **Key insight:** mbgl self-drives —
+    no per-tick `render()` call. Every map mutation / tile load invalidates the frontend, whose
+    `asyncInvalidate` renders off the existing libuv-free RunLoop on the next `globalTick → runOnce()`.
+    `tick()` in Continuous mode does only `syncSize()` + `stepAnimation()`; the `rendering_`/`renderStill`
+    machinery is bypassed (kept for `continuous=false`). Idle = mbgl stops invalidating (no busy-loop;
+    confirmed by a camera-poll settling). Fixes the stutter-under-tile-load the Static path had.
+  - **Resize 180°-flip bug FIXED.** Root cause in `present()`: mbgl's `gl::Context` caches the
+    framebuffer binding in a write-through `State<>` wrapper and skips redundant `glBindFramebuffer`
+    calls; the old `present()` ended with a raw `glBindFramebuffer(GL_FRAMEBUFFER, 0)`, desyncing the
+    cache. So mbgl's NEXT `renderable.bind()` was a no-op and it rendered straight into **FBO 0** (the
+    canvas) — **upright** — and `present()` early-returned (`srcFbo==0`). That was the (correct-looking)
+    steady state. A resize → `HeadlessBackend::setSize → resource.reset()` allocates a **new offscreen
+    FBO id**, so the next `bind()` issues a *real* glBindFramebuffer → for one frame mbgl rendered into
+    the offscreen FBO, which the old blit **Y-flipped** → one upside-down frame, until the next mutation
+    desynced back to FBO 0. **Two-part fix** (mirrors the desktop GL presenter's `GlStateGuard`): blit
+    the offscreen color FBO → canvas FBO 0 **1:1 (no flip)**, and **re-bind mbgl's color FBO** before
+    returning so the cache stays truthful. The Y-flip was the offscreen→CPU/texture convention (desktop
+    readback), **wrong** for offscreen→on-screen-canvas. Now every frame deterministically renders into
+    the offscreen FBO and blits upright — verified by screenshotting *immediately after* a resize
+    (before any pan): no flip.
+  - **Zero-copy on web: already effectively in place; NO work needed; the desktop machinery has no
+    analogue.** Desktop zero-copy (IOSurface/dmabuf/D3D11-shared-handle) exists to avoid a GPU→CPU
+    readback and bridge a GPU texture into Flutter's **`Texture`/engine texture registrar**. On web
+    neither applies: Flutter embeds the map via **`HtmlElementView`** = a real DOM `<canvas>` (child of
+    `flt-glass-pane`, slotted) the **browser composites directly** — there is no Flutter `Texture` to
+    feed. mbgl (WebGL2) renders into a GPU FBO in the **same** context that owns the canvas; `present()`
+    is a single **intra-context GPU blit** (offscreen FBO → canvas FBO 0); `readStillImage` (the only
+    CPU readback) is used solely by the desktop `render()` + the test probe, never the live web path.
+    The final canvas→screen composite is the browser's (GPU compositing on modern HW); not under our
+    control and identical for gl-js. Possible micro-opts (not pursued, negligible): render mbgl directly
+    into FBO 0 to drop the one blit (needs a custom GL backend — `HeadlessBackend` always makes an
+    offscreen FBO; orientation-safe since direct-to-FBO-0 is upright), or drop `preserveDrawingBuffer`.
+    **The real web perf lever is the vendored WebGPU backend, not zero-copy.**
+  - **No Dart/interface/binding changes** (the JS API is unchanged); `flutter analyze` of the web
+    package stays clean. Build/verify recap unchanged (emsdk + real Python + VS2022 cmake/ninja →
+    `emcmake` the `maplibre_flutter_core_wasm` target → deploy `.js`/`.wasm` → serve COOP/COEP →
+    headless Edge + `cdp_*.py`). **Headless caveat:** a passive fly-to freezes mid-flight because
+    headless `requestAnimationFrame` goes idle without a compositor/input (`stepAnimation` runs off
+    rAF); it is NOT a bug — a real browser runs rAF at 60fps, and an rAF-kept-alive page
+    (`anim_test.html`) confirmed `animateTo` eases smoothly to the exact target and settles.
+  - **Follow-up (same session) — style-switch thread-pool exhaustion FIXED + fly-to zoom-out arc
+    added.** On-device testing surfaced two more issues:
+    - **"Broke after switching tiles" = WASM pthread-pool exhaustion.** Switching to a heavy style
+      (OpenFreeMap Liberty) hit *"Tried to spawn a new thread, but the thread pool is exhausted"* +
+      *"Blocking on the main thread is very dangerous"* (deadlock risk → broken render). Root cause:
+      `PTHREAD_POOL_SIZE`=32, and the original `emscripten_http_file_source.cpp` spawned **one pthread
+      per request** while mbgl dispatches up to `DEFAULT_MAXIMUM_CONCURRENT_REQUESTS`=20 at once — so
+      Liberty's tile/glyph/sprite burst + mbgl's other threads (background pool=4, file-source/
+      sequenced/db ~5, main) hit ~32. Fix: a **bounded fetch-thread pool** (8 long-lived workers
+      pulling a queue) replacing thread-per-request — fetch concurrency is capped regardless of the
+      burst, excess requests queue. Verified in headless Edge: Demotiles ⇄ Liberty switches with no
+      "pool exhausted", Liberty renders a correct labelled world map and switches back cleanly. (A
+      benign one-time `Blocking on the main thread` from mbgl's old-style teardown can still log; the
+      map renders through it.) **Caching gotcha during verify:** a warm browser profile served the
+      cached pre-fix `.wasm` despite `Cache-Control: no-store`; relaunch headless Edge with a fresh
+      `--user-data-dir` to load a rebuilt module.
+    - **Fly-to "zoom-back" arc.** Web `animateTo` did a straight zoom lerp, so London z10 → Tokyo z10
+      flew across the world at z10. Added a zoom-out arc (in `stepAnimation`): compute the zoom that
+      fits both endpoints (`fitZoom` from angular span vs CSS viewport width) and dip toward it at the
+      time-midpoint via `sin(πt)`, **only when it's below both endpoints** (so +/- buttons / short
+      hops don't overshoot — mirrors the macOS fly-to dip fix). Verified: London→Tokyo dips to z≈1.8
+      mid-flight then back to z10. Both fixes are in the two web files only (no Dart/interface change).
+    - **Resize white-blink FIXED.** Resizing blinked white because the resize path set
+      `canvas.width/height` (which clears the WebGL drawing buffer → white page shows through) in one
+      animation frame, but rendered+blitted the new size only on the *next* frame, so the compositor
+      saw the cleared canvas in between. Fix: move the canvas backing-store resize **into `present()`,
+      right before the blit** (guarded by `canvasW_/canvasH_`), so clear+repaint are in the same rAF
+      turn — the compositor never sees a cleared canvas. **User-confirmed on real hardware: no blink.**
+      Verify note: headless can't measure this — `drawImage` WebGL readback returns spurious transparent
+      frames under SwiftShader (a *static* map showed false blanks), and `Page.startScreencast`
+      coalesces the transient; the compositor screencast showed no white. **Resize "skew"/stretch FIXED via
+      `ResizeObserver`.** After the blink fix, a ~1-frame stretch remained (prev frame CSS-scaled to
+      the new size before the new-size frame renders) because the engine's per-tick `syncSize` *poll*
+      notices Flutter's CSS-box change a frame late. A synchronous render in the resize turn was
+      **tried and reverted** (detection is the frame-late part, not detect→render; extra render made it
+      worse). Fix (as gl-js does): a JS `ResizeObserver` on the canvas (in `core_web_controller.dart`)
+      whose callback — fired after layout, before paint — calls a new `resizeSync` embind method
+      (`resize()` + one `runOnce()` → render+present in the same callback), so the correct-size frame
+      composits in the same paint (zero lag). First `resizeSync` flips the engine's `autoSize_` off so
+      the laggy poll stops (no double-driving). **User-confirmed: resize is now smooth.** This change
+      touches Dart too (interop `resizeSync` + the observer wiring + dispose `disconnect()`), so it
+      needs a `flutter build web` (not just the wasm rebuild). Edge case left: a pure DPR change with
+      no CSS resize won't trigger the observer (rare).
+    - **Verified end-to-end on real hardware** (user, in-browser): continuous render is smooth,
+      resize no longer blinks, Demotiles⇄Liberty switches cleanly, fly-to arcs out and back.
+    - **Map "stuck"/blank on a REAL GPU FIXED — present() must `glFlush`.** A later A/B (native vs
+      gl-js, real GPU) surfaced: the map intermittently stopped *displaying* (pans registered but not
+      drawn; a window resize made it jump to the correct position), and switching to Liberty went
+      blank. The engine was fine — a canvas pixel read-back showed the canvas *had* the rendered map
+      (~16k colours for Liberty), and both the standalone engine and the **headless** Flutter app
+      (ANGLE→SwiftShader) rendered Liberty correctly; it only broke in the **Flutter app on a real
+      GPU** (ANGLE→D3D11, Edge/Windows). Root cause: `present()` blitted (offscreen FBO → canvas) but
+      never flushed, so on ANGLE/D3D11 the blit could sit unsubmitted at the end of the rAF callback
+      and the browser composited a **stale** canvas. A resize "fixed" it only because `resizeSync`
+      does an explicit `runOnce()` + `canvas.width` change (forces flush+recomposite). Fix:
+      **`glFlush()` after the blit** in `present()` (non-blocking, cheap per frame) so the compositor
+      always gets the latest frame; also wrapped `globalTick` in **try/catch** so an uncaught
+      exception can't stop rAF. Found via a temporary heartbeat (tick/present counters) that showed
+      the loop kept firing while "stuck" → a composite problem, not a dead loop. **User-confirmed:
+      cannot reproduce the stuck or the Liberty blank after the fix.** **General rule:** on web, after
+      blitting to the canvas in an rAF callback, `glFlush()` — don't assume the implicit
+      pre-composite flush submits a `glBlitFramebuffer`, especially under ANGLE/D3D11 with a second
+      WebGL context (Flutter's CanvasKit) on the page.
 
 _Append new decisions here with date and rationale._
