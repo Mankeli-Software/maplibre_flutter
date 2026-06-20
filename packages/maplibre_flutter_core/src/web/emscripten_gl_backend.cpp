@@ -48,7 +48,9 @@ public:
         attrs.stencil = true;
         attrs.antialias = false;
         attrs.premultipliedAlpha = true;
-        attrs.preserveDrawingBuffer = false;
+        // We blit mbgl's FBO to the canvas only when the map is dirty, so the canvas
+        // must keep the last frame between presents (and for read-back verification).
+        attrs.preserveDrawingBuffer = true;
         attrs.failIfMajorPerformanceCaveat = false;
         attrs.enableExtensionsByDefault = true;
         // Render on the thread that owns the context (the map / main thread).

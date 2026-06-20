@@ -92,14 +92,13 @@ public:
         : canvas_(canvas), pixelRatio_(static_cast<float>(pixelRatio)) {
         ensureLoop();
 
-        // Register the canvas with Emscripten so the WebGL context can target it by
-        // a private selector even before it is attached to the DOM.
+        // Register the canvas in Emscripten's module-scope specialHTMLTargets map so
+        // emscripten_webgl_create_context can target it by key, independent of whether
+        // it is attached to the DOM yet. (Under MODULARIZE there is no global Module,
+        // so we reach the module-scope var via EM_ASM + Emval.)
         target_ = "!mlbf_canvas_" + std::to_string(g_nextId++);
-        val module = val::global("Module");
-        if (module["specialHTMLTargets"].isUndefined()) {
-            module.set("specialHTMLTargets", val::object());
-        }
-        module["specialHTMLTargets"].set(target_, canvas_);
+        EM_ASM({ specialHTMLTargets[UTF8ToString($0)] = Emval.toValue($1); }, target_.c_str(),
+               canvas_.as_handle());
         mbgl::webgl::setCanvasSelector(target_);
 
         size_ = sizeFromCanvas(canvas_, mbgl::Size{1, 1});
@@ -210,10 +209,7 @@ public:
     ~WebMap() {
         map_.reset();
         frontend_.reset();
-        val module = val::global("Module");
-        if (!module["specialHTMLTargets"].isUndefined()) {
-            module["specialHTMLTargets"].set(target_, val::undefined());
-        }
+        EM_ASM({ delete specialHTMLTargets[UTF8ToString($0)]; }, target_.c_str());
     }
 
 private:
