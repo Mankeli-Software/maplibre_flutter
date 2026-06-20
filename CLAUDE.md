@@ -211,7 +211,12 @@ Properties are placed by a **three-bucket rule** (not just "mutable vs not"):
 - **Mutable + declarative/low-frequency** → widget prop (`MapLibreMap.style`; pushed via
   `didUpdateWidget` → platform `setStyle`). Style's single source of truth is the widget — there
   is **no public `controller.setStyle`** (avoids the declarative/imperative conflict).
-- **Mutable + imperative/high-frequency/command** → controller (`getCamera`/`moveCamera`/fly).
+- **Mutable + imperative/high-frequency/command** → controller, grouped by sub-domain
+  **namespace** when the surface is large. Camera lives under `controller.camera`
+  (`MapLibreCameraController`: `move`/`getPosition`/fly/fit/… — 20+ ops expected), not as flat
+  methods on the controller. This is the sub-manager pattern (Mapbox's `map.annotations`/
+  `map.style`); the namespace is a pure app-facing wrapper forwarding to the (flat) platform
+  controller, so it doesn't ripple into the interface or the 6 impls.
 
 Mirrors `google_maps_flutter` (`initialCameraPosition` + declarative `style` + imperative camera).
 Dispose ownership: the widget disposes only a controller it created; a user-provided controller is
@@ -1118,7 +1123,11 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     truth — **no public `controller.setStyle`**, which would reintroduce the declarative/imperative
     conflict). `createMap` signature is now `({required String style, required MapOptions options})`.
     Camera stays imperative (never declarative — google_maps_flutter does the same; animating a
-    camera through `setState` is wrong).
+    camera through `setState` is wrong). **Camera is namespaced under `controller.camera`**
+    (`MapLibreCameraController`: `move`/`getPosition` now, 20+ ops planned) rather than flat methods
+    on the controller — the sub-manager pattern, chosen because the camera API is large. The
+    namespace is a pure app-facing wrapper forwarding to the (flat) platform controller's
+    `moveCamera`/`getCamera`, so the platform interface + 6 impls are untouched.
   - **Dispose ownership:** widget disposes only a controller it created; a user-provided controller
     is `detach()`ed (native torn down) on unmount and the owner calls `dispose()`. `didUpdateWidget`
     handles controller-swap (detach/dispose old, attach new) and style-change. Controller widget-glue
