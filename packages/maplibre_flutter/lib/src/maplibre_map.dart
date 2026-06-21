@@ -405,6 +405,31 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // off the cursor. We keep the prior position so the gesture start can undo it.
   Offset _prevPointerPos = Offset.zero;
 
+  // Global-route fallback state. A trackpad pinch / two-finger pan / scroll fires at
+  // the cursor position; if an overlay widget (e.g. app controls) sits on top of the
+  // map there, the event hit-tests to the overlay and the map's own gesture layer
+  // never sees it — so after tapping an overlay button the next pinch does nothing
+  // until you click the map. Native and web maps don't let controls block zoom, so
+  // we add a global pointer route: when a pan-zoom/scroll lands within the map's
+  // bounds but the map's render box is NOT in the hit path (an overlay blocked it),
+  // we drive the map from here. When the map IS hit, the normal Listener/Gesture
+  // path handles it and the global route stays out (so there is no double-handling).
+  bool _blockedPanZoom = false;
+  double _blockedLastScale = 1;
+  Offset _blockedAnchor = Offset.zero;
+  // The true cursor position (global coords), tracked from every hover/move via the
+  // global route. Linux's GTK embedder can report a STALE position on trackpad
+  // pan-zoom/scroll events (the last click location) — after tapping an overlay
+  // control the pinch still reports the control's position even after the cursor has
+  // moved onto the map. So for routing/anchoring we trust this, not event.position.
+  Offset? _globalCursorPos;
+
+  @override
+  void initState() {
+    super.initState();
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_globalPointerRoute);
+  }
+
   // Linux's GTK embedder reports touchpad two-finger pan deltas ~2x larger than the
   // equivalent pointer motion (verified from the raw PointerPanZoom stream: the
   // focal delta we apply equals GTK's panDelta, which is itself doubled), so the
@@ -527,9 +552,95 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   @override
   void dispose() {
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_globalPointerRoute);
     _inertiaTicker?.stop();
     _inertiaTicker?.dispose();
     super.dispose();
+  }
+
+  // True when [globalPos] hit-tests to this map's gesture box (so the normal
+  // Listener/GestureDetector path will handle it and the global route must not).
+  bool _hits(RenderBox box, Offset globalPos, int viewId) {
+    final result = HitTestResult();
+    WidgetsBinding.instance.hitTestInView(result, globalPos, viewId);
+    for (final entry in result.path) {
+      if (entry.target == box) return true;
+    }
+    return false;
+  }
+
+  // Resolve the zoom anchor (map-local) for a blocked gesture: the true cursor when
+  // it is over the map, otherwise the map centre (cursor is over an overlay → no map
+  // point under it, so zoom about centre like the +/- buttons).
+  Offset _blockedAnchorFor(RenderBox box, Offset origin, Offset cursor, int viewId) =>
+      _hits(box, cursor, viewId)
+      ? cursor - origin
+      : Offset(box.size.width / 2, box.size.height / 2);
+
+  // See [_blockedPanZoom]: drive the map from a global route when an overlay blocks
+  // the pointer from reaching the map's own gesture layer (or when the embedder
+  // reports a stale pan-zoom position, see [_globalCursorPos]).
+  void _globalPointerRoute(PointerEvent event) {
+    // Track the true cursor everywhere (the global route sees hovers over overlays
+    // too); pan-zoom/scroll positions can be stale on Linux.
+    if (event is PointerHoverEvent || event is PointerMoveEvent) {
+      _globalCursorPos = event.position;
+    }
+    final isPanZoom = event is PointerPanZoomStartEvent ||
+        event is PointerPanZoomUpdateEvent ||
+        event is PointerPanZoomEndEvent;
+    if (!isPanZoom && event is! PointerScrollEvent) return;
+
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final origin = box.localToGlobal(Offset.zero);
+    final mapRect = origin & box.size;
+    final cursor = _globalCursorPos ?? event.position; // prefer the true cursor
+
+    if (event is PointerPanZoomStartEvent) {
+      // If the event itself routes to the map, the local path handles it — stay out.
+      if (_hits(box, event.position, event.viewId)) {
+        _blockedPanZoom = false;
+        return;
+      }
+      // Else an overlay (or a stale pan-zoom position) blocked the map. Take over,
+      // but only if the true cursor is within the map.
+      if (!mapRect.contains(cursor)) {
+        _blockedPanZoom = false;
+        return;
+      }
+      _blockedPanZoom = true;
+      _stopInertia();
+      _inTrackpadPanZoom = true;
+      _blockedLastScale = 1;
+      _blockedAnchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
+    } else if (event is PointerPanZoomUpdateEvent) {
+      if (!_blockedPanZoom) return;
+      final zooming = (event.scale - 1.0).abs() > 0.02;
+      if (!zooming) {
+        final pdx = event.panDelta.dx * _panGain;
+        final pdy = event.panDelta.dy * _panGain;
+        if (pdx != 0 || pdy != 0) widget.handler.moveBy(pdx, pdy);
+      }
+      if (event.scale > 0) {
+        final relative = event.scale / _blockedLastScale;
+        if (relative != 1.0) {
+          widget.handler.scaleBy(relative, _blockedAnchor.dx, _blockedAnchor.dy);
+        }
+        _blockedLastScale = event.scale;
+      }
+    } else if (event is PointerPanZoomEndEvent) {
+      _blockedPanZoom = false;
+      _inTrackpadPanZoom = false;
+    } else if (event is PointerScrollEvent) {
+      // Local path handles it when the event routes to the map.
+      if (_hits(box, event.position, event.viewId)) return;
+      if (!mapRect.contains(cursor)) return;
+      _stopInertia();
+      final anchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
+      final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
+      if (factor != 1.0) widget.handler.scaleBy(factor, anchor.dx, anchor.dy);
+    }
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
