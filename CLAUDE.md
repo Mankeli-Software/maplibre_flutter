@@ -1609,4 +1609,28 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     this session (debug builds fine throughout) — looked transient (a stale-artifact / running-app
     file lock), not investigated; flag if it recurs.
 
+- **2026-06-21 — Windows pinch-zoom regressed by a blind-ported Linux anchor flip; reverted to
+  pass-through (on `main`, commit `43d2992`).** The Linux desktop-gesture fix (`1963302`) added a
+  Y-flip to the **Windows** controller's `scaleBy` (`_coreMap.scaleBy(scale, anchorX, _renderHeight
+  - anchorY)`) "because Windows shares the same core present path" — but it was **never
+  HW-verified on Windows** and contradicted its own commit message (which said Windows "gets the
+  matching raw-anchor scaleBy", yet the diff applied a *flipped* anchor). On hardware it mirrored
+  the anchor vertically: a top-of-widget trackpad pinch zoomed about the bottom ("zooms to random
+  positions"). **Root cause confirmed by an adversarial-verify workflow** (git history + both
+  present paths + the Dart anchor-source change): the desktop present-path blit (Windows Vulkan
+  `blitImage` `maplibre_flutter_core_vk.cpp:420`; Linux GL `glBlitFramebuffer` dst-Y inverted
+  `maplibre_flutter_core_gl.cpp:305`) flips only the **pixel buffer** (mbgl's bottom-up framebuffer
+  → the top-down texture/CPU-readback convention); it does **NOT** change mbgl's top-left
+  `ScreenCoordinate` anchor space, which already matches Flutter's top-left gesture coords. The core
+  C ABI (`mbl_map_scale_by` → `mbgl::ScreenCoordinate{x,y}`) applies **no internal anchor
+  transform**, identically on all desktop platforms — so the anchor convention is **pass-through,
+  no flip**, the same value the **hardware-verified Linux** controller uses (and the pre-`1963302`
+  Windows state at `55ee9d4`). Fix: revert Windows `scaleBy` to `anchorX, anchorY`. **Only that one
+  file changed** — Linux controller and the shared `maplibre_map.dart` gesture layer (the
+  `_lastPointerPos` anchor-source change, which is sound and orthogonal to the flip) are untouched,
+  so Linux's HW-verified behaviour is unaffected. User-confirmed on Windows hardware: trackpad pinch
+  now zooms on the cursor. **LESSON: never blind-port one platform's controller change to a sibling
+  citing a shared core — HW-verify it there, or leave it on the proven convention. "Verified on
+  Linux = pass-through" must be copied as pass-through, not transformed into a flip.**
+
 _Append new decisions here with date and rationale._
