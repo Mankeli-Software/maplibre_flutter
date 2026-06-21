@@ -1566,4 +1566,47 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
       pre-composite flush submits a `glBlitFramebuffer`, especially under ANGLE/D3D11 with a second
       WebGL context (Flutter's CanvasKit) on the page.
 
+- **2026-06-21 — Windows/Linux trackpad pinch-zoom drifted from the cursor; root cause was the
+  PINCH gesture path (focal-centroid drift), NOT the present/texture mapping (on `main`, commit
+  `55ee9d4`).** Long-standing "scroll/pinch zoom does not follow the cursor on Windows" bug, fixed.
+  - **The prior diagnosis was wrong and cost time.** It had concluded the bug was "below Dart — in
+    the Windows native present/texture mapping (Vulkan arm)." This session disproved that with
+    deterministic measurements: (1) driving the platform controller's `scaleBy` with known anchors
+    moves the camera *toward* the anchor correctly in all 4 directions + center; (2) a real
+    mouse-wheel `PointerScrollEvent` through the full widget stack does the same; (3) a dumped
+    world-map PNG from the core readback is north-up/east-right (not mirrored/flipped) and a
+    zoom-about-the-NE-corner correctly anchors NE; (4) the Windows plugin presents the RGBA frame
+    1:1, and on this Intel box the displayed texture *is* that CPU readback. So the controller,
+    core, mbgl math, DPR handling, and present were all correct — the mouse-wheel zoom was never
+    broken.
+  - **Real root cause: the user zooms with a TRACKPAD PINCH, a different code path.** Wheel zoom
+    goes through `_DesktopMapGestures._onPointerSignal`; a pinch goes through `_onScaleUpdate`
+    (`GestureDetector.onScaleUpdate`). On Windows/Linux a trackpad pinch arrives as a two-finger
+    *scale gesture* whose focal **centroid drifts** as the fingers spread — live logging showed the
+    focal slide ~90px left and ~130px up (off-screen) during one pinch while `scale` went 1.0→1.74.
+    macOS instead reports the **stable cursor** as the focal (its magnify gesture), which is why
+    macOS worked. `_onScaleUpdate` faithfully (a) `moveBy`'d the focal delta and (b) `scaleBy`'d
+    about the *live, drifting* focal, so the map slid away from the cursor while zooming. (Same
+    "janky pan/zoom" family flagged in the 2026-06-19 Windows entries, but the *anchor* wrongness —
+    not just frame rate — was the focal drift.)
+  - **Fix (`maplibre_flutter/lib/src/maplibre_map.dart`):** freeze the zoom anchor (`_zoomAnchor`)
+    at pinch onset and stop panning from focal drift while `zooming`; only pan + track the anchor on
+    non-zoom frames. Mathematically: a combined pan+zoom must be EITHER (live focal + compensating
+    `moveBy`) OR (frozen anchor + no `moveBy`) — the old code did the former with a noisy focal; the
+    fix does the latter, which is stable. No-op on macOS (focal doesn't drift, so frozen ≈ live and
+    the during-zoom `moveBy` was already ~0); two-finger pan + inertia unchanged (the `!zooming`
+    path). Guarded by a **device-free widget regression test** in `maplibre_map_test.dart`: a
+    synthetic drifting-centroid two-finger pinch through the real widget asserts every `scaleBy`
+    uses one frozen anchor (near the start, not the drifted end) and no pan is applied — runs in
+    plain `melos test`, no hardware.
+  - **LESSON: the input device matters — confirm HOW the user reproduces before diagnosing.**
+    "Zoom doesn't follow the cursor" had a completely different cause for trackpad-pinch vs
+    mouse-wheel; the wheel path was a red herring the prior session verified "correct" and then
+    wrongly extrapolated to "must be the present." Diagnose the *actual* gesture path
+    (`_onScaleUpdate` vs `_onPointerSignal`), and for a "displayed content looks wrong" report,
+    verify the rendered pixels directly (a PNG/visual check) rather than reasoning from "pan works."
+  - **Aside:** `flutter build windows --release` failed once at the CMake `INSTALL.vcxproj` step
+    this session (debug builds fine throughout) — looked transient (a stale-artifact / running-app
+    file lock), not investigated; flag if it recurs.
+
 _Append new decisions here with date and rationale._
