@@ -24,14 +24,19 @@ class _FakeController implements MapLibreMapPlatformController {
   Future<void> dispose() async => disposed = true;
 }
 
-/// A desktop-style controller that also drives gestures in Dart.
+/// A desktop-style controller that also drives gestures in Dart. Records the
+/// gesture calls so tests can assert what the widget gesture layer forwarded.
 class _FakeGestureController extends _FakeController
     implements MapLibreGestureHandler {
   _FakeGestureController(super.renderHandle);
+  final List<Offset> moveCalls = <Offset>[]; // (dx, dy)
+  final List<({double scale, Offset anchor})> scaleCalls =
+      <({double scale, Offset anchor})>[];
   @override
-  void moveBy(double dx, double dy) {}
+  void moveBy(double dx, double dy) => moveCalls.add(Offset(dx, dy));
   @override
-  void scaleBy(double scale, double anchorX, double anchorY) {}
+  void scaleBy(double scale, double anchorX, double anchorY) =>
+      scaleCalls.add((scale: scale, anchor: Offset(anchorX, anchorY)));
 }
 
 class _FakePlatform extends MapLibreFlutterPlatform {
@@ -252,4 +257,80 @@ void main() {
     expect(find.byType(Texture), findsOneWidget);
     expect(_gestureLayer(), findsNothing);
   });
+
+  testWidgets(
+    'pinch zoom freezes its anchor and does not pan from focal drift',
+    (tester) async {
+      // Regression: a trackpad pinch on Windows/Linux arrives as a two-finger
+      // scale gesture whose focal centroid DRIFTS as the fingers spread (macOS
+      // reports the stable cursor). The desktop gesture layer must zoom about a
+      // FROZEN anchor and not pan by the drift — otherwise the map slides away
+      // from the cursor while zooming.
+      final platform = _FakePlatform(
+        const TextureHandle(textureId: 9),
+        gestures: true,
+      );
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        const Directionality(
+          textDirection: TextDirection.ltr,
+          child: MapLibreMap(style: _style, options: _options),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final controller = platform.lastController! as _FakeGestureController;
+
+      // Two fingers start ~(400,300) (centroid), 100px apart, then spread to
+      // 300px (3x zoom) while the centroid slides up-left to ~(250,150).
+      final g1 = await tester.startGesture(const Offset(350, 300), pointer: 1);
+      final g2 = await tester.startGesture(const Offset(450, 300), pointer: 2);
+      await tester.pump();
+      const steps = 12;
+      for (var i = 1; i <= steps; i++) {
+        final t = i / steps;
+        final cx = 400 + (250 - 400) * t;
+        final cy = 300 + (150 - 300) * t;
+        final half = (100 + (300 - 100) * t) / 2;
+        await g1.moveTo(Offset(cx - half, cy));
+        await g2.moveTo(Offset(cx + half, cy));
+        await tester.pump();
+      }
+      await g1.up();
+      await g2.up();
+      await tester.pump();
+
+      // The pinch zoomed.
+      expect(controller.scaleCalls, isNotEmpty, reason: 'pinch should zoom');
+      // Every zoom is about the SAME anchor (frozen), not the drifting focal.
+      final anchors = controller.scaleCalls.map((c) => c.anchor).toSet();
+      expect(
+        anchors.length,
+        1,
+        reason: 'zoom anchor must be frozen, not follow the drifting centroid',
+      );
+      // The frozen anchor stayed near the START centroid (~400,300), not the
+      // drifted end (~250,150).
+      final a = anchors.single;
+      expect(
+        a.dx,
+        greaterThan(330),
+        reason: 'anchor near start x, not drifted',
+      );
+      expect(
+        a.dy,
+        greaterThan(260),
+        reason: 'anchor near start y, not drifted',
+      );
+      // No meaningful pan applied from the focal drift during the zoom.
+      final totalPan = controller.moveCalls.fold<double>(
+        0,
+        (s, m) => s + m.dx.abs() + m.dy.abs(),
+      );
+      expect(
+        totalPan,
+        lessThan(20),
+        reason: 'focal drift must not become a pan while zooming',
+      );
+    },
+  );
 }

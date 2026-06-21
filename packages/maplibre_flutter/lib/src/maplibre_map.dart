@@ -353,6 +353,16 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   Offset _lastFocalPoint = Offset.zero;
   double _lastScale = 1;
 
+  // Anchor a pinch zooms about. Tracks the focal point while the gesture is only
+  // panning, then FREEZES at pinch onset and stays put for the rest of the zoom.
+  // Rationale: a trackpad pinch on Windows/Linux arrives as a two-finger scale
+  // gesture whose focal *centroid drifts* as the fingers spread (macOS instead
+  // reports the stable cursor). Zooming about the live, drifting centroid — and
+  // panning by its delta — slid the map away from the cursor. A frozen anchor
+  // makes pinch zoom about a stable point (≈ the cursor) on every desktop tier;
+  // it's a no-op on macOS, where the focal doesn't drift.
+  Offset _zoomAnchor = Offset.zero;
+
   // Pan inertia ("fling"): when the drag is released with velocity, keep panning
   // and decay it, so the custom rendering engines (desktop core + core-on-mobile)
   // feel like the native SDKs / gl-js. Driven by a Ticker; the velocity decays
@@ -390,39 +400,49 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     _dragVelocity = Offset.zero;
     _lastMoveUs = _clock.elapsedMicroseconds;
     _gestureHadScale = false;
+    _zoomAnchor = details.localFocalPoint;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
     final focal = details.localFocalPoint;
     final dx = focal.dx - _lastFocalPoint.dx;
     final dy = focal.dy - _lastFocalPoint.dy;
-    if (dx != 0 || dy != 0) {
-      widget.handler.moveBy(dx, dy);
-    }
     _lastFocalPoint = focal;
 
     // A *scaling* gesture is a zoom (pinch) — detect by scale change, NOT by finger
     // count: a two-finger drag with scale ≈ 1 is a pan and should still fling.
     final zooming = (details.scale - 1.0).abs() > 0.02;
+
     if (zooming) {
       _gestureHadScale = true;
-    }
-
-    // Track a smoothed drag velocity for the release fling — only for a pure pan,
-    // so a zoom's focal drift never becomes pan velocity.
-    final nowUs = _clock.elapsedMicroseconds;
-    final dt = (nowUs - _lastMoveUs) / 1e6;
-    _lastMoveUs = nowUs;
-    if (!zooming && dt > 0 && dt < 0.1) {
-      final instant = Offset(dx / dt, dy / dt); // px/s
-      const a = 0.6; // EMA weight toward the most recent sample
-      _dragVelocity = _dragVelocity * (1 - a) + instant * a;
+      // Freeze the zoom anchor: do NOT pan by the focal delta while zooming. On
+      // Windows/Linux trackpads the focal centroid drifts as the fingers spread,
+      // and applying that drift as a pan (plus a moving zoom anchor) slid the map
+      // away from the cursor (see [_zoomAnchor]).
+    } else {
+      // Pure pan (or pre-pinch): track the focal so the zoom anchor is the point
+      // under the gesture right before the pinch starts, and pan by the delta.
+      _zoomAnchor = focal;
+      if (dx != 0 || dy != 0) {
+        widget.handler.moveBy(dx, dy);
+      }
+      // Track a smoothed drag velocity for the release fling — only for a pure
+      // pan, so a zoom's focal drift never becomes pan velocity.
+      final nowUs = _clock.elapsedMicroseconds;
+      final dt = (nowUs - _lastMoveUs) / 1e6;
+      _lastMoveUs = nowUs;
+      if (dt > 0 && dt < 0.1) {
+        final instant = Offset(dx / dt, dy / dt); // px/s
+        const a = 0.6; // EMA weight toward the most recent sample
+        _dragVelocity = _dragVelocity * (1 - a) + instant * a;
+      }
     }
 
     if (details.scale > 0) {
       final relative = details.scale / _lastScale;
       if (relative != 1.0) {
-        widget.handler.scaleBy(relative, focal.dx, focal.dy);
+        // Zoom about the frozen anchor (≈ the cursor), not the live focal.
+        widget.handler.scaleBy(relative, _zoomAnchor.dx, _zoomAnchor.dy);
       }
       _lastScale = details.scale;
     }
