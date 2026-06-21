@@ -19,10 +19,15 @@ backend-flag pattern* we already ship in production for the Windows **Vulkan** t
 target is therefore "build the existing engine with the Emscripten toolchain, select
 `MLN_WITH_WEBGPU`, present into a `<canvas>`, and bind the C ABI to JS" — not a new engine.
 
-**Recommendation:** pursue it as a **build-time-flagged, opt-in experiment** (`MAPLIBRE_WEB_CORE`),
-keeping maplibre-gl-js the default until the core path matches it on **download size, performance,
-and feature parity**. This is exactly the "offer core rendering as an opt-in/experimental path,
-A/B it, don't rip the SDK out up front" escape hatch recorded in CLAUDE.md §12 (2026-06-19).
+**Status update (2026-06-21):** the core-primary inversion made the WASM core the **default web
+renderer** (the `maplibre_flutter_web` package) and moved maplibre-gl-js to the opt-in
+**`maplibre_flutter_web_gljs`** package — there is no longer a `MAPLIBRE_WEB_CORE` dart-define;
+the choice is which package the app depends on. **Productionizing this default is the top
+remaining publish risk:** the WASM artifact must be bundled/distributed (a `flutter.assets`
+entry + a CI emscripten build), the `COOP`/`COEP` hosting headers documented with a ready serve
+config, and ideally a single-thread fallback variant shipped for header-less hosting. Until that
+lands, web consumers who want the zero-config, KB-sized, header-free path should add
+`maplibre_flutter_web_gljs`. See the 2026-06-21 §12 entry and `docs/core-primary-inversion-plan.md`.
 
 ---
 

@@ -24,6 +24,14 @@ consequences that must be respected throughout:
 
 ## 2. Current status & migration
 
+> **⚠️ Renderer default flipped (2026-06-21).** `mbgl-core` is now the **default renderer on
+> every platform**; the native MapLibre SDKs and maplibre-gl-js are **opt-in, build-time-excluded
+> packages** (`maplibre_flutter_{android,ios}_sdk`, `maplibre_flutter_web_gljs`). See §3 "One
+> engine, optional native renderers" and the 2026-06-21 §12 entry. The per-platform POC
+> narratives below are kept as **historical record** of how each renderer was brought up — where
+> they say a native SDK / gl-js is "the default" and core is "experimental / opt-in", read that as
+> **now inverted**.
+
 The repo was initialised with `flutter create --template=package_ffi maplibre_flutter`,
 which produces a **single FFI package** (`lib/`, `src/`, `hook/build.dart`,
 `tool/ffigen.dart`) — the recommended way to build and bundle native code since Flutter
@@ -182,23 +190,35 @@ Section 11.
 | ------------ | --------------------------------------------------------------------------------------------------- |
 | Package name | `maplibre_flutter`                                                                                  |
 | Structure    | Package-separated **federated plugin**, **melos** monorepo + pub workspaces                         |
-| Android      | **jnigen** against the Kotlin MapLibre SDK; `AndroidView` / `SurfaceTexture`                        |
-| iOS          | **swiftgen** against the MapLibre Apple SDK (`MLNMapView`); **`UiKitView` platform view**           |
+| Android      | **`mbgl-core` via ffigen** (OpenGL ES) + Flutter `Texture` (SurfaceProducer). _Opt-in:_ jnigen against the Android SDK (`AndroidView`) in `maplibre_flutter_android_sdk`. |
+| iOS          | **`mbgl-core` via ffigen** (Metal) + Flutter `Texture` (IOSurface). _Opt-in:_ swiftgen against the Apple SDK (`UiKitView`) in `maplibre_flutter_ios_sdk`.                  |
 | macOS        | **`mbgl-core` via ffigen** + **Metal external texture** (`FlutterTexture`)                          |
-| Windows      | **`mbgl-core` via ffigen** + OpenGL via ANGLE + GPU-surface/pixel-buffer texture                    |
+| Windows      | **`mbgl-core` via ffigen** + Vulkan + GPU-surface/pixel-buffer texture                              |
 | Linux        | **`mbgl-core` via ffigen** + native OpenGL + `FlTextureGL`                                          |
-| Web          | **maplibre-gl-js** via `dart:js_interop` + `package:web`; `HtmlElementView` + `pointer_interceptor` |
+| Web          | **`mbgl-core` compiled to WASM** (WebGL2) → `<canvas>` in `HtmlElementView`. _Opt-in:_ maplibre-gl-js (`dart:js_interop`) in `maplibre_flutter_web_gljs`.                  |
 
-### The two tiers
+### One engine, optional native renderers (2026-06-21 inversion)
 
-- **Mobile tier (Android + iOS):** wrap the mature official native SDKs. Best native feel,
-  lowest risk, shipped first. Gestures/annotations/location come from the SDK.
-- **Desktop tier (macOS + Windows + Linux):** one shared `mbgl-core` integration rendered
-  into a GPU texture. macOS lives here (not paired with iOS) so it inherits the same
-  hardened core as Windows/Linux. Gestures/camera implemented once in Dart over the core.
+`mbgl-core` is the **default, endorsed renderer on every platform** — one engine, drawn
+off-screen and composited through Flutter's texture pipeline (a `<canvas>` via WASM on web).
+Gestures/camera are implemented once in Dart over the engine. This is the unification the
+2026-06-19 entry left as the desktop-only plan, now extended to mobile + web.
 
-Because iOS uses the SDK and macOS uses the core, **do not use `sharedDarwinSource`** — the
-two Darwin platforms diverge by design.
+The mature native renderers are **opt-in, build-time-excluded** packages, kept for A/B testing
+and for apps that want a native SDK's gesture/annotation/location stack:
+
+- `maplibre_flutter_android_sdk` — MapLibre Android SDK (jnigen, `AndroidView`).
+- `maplibre_flutter_ios_sdk` — MapLibre Apple SDK (swiftgen, `UiKitView`).
+- `maplibre_flutter_web_gljs` — maplibre-gl-js.
+
+An app adds one of these to **override** the endorsed core default for that platform; absent,
+the alternate renderer's native code never ships (no bloat). A `--dart-define` cannot do this —
+it only tree-shakes Dart, not native compilation — so package separation is the mechanism. On
+iOS the split also **removes the MapLibre Apple SDK from the core package entirely**, killing
+the prior duplicate-mbgl-symbol blocker. (See the 2026-06-21 decision-log entry.)
+
+**Do not use `sharedDarwinSource`** — the iOS core package, the iOS SDK package, and macOS are
+separate federated packages with their own Swift; they diverge by design.
 
 ### Rendering is split, the public API is not
 
@@ -251,13 +271,16 @@ maplibre_flutter/                      # repo root: pub workspace + melos
    ├─ maplibre_flutter/                # app-facing: public API + MapLibreMap widget; endorses impls
    │  └─ example/                      # shared example app (also the manual test harness)
    ├─ maplibre_flutter_platform_interface/
-   ├─ maplibre_flutter_core/           # C-shim over mbgl-core + ffigen bindings (desktop shared)
-   ├─ maplibre_flutter_android/        # jnigen → Kotlin SDK     (hybrid)
-   ├─ maplibre_flutter_ios/            # swiftgen → Apple SDK     (hybrid: UiKitView factory)
+   ├─ maplibre_flutter_core/           # C-shim over mbgl-core + ffigen bindings (shared by ALL native platforms)
+   ├─ maplibre_flutter_android/        # DEFAULT: ffigen → core (GL ES) + Texture (hybrid)
+   ├─ maplibre_flutter_ios/            # DEFAULT: ffigen → core (Metal) + Texture (hybrid)
    ├─ maplibre_flutter_macos/          # ffigen → core + Metal texture (hybrid)
-   ├─ maplibre_flutter_windows/        # ffigen → core + texture  (hybrid)
-   ├─ maplibre_flutter_linux/          # ffigen → core + texture  (hybrid)
-   └─ maplibre_flutter_web/            # maplibre-gl-js via JS interop
+   ├─ maplibre_flutter_windows/        # ffigen → core + Vulkan texture  (hybrid)
+   ├─ maplibre_flutter_linux/          # ffigen → core + GL texture  (hybrid)
+   ├─ maplibre_flutter_web/            # DEFAULT: mbgl-core → WASM → <canvas>
+   ├─ maplibre_flutter_android_sdk/    # OPT-IN: jnigen → Kotlin SDK     (hybrid: AndroidView factory)
+   ├─ maplibre_flutter_ios_sdk/        # OPT-IN: swiftgen → Apple SDK    (hybrid: UiKitView factory)
+   └─ maplibre_flutter_web_gljs/       # OPT-IN: maplibre-gl-js via JS interop
 ```
 
 `mbgl-core` and `maplibre-gl-native` source are vendored as a **git submodule** under
@@ -1632,5 +1655,61 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
   now zooms on the cursor. **LESSON: never blind-port one platform's controller change to a sibling
   citing a shared core — HW-verify it there, or leave it on the proven convention. "Verified on
   Linux = pass-through" must be copied as pass-through, not transformed into a flip.**
+
+- **2026-06-21 — Core-primary inversion: mbgl-core is now the DEFAULT renderer on every
+  platform; the native SDKs + maplibre-gl-js are opt-in, build-time-excluded packages (§3 "One
+  engine, optional native renderers"). On `feat/core-primary-inversion`.** Reverses the §3
+  two-tier lock and the 2026-06-19 "keep mobile SDKs" decision (core-on-mobile was an opt-in
+  escape hatch there); extends the 2026-06-19 desktop-only unification to mobile + web. The
+  escape-hatch posture flips: **core is the default everywhere, the SDK/gl-js is the escape
+  hatch.** Rationale: one engine = feature parity maintained once; the duplicate-mbgl-symbol iOS
+  blocker is eliminated; and the SDK/gl-js no longer bloat the default build.
+  - **Why a `--dart-define` can't do it:** the `MAPLIBRE_EXPERIMENTAL_CORE` / `MAPLIBRE_WEB_CORE`
+    consts only tree-shook the **Dart** branch; the build hook / Gradle / podspec / Package.swift
+    never see a dart-define, so both renderers' **native** code always shipped (iOS bundled BOTH
+    `MapLibre.framework` + `maplibre_flutter_core.framework` → duplicate mbgl symbols). The only
+    mechanism that build-time-excludes the unselected renderer is **package separation
+    (federation)** — the choice is "which package is in pubspec," not a flag.
+  - **Structure (10 → 13 packages):** `maplibre_flutter_{android,ios}` are now **core-only**
+    (always return a `TextureHandle`; the dart-define is gone). The SDK paths moved to new opt-in
+    **`maplibre_flutter_android_sdk`** (jnigen, `AndroidView`) and **`maplibre_flutter_ios_sdk`**
+    (swiftgen, `UiKitView`). `maplibre_flutter_web` is now **core-WASM-only**; gl-js moved to
+    **`maplibre_flutter_web_gljs`**. An app adds an `_sdk`/`_gljs` package to **override** the
+    endorsed core default for that platform (a direct dep beats `default_package`); absent, that
+    renderer's native code never ships. `maplibre_flutter`'s endorsement `default_package` names
+    are **unchanged** (they point at the now-core packages), so federation needed no edit.
+  - **iOS duplicate-symbol blocker FIXED:** `maplibre_flutter_ios`'s `Package.swift` + podspec no
+    longer depend on the MapLibre Apple SDK (only the Metal/IOSurface texture bridge remains), so
+    the core build doesn't link mbgl twice. **Verified:** the default `flutter build ios
+    --simulator` app bundle contains `maplibre_flutter_core.framework` + `maplibre_flutter_ios.framework`
+    but **no `MapLibre.framework`**, with **zero** duplicate-class warnings.
+  - **Android SDK excluded from the default build — verified:** the default `flutter build apk`
+    bundles `libmaplibre_flutter_core.so` + `libmaplibre_flutter_android_jni.so` and **no MapLibre
+    Android SDK `.so`**. The core package dropped `jni`/`jnigen` + the `org.maplibre.gl:android-sdk`
+    gradle dep; the SDK package lowers `minSdk` 26→21 (no mbgl-core there).
+  - **Binding-regen avoidance (no Android/iOS toolchain regen needed for correctness):** the moved
+    Android Kotlin/Java keep their original `dev.maplibreflutter.maplibre_flutter_android` **source
+    package** (only the new gradle `namespace` differs), so the committed jnigen bindings stay
+    valid. The moved iOS swiftgen module is renamed to `maplibre_flutter_ios_sdk` (SPM target = pod
+    = module = package name, §5b), so the bindings' two module-qualified `objc.getClass(...)`
+    lookups were retargeted to `maplibre_flutter_ios_sdk.*` (a minimal generated-file edit;
+    **regen via `dart run tool/swiftgen.dart` to fully verify**).
+  - **Zero-copy is now default-ON everywhere supported:** flipped Linux (dmabuf) + Windows (D3D11)
+    `MAPLIBRE_ZEROCOPY` false→true; macOS/iOS/Android-core were already on. All paths probe the
+    native presenter and fall back to CPU automatically, so unsupported drivers still render.
+    Disable with `--dart-define=MAPLIBRE_ZEROCOPY=false`.
+  - **A/B ergonomics + the iOS caveat:** A/B is now "add the `_sdk`/`_gljs` dependency + rebuild,"
+    not a dart-define. Because the iOS core default and the SDK package both build on mbgl, an A/B
+    build that pulls *both* must drop the core iOS package via `dependency_overrides` (or a
+    dedicated example flavor) to avoid duplicate symbols; the published core default is clean.
+  - **Verified:** `melos analyze` green across all 13 packages; `melos test:web` (both web pkgs,
+    headless Chrome) + `flutter build web` green; `flutter build apk --debug` + `flutter build ios
+    --simulator` green with the SDK frameworks/`.so` correctly absent. The plan lives in
+    `docs/core-primary-inversion-plan.md`.
+  - **Remaining (follow-ups, not blockers):** swiftgen/jnigen regen to verify the renamed bindings
+    on-device; the Web WASM artifact productionization (asset bundling + COOP/COEP serve config +
+    single-thread fallback + a CI emscripten job) before web is publish-ready; a CI matrix that
+    builds the example both core-default and with each `_sdk`/`_gljs` override; and the
+    native-feel A/B (gesture inertia/fling) vs the SDKs before tagging a `stable` release.
 
 _Append new decisions here with date and rationale._

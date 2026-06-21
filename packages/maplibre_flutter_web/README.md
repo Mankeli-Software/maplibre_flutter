@@ -8,59 +8,51 @@
 > version. ⭐ the [repository](https://github.com/Mankeli-Software/maplibre_flutter) to follow
 > along.
 
-The web implementation of [`maplibre_flutter`](../maplibre_flutter). Don't depend on this package
-directly — depend on `maplibre_flutter`, which endorses it for web.
+The default web implementation of [`maplibre_flutter`](../maplibre_flutter). Don't depend on this
+package directly — depend on `maplibre_flutter`, which endorses it for web.
 
 ## How it works
 
-Web renders with [maplibre-gl-js](https://maplibre.org/maplibre-gl-js/docs/) (pinned **5.24.0**) —
-the same MapLibre rendering you get natively elsewhere, drawn by the browser's own WebGL — embedded
-in an `HtmlElementView`. It is bound with **`dart:js_interop` + `package:web`** (no `package:js`, so
-it is WASM-safe and works under `dart2wasm`). The `maplibregl.Map` is built in the platform-view
-factory, and the controller's `onReady` completes on the JS `'load'` event.
+Web renders with the shared **`mbgl-core`** C++ engine — the same engine every other platform uses —
+compiled to **WebAssembly** and drawing through **WebGL2** into a `<canvas>` hosted in an
+`HtmlElementView`. (A WebGPU backend exists in the core for later use.) Because it is the same engine
+everywhere, feature parity is maintained in one place rather than tracked against a separate web SDK.
 
-Like the mobile tier (and unlike the desktop core tier), web follows the **SDK model**:
-maplibre-gl-js owns gestures, inertia, and zoom natively, so the controller implements
-`MapLibreMapController` **only** — there is no Dart gesture layer on web. `LatLng(lat, lng)` is
-flipped to maplibre's `[lng, lat]` at every boundary, and `map.remove()` frees the WebGL context on
-dispose (browsers cap the number of live contexts).
+The WASM/canvas path owns its own gestures: raw pointer and wheel events are handled directly in the
+engine glue, so the controller implements the platform controller only — there is no Dart gesture
+layer on web. `pointer_interceptor` is still used in the example to wrap Flutter overlay widgets drawn
+over the map, but it is **not** applied to the map itself.
 
-The maplibre-gl-js script and its (required) CSS are **injected into `document.head` at runtime** the
-first time a map is created — idempotent, and no `index.html` edit needed.
+## The WASM artifact
 
-## Setup
+The WebAssembly module — `maplibre_flutter_core.js` plus `maplibre_flutter_core.wasm` (~9–10 MB) — is
+a **separate Emscripten build** and is **not** produced by `flutter build web`. It is loaded at
+runtime, by default from:
 
-Nothing is required for the map itself. Two things to know:
-
-1. **CSP-locked apps.** If your Content-Security-Policy blocks runtime-injected remote scripts, add
-   the pinned script + stylesheet to your `web/index.html` `<head>` instead — the plugin detects the
-   existing global and skips injection:
-
-   ```html
-   <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet" />
-   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
-   ```
-
-2. **Flutter widgets drawn over the map.** On web the map is a DOM element under the Flutter scene,
-   so buttons / drawers / modals painted on top of it must wrap in
-   [`PointerInterceptor`](https://pub.dev/packages/pointer_interceptor) or their taps leak through to
-   the map (see the example app's controls). This is **not** needed for the map widget itself — it
-   receives pointer / scroll events natively.
-
-## Experimental: native-core rendering (WASM)
-
-An **opt-in, build-time-flagged** path renders web through the same native MapLibre engine
-(`mbgl-core`) the desktop tier uses, compiled to WebAssembly, instead of maplibre-gl-js — so feature
-parity can be maintained in one engine with no separate web SDK. It **works** (renders an interactive
-map: pan / zoom / fly-to / style) but is **experimental and off by default**; it needs a separately
-built WASM artifact and a host that sends COOP/COEP headers (for `SharedArrayBuffer`):
-
-```bash
-flutter build web --dart-define=MAPLIBRE_WEB_CORE=true \
-                  --dart-define=MAPLIBRE_WEB_CORE_URL=maplibre_flutter_core.js
+```
+assets/packages/maplibre_flutter_core/web/maplibre_flutter_core.js
 ```
 
-With the flag off (the default), nothing changes — maplibre-gl-js renders as described above. The
-[design doc](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/docs/experimental-web-core-wasm.md)
-has the full build-and-run steps, architecture, and the production-remaining list (WebGPU perf,
-download size, deployment headers).
+Override the location with `--dart-define=MAPLIBRE_WEB_CORE_URL=...`. See
+[`docs/experimental-web-core-wasm.md`](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/docs/experimental-web-core-wasm.md)
+for how to build and serve it.
+
+## Hosting requirement
+
+The threaded WASM build requires **cross-origin isolation**. Your server must send both of these
+response headers, or the module will not start:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+## Optional: maplibre-gl-js renderer
+
+To render with [maplibre-gl-js](https://maplibre.org/maplibre-gl-js/docs/) instead — the mature
+reference web renderer, CDN-loaded in kilobytes and needing no special hosting headers — add the
+`maplibre_flutter_web_gljs` package to your app. As a direct dependency it overrides this endorsed
+default. This is useful for an A/B comparison against the WASM path or for maximum browser coverage.
+
+This stack is still maturing: the WASM path is newer and heavier than gl-js, so for the broadest
+compatibility today many apps will add the gl-js package.

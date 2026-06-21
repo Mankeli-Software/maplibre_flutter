@@ -552,7 +552,9 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   @override
   void dispose() {
-    GestureBinding.instance.pointerRouter.removeGlobalRoute(_globalPointerRoute);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(
+      _globalPointerRoute,
+    );
     _inertiaTicker?.stop();
     _inertiaTicker?.dispose();
     super.dispose();
@@ -572,8 +574,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // Resolve the zoom anchor (map-local) for a blocked gesture: the true cursor when
   // it is over the map, otherwise the map centre (cursor is over an overlay → no map
   // point under it, so zoom about centre like the +/- buttons).
-  Offset _blockedAnchorFor(RenderBox box, Offset origin, Offset cursor, int viewId) =>
-      _hits(box, cursor, viewId)
+  Offset _blockedAnchorFor(
+    RenderBox box,
+    Offset origin,
+    Offset cursor,
+    int viewId,
+  ) => _hits(box, cursor, viewId)
       ? cursor - origin
       : Offset(box.size.width / 2, box.size.height / 2);
 
@@ -586,7 +592,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     if (event is PointerHoverEvent || event is PointerMoveEvent) {
       _globalCursorPos = event.position;
     }
-    final isPanZoom = event is PointerPanZoomStartEvent ||
+    final isPanZoom =
+        event is PointerPanZoomStartEvent ||
         event is PointerPanZoomUpdateEvent ||
         event is PointerPanZoomEndEvent;
     if (!isPanZoom && event is! PointerScrollEvent) return;
@@ -625,7 +632,11 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       if (event.scale > 0) {
         final relative = event.scale / _blockedLastScale;
         if (relative != 1.0) {
-          widget.handler.scaleBy(relative, _blockedAnchor.dx, _blockedAnchor.dy);
+          widget.handler.scaleBy(
+            relative,
+            _blockedAnchor.dx,
+            _blockedAnchor.dy,
+          );
         }
         _blockedLastScale = event.scale;
       }

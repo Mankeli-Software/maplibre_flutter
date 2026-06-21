@@ -1,17 +1,14 @@
-// End-to-end iOS test for the EXPERIMENTAL core renderer (CLAUDE.md §7 layer 5):
+// End-to-end iOS test for the default core renderer (CLAUDE.md §7 layer 5):
 // drives a real mbgl-core map (the maplibre_flutter_core Metal arm) composited
-// through a Flutter Texture, instead of the default MapLibre Apple SDK / UiKitView.
+// through a Flutter Texture — now the iOS default (the MapLibre Apple SDK is the
+// opt-in maplibre_flutter_ios_sdk package).
 //
-// Run on a REAL iOS DEVICE (not the Simulator — it cannot headless-render Metal,
-// and the core dylib is not even built for it) with the experimental flag:
+//   flutter test integration_test/ios_core_map_test.dart -d <device>
 //
-//   flutter test integration_test/ios_core_map_test.dart -d <device> \
-//     --dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true
-//
-// Without the dart-define this exercises the SDK/UiKitView path instead (the
-// camera round-trip still holds; the render path differs). It needs network access
-// (loads the keyless demotiles + OpenFreeMap styles). Every wait is bounded so a
-// context/render failure fails the test instead of hanging.
+// Runs on a real iOS device or an Apple-Silicon Simulator (which has a real
+// host-GPU Metal). It needs network access (loads the keyless demotiles +
+// OpenFreeMap styles). Every wait is bounded so a context/render failure fails the
+// test instead of hanging.
 //
 // NOTE (CLAUDE.md §7): onReady completing proves mbgl-core produced a first frame
 // off-screen, but it does NOT prove the frame has visible map content. A full

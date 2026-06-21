@@ -11,22 +11,24 @@
 A Flutter plugin that renders [MapLibre](https://maplibre.org) vector maps **natively on every
 platform** — Android, iOS, macOS, Windows, Linux, and Web.
 
-The differentiator versus existing packages (`maplibre_gl`, `maplibre`) is **true native
-rendering on desktop**: on macOS, Windows, and Linux we drive the MapLibre Native C++ engine
-(`mbgl-core`) directly and composite it through Flutter's texture pipeline — not a
-`maplibre-gl-js` WebView. The goal is to become the *stable*, well-tested MapLibre binding for
-Flutter.
+The differentiator versus existing packages (`maplibre_gl`, `maplibre`) is **one engine
+everywhere**: every platform — Android, iOS, macOS, Windows, Linux, and Web — drives the
+MapLibre Native C++ engine (`mbgl-core`) directly and composites it through Flutter's texture
+pipeline (a `<canvas>` via WebAssembly on web), not a `maplibre-gl-js` WebView. The goal is to
+become the *stable*, well-tested MapLibre binding for Flutter.
 
 ## Why
 
 - **One API, every platform.** The public Dart API (the `MapLibreMap` widget and its
   controller) is identical everywhere. All platform divergence stays behind a render-agnostic
   platform interface.
-- **Real native desktop rendering.** Desktop runs the same battle-tested `mbgl-core` engine
-  that powers the official mobile SDKs, drawn into a GPU texture — no embedded browser.
-- **Native feel on mobile and web.** Android and iOS wrap the mature official MapLibre SDKs;
-  web uses `maplibre-gl-js`. Each platform gets the most appropriate, best-supported renderer
-  rather than one lowest-common-denominator engine.
+- **One engine, every platform.** Android, iOS, and the three desktops all render the same
+  battle-tested `mbgl-core` engine into a GPU texture; web compiles it to WebAssembly. Feature
+  parity is maintained once, in the engine, instead of reconciling several renderers.
+- **Native SDKs are opt-in, not the default.** The mature MapLibre Android/Apple SDKs and
+  `maplibre-gl-js` are still available as **separate opt-in packages** for A/B comparison or to
+  use a native SDK's gesture/annotation/location stack — but they are *not* in the default
+  build, so they never bloat your app unless you ask for them.
 - **Built to be trusted.** Quality and test coverage are the pitch — a serious, stable binding
   rather than a demo.
 
@@ -36,14 +38,21 @@ Every platform renders a map today. Only camera, style, gestures, resize, and li
 wired through the API so far (see [status](#status) and the
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)).
 
+Every platform renders the same `mbgl-core` engine. Zero-copy GPU present is the default
+everywhere it is supported (disable with `--dart-define=MAPLIBRE_ZEROCOPY=false`); each platform
+falls back to a CPU present automatically when the GPU path is unavailable.
+
 | Platform | Rendering engine | Flutter embedding | Verified |
 | -------- | ---------------- | ----------------- | -------- |
-| Android | MapLibre Android SDK 11.11.0 | `AndroidView` (Hybrid Composition) | On device |
-| iOS | MapLibre Apple SDK 6.27.0 | `UiKitView` | Builds (SPM + CocoaPods); on-device frame pending |
+| Android | `mbgl-core` (OpenGL ES) | `Texture` (SurfaceProducer; EGL zero-copy default) | On device |
+| iOS | `mbgl-core` (Metal) | `Texture` (IOSurface zero-copy default) | On device |
 | macOS | `mbgl-core` (Metal) | `Texture` (zero-copy IOSurface) | On device, smooth |
-| Windows | `mbgl-core` (Vulkan) | `Texture` (CPU present; D3D11 zero-copy opt-in) | On device |
-| Linux | `mbgl-core` (OpenGL ES / EGL) | `FlPixelBufferTexture` (CPU; dmabuf zero-copy opt-in) | On device |
-| Web | maplibre-gl-js 5.24.0 | `HtmlElementView` | Builds + tests |
+| Windows | `mbgl-core` (Vulkan) | `Texture` (D3D11 zero-copy default; CPU fallback) | On device |
+| Linux | `mbgl-core` (OpenGL ES / EGL) | `Texture` (dmabuf zero-copy default; CPU fallback) | On device |
+| Web | `mbgl-core` (WebAssembly / WebGL2) | `HtmlElementView` (`<canvas>`) | Builds + tests |
+
+The mature native SDKs / maplibre-gl-js remain available as opt-in packages — see
+[Renderers](#renderers).
 
 ## Install
 
@@ -107,9 +116,9 @@ class _MapScreenState extends State<MapScreen> {
 }
 ```
 
-Gestures (pan / zoom / rotate / pitch) work out of the box: natively via the SDK on
-Android/iOS, natively via maplibre-gl-js on web, and through a shared Dart gesture tier on the
-desktop platforms.
+Gestures work out of the box: a shared Dart gesture tier drives pan / zoom / fly-to over the
+engine on every platform (the engine owns gestures itself on web). The opt-in native-SDK and
+maplibre-gl-js renderers use their own native gestures instead.
 
 ## Packages
 
@@ -120,32 +129,48 @@ details.
 | ------- | ---- |
 | [`maplibre_flutter`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter) | **The package you depend on** — public API + `MapLibreMap` widget; endorses the implementations. |
 | [`maplibre_flutter_platform_interface`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_platform_interface) | The render-agnostic contract every implementation implements. |
-| [`maplibre_flutter_core`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_core) | Shared desktop engine: a C ABI shim over `mbgl-core` + ffigen bindings (used by macOS/Windows/Linux). |
-| [`maplibre_flutter_android`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_android) | Android — jnigen against the MapLibre Android SDK. |
-| [`maplibre_flutter_ios`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_ios) | iOS — swiftgen against the MapLibre Apple SDK. |
+| [`maplibre_flutter_core`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_core) | The shared engine: a C ABI shim over `mbgl-core` + ffigen bindings (used by every native platform). |
+| [`maplibre_flutter_android`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_android) | Android — `mbgl-core` (OpenGL ES) + Flutter `Texture`. |
+| [`maplibre_flutter_ios`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_ios) | iOS — `mbgl-core` (Metal) + Flutter `Texture`. |
 | [`maplibre_flutter_macos`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_macos) | macOS — `mbgl-core` + Metal external texture. |
 | [`maplibre_flutter_windows`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_windows) | Windows — `mbgl-core` + Vulkan + GPU/CPU texture. |
 | [`maplibre_flutter_linux`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_linux) | Linux — `mbgl-core` + OpenGL + CPU/dmabuf texture. |
-| [`maplibre_flutter_web`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_web) | Web — maplibre-gl-js via `dart:js_interop`. |
+| [`maplibre_flutter_web`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_web) | Web — `mbgl-core` compiled to WebAssembly, rendered into a `<canvas>`. |
+
+Opt-in alternate renderers (add one to your app to override the default for that platform):
+
+| Package | Role |
+| ------- | ---- |
+| [`maplibre_flutter_android_sdk`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_android_sdk) | Android — render with the native MapLibre Android SDK (jnigen, `AndroidView`) instead of the core. |
+| [`maplibre_flutter_ios_sdk`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_ios_sdk) | iOS — render with the native MapLibre Apple SDK (swiftgen, `UiKitView`) instead of the core. |
+| [`maplibre_flutter_web_gljs`](https://github.com/Mankeli-Software/maplibre_flutter/tree/main/packages/maplibre_flutter_web_gljs) | Web — render with maplibre-gl-js instead of the WASM core. |
+
+## Renderers
+
+By default every platform renders with `mbgl-core`. To use a native SDK or maplibre-gl-js on a
+platform, add its **opt-in package** to your app — as a direct dependency it overrides the
+endorsed core default for that platform, and the alternate renderer's native code only ships
+when that package is present:
+
+```yaml
+dependencies:
+  maplibre_flutter: any
+  maplibre_flutter_ios_sdk: any      # iOS now renders with the MapLibre Apple SDK
+  # maplibre_flutter_android_sdk / maplibre_flutter_web_gljs do the same per platform
+```
+
+> On iOS specifically, the core default and the SDK package both ultimately build on mbgl, so an
+> A/B build that pulls *both* should exclude the core iOS package via `dependency_overrides` to
+> avoid duplicate mbgl symbols. The published core default needs no override.
 
 ## Architecture
 
-The plugin is organised in **two tiers** behind one identical public API:
-
-- **Mobile tier (Android + iOS)** wraps the mature official native SDKs — best native feel,
-  lowest risk. Gestures, annotations, and location come from the SDK.
-- **Desktop tier (macOS + Windows + Linux)** shares one `mbgl-core` integration rendered into a
-  GPU texture. Gestures and camera are implemented once in Dart over the engine. macOS lives
-  here (not paired with iOS) so all three desktop platforms inherit the same hardened engine.
-
-Web is its own thing — `maplibre-gl-js` in an `HtmlElementView`, which (like the mobile SDKs)
-owns its own gestures.
-
-Every native platform renders **off-screen and composites through Flutter's texture pipeline or
-a platform view**. The platform interface is render-agnostic — mobile returns a native view to
-embed, desktop returns a `textureId`, web returns an element-view handle — but the public Dart
-API (camera, style, …) is the same everywhere. Each per-package README goes deep on how that
-platform renders.
+One engine, one public API. Every platform renders the same `mbgl-core` integration
+**off-screen and composites it through Flutter's texture pipeline** (a `<canvas>` via WebAssembly
+on web); gestures and camera are implemented once in Dart over the engine. The platform interface
+is render-agnostic — desktop/mobile return a `textureId`, web returns an element-view handle, and
+the opt-in native-SDK packages return a native view to embed — but the public Dart API (camera,
+style, …) is identical everywhere. Each per-package README goes deep on how that platform renders.
 
 ## Status
 

@@ -15,7 +15,8 @@ import 'package:logging/logging.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:swiftgen/swiftgen.dart';
 
-const _sources = 'ios/maplibre_flutter_ios_sdk/Sources/maplibre_flutter_ios_sdk';
+const _sources =
+    'ios/maplibre_flutter_ios_sdk/Sources/maplibre_flutter_ios_sdk';
 
 Future<void> main() async {
   final logger = Logger('swiftgen')
