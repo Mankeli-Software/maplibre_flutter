@@ -26,7 +26,10 @@ const MethodChannel _registrar = MethodChannel(
 ///
 /// NOTE: not yet run on real Linux hardware — see CLAUDE.md §8.
 class MapLibreFlutterLinuxController
-    implements MapLibreMapPlatformController, MapLibreGestureHandler {
+    implements
+        MapLibreMapPlatformController,
+        MapLibreGestureHandler,
+        MapLibreResizeMaskHint {
   MapLibreFlutterLinuxController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -206,7 +209,11 @@ class MapLibreFlutterLinuxController
     if (_disposed) return;
     // Pass LOGICAL points as mbgl's size; the core multiplies by the pixelRatio set
     // at create to produce the device-pixel texture. (devicePixelRatio is unused
-    // here — the core already knows the density.)
+    // here — the core already knows the density.) Linux presents through the same
+    // slow CPU-readback FlPixelBufferTexture as Windows, so the controller is a
+    // MapLibreResizeMaskHint: the MapLibreMap widget debounces these calls during
+    // an active drag and cover-fits the frozen frame in the meantime, so the map
+    // never stretches while the window is resized.
     final w = size.width.round();
     final h = size.height.round();
     if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
@@ -228,6 +235,11 @@ class MapLibreFlutterLinuxController
   void scaleBy(double scale, double anchorX, double anchorY) {
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
+    // Pass the anchor straight through (top-left, logical points — same space as
+    // moveBy's deltas). Verified on device: zooming about a top-left anchor moves
+    // the centre north-west, about bottom-right moves it south-east — i.e. the
+    // anchor point stays under the cursor. mbgl's easeTo applies its own internal
+    // Y handling; no pre-flip is needed here (an earlier flip mirrored the anchor).
     _coreMap.scaleBy(scale, anchorX, anchorY);
   }
 

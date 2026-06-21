@@ -235,7 +235,12 @@ class MapLibreFlutterWindowsController
   void scaleBy(double scale, double anchorX, double anchorY) {
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
-    _coreMap.scaleBy(scale, anchorX, anchorY);
+    // Y-flip the zoom anchor — see the Linux controller for the full rationale: the
+    // GL/ANGLE present flips the framebuffer vertically while mbgl's easeTo flips the
+    // anchor Y internally (`height - y`), so an unflipped anchor zooms about the
+    // vertically mirrored point. Pre-flipping cancels mbgl's flip. (Verified on
+    // Linux; Windows shares the same core present path, not yet HW-verified.)
+    _coreMap.scaleBy(scale, anchorX, _renderHeight - anchorY);
   }
 
   @override
