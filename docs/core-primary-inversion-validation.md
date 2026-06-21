@@ -15,6 +15,18 @@ excluded but not that the core path looks/feels right.
 - Known **pre-existing** failing VM test (NOT from this work): `maplibre_map_test.dart › "pinch
   zoom freezes its anchor"` — fails on base `e6a677e` too; a gesture-anchor question, separate.
 
+## Follow-up: smooth / springy pinch-to-zoom (unimplemented feature)
+
+Pinch-to-zoom works but is **not smooth/springy yet** — this is a missing feature, not a bug.
+The pinch applies the raw per-frame `scaleBy` directly (`maplibre_map.dart` `_onScaleUpdate`,
+`TODO(pinch-zoom)`), so the zoom tracks the gesture 1:1 with no interpolation toward the target
+and no release momentum (no easing/spring), unlike the pan fling. Implement gesture
+interpolation + a zoom-release inertia/spring so the zoom eases and settles smoothly. Schedule
+alongside the on-device gesture-feel A/B (matrix #6/#10/#12).
+
+(Separate and unrelated: the pre-existing `"pinch zoom freezes its anchor"` test failure noted
+above is about the zoom *anchor*, not about smoothing.)
+
 ## The matrix
 
 Priority: **P0** = validates a headline claim of the inversion (core-as-default render, or

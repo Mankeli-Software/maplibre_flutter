@@ -506,6 +506,13 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         // px off the cursor. The live pointer position (hover/move-tracked) is on
         // the cursor; on macOS cursor == focal so this is equivalent. Fall back to
         // the frozen focal anchor only if no pointer position is known yet.
+        //
+        // TODO(pinch-zoom): smooth / springy pinch-to-zoom is not implemented yet
+        // (a missing feature, not a bug). The pinch applies the raw per-frame
+        // `scaleBy` directly, so the zoom tracks the gesture 1:1 with no
+        // interpolation toward the target and no release momentum — unlike the pan
+        // fling below. Add gesture interpolation + a zoom-release inertia/spring so
+        // the zoom eases and settles smoothly.
         final anchor = _lastPointerPos == Offset.zero
             ? _zoomAnchor
             : _lastPointerPos;
