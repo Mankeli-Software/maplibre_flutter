@@ -81,13 +81,14 @@ class MapLibreFlutterLinuxController
       pitch: camera.pitch,
     );
 
-    // Zero-copy GL present (EGLImage → FlTextureGL) is opt-in until hardware-proven:
-    // --dart-define=MAPLIBRE_ZEROCOPY=true. We only commit to the GL texture once the
-    // native presenter confirms it initialised ([isZeroCopyActive]); otherwise (or
-    // if registration fails) we fall back to the CPU FlPixelBufferTexture path.
+    // Zero-copy GL present (dmabuf → FlTextureGL) is the default — set
+    // --dart-define=MAPLIBRE_ZEROCOPY=false to force the CPU path. We only commit to
+    // the GL texture once the native presenter confirms it initialised
+    // ([isZeroCopyActive]); otherwise (or if registration fails) we fall back to the
+    // CPU FlPixelBufferTexture path, so an unsupported driver still renders.
     const wantZeroCopy = bool.fromEnvironment(
       'MAPLIBRE_ZEROCOPY',
-      defaultValue: false,
+      defaultValue: true,
     );
     int? textureId;
     if (wantZeroCopy) {

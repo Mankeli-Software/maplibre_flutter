@@ -84,13 +84,15 @@ class MapLibreFlutterWindowsController
 
     // Zero-copy D3D11 present (the core blits into a shared D3D11 texture ring;
     // the plugin presents it as a Flutter GpuSurfaceTexture via a DXGI shared
-    // handle — no CPU readback) is opt-in: --dart-define=MAPLIBRE_ZEROCOPY=true.
-    // We commit to the GPU texture only once the native presenter confirms it
-    // initialised ([isZeroCopyActive]); otherwise (or if registration fails) we
-    // fall back to the CPU PixelBufferTexture path.
+    // handle — no CPU readback) is the default — set
+    // --dart-define=MAPLIBRE_ZEROCOPY=false to force the CPU path. We commit to the
+    // GPU texture only once the native presenter confirms it initialised
+    // ([isZeroCopyActive]); otherwise (or if registration fails, e.g. a driver that
+    // can't import the legacy D3D11 shared handle) we fall back to the CPU
+    // PixelBufferTexture path, so the map still renders.
     const wantZeroCopy = bool.fromEnvironment(
       'MAPLIBRE_ZEROCOPY',
-      defaultValue: false,
+      defaultValue: true,
     );
     int? textureId;
     if (wantZeroCopy) {
