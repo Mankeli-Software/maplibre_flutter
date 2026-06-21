@@ -1692,8 +1692,9 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     package** (only the new gradle `namespace` differs), so the committed jnigen bindings stay
     valid. The moved iOS swiftgen module is renamed to `maplibre_flutter_ios_sdk` (SPM target = pod
     = module = package name, §5b), so the bindings' two module-qualified `objc.getClass(...)`
-    lookups were retargeted to `maplibre_flutter_ios_sdk.*` (a minimal generated-file edit;
-    **regen via `dart run tool/swiftgen.dart` to fully verify**).
+    lookups point at `maplibre_flutter_ios_sdk.*` — **regenerated via `dart run tool/swiftgen.dart`
+    and confirmed byte-identical to the committed file** (the regen needs only the Xcode iphoneos
+    SDK via `xcrun`; no device).
   - **Zero-copy is now default-ON everywhere supported:** flipped Linux (dmabuf) + Windows (D3D11)
     `MAPLIBRE_ZEROCOPY` false→true; macOS/iOS/Android-core were already on. All paths probe the
     native presenter and fall back to CPU automatically, so unsupported drivers still render.
@@ -1706,8 +1707,7 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     headless Chrome) + `flutter build web` green; `flutter build apk --debug` + `flutter build ios
     --simulator` green with the SDK frameworks/`.so` correctly absent. The plan lives in
     `docs/core-primary-inversion-plan.md`.
-  - **Remaining (follow-ups, not blockers):** swiftgen/jnigen regen to verify the renamed bindings
-    on-device; the Web WASM artifact productionization (asset bundling + COOP/COEP serve config +
+  - **Remaining (follow-ups, not blockers):** the Web WASM artifact productionization (asset bundling + COOP/COEP serve config +
     single-thread fallback + a CI emscripten job) before web is publish-ready; a CI matrix that
     builds the example both core-default and with each `_sdk`/`_gljs` override; and the
     native-feel A/B (gesture inertia/fling) vs the SDKs before tagging a `stable` release.
