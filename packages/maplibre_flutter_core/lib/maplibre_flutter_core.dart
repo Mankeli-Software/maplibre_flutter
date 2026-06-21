@@ -246,34 +246,6 @@ class MapLibreCoreMap {
     return bindings.mbl_map_await_frame(_handle, timeout.inMilliseconds) != 0;
   }
 
-  /// The size (device pixels) of the latest *produced* frame, or null if none
-  /// has rendered yet. Cheap — passes a null destination to `mbl_map_copy_frame`,
-  /// which reports just the dimensions without copying pixels.
-  ///
-  /// This is the texture's true current resolution, which **lags** [resize] on
-  /// the asynchronous render thread (a full render + CPU readback behind on the
-  /// slow present path). The desktop controllers expose it so the widget can
-  /// scale a still-old-size frame to the new window box *uniformly* (cover)
-  /// instead of letting it stretch — masking the resize warp.
-  ({int width, int height})? frameSize() {
-    _checkAlive();
-    return using((arena) {
-      final w = arena<ffi.Uint32>();
-      final h = arena<ffi.Uint32>();
-      final stride = arena<ffi.Uint32>();
-      final ok = bindings.mbl_map_copy_frame(
-        _handle,
-        ffi.nullptr,
-        0,
-        w,
-        h,
-        stride,
-      );
-      if (ok == 0 || w.value == 0 || h.value == 0) return null;
-      return (width: w.value, height: h.value);
-    });
-  }
-
   /// Resizes the off-screen surface (device pixels) and triggers a re-render.
   void resize(int width, int height) {
     _checkAlive();

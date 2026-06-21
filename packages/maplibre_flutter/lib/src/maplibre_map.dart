@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -152,11 +153,63 @@ class _MapEmbed extends StatelessWidget {
 /// DPR so the core renders at the right resolution and aspect ratio (and follows
 /// window resizes), and drives pan/zoom from Flutter gestures when the controller
 /// supports it (CLAUDE.md §3: the desktop tier handles gestures in Dart).
-class _TextureMapView extends StatelessWidget {
+///
+/// On tiers whose texture *lags* the widget box during a resize
+/// ([MapLibreMapController.debounceResize] — the Windows CPU-readback present), it
+/// also **masks** the resize: while the window is actively being dragged it holds
+/// the core at one size and cover-fits that frozen frame to the moving box (a
+/// small uniform crop, not a stretch), pushing the real resize once the drag
+/// settles. Because the widget itself decides when to resize, it always knows the
+/// frozen frame's size ([_committedSize]) — no produced-size feedback needed.
+class _TextureMapView extends StatefulWidget {
   const _TextureMapView({required this.controller, required this.textureId});
 
   final MapLibreMapController controller;
   final int textureId;
+
+  @override
+  State<_TextureMapView> createState() => _TextureMapViewState();
+}
+
+class _TextureMapViewState extends State<_TextureMapView> {
+  // Masked tiers only: the size the core is currently rendering — i.e. the size
+  // of the frame the texture is showing. We cover-fit this frozen frame to the
+  // (possibly different) box while a drag is in flight. Null until the first
+  // layout / on non-masked tiers (which resize live and render the bare texture).
+  Size? _committedSize;
+  Timer? _resizeDebounce;
+
+  @override
+  void dispose() {
+    _resizeDebounce?.cancel();
+    super.dispose();
+  }
+
+  // Drive the core's resize during layout (before paint), the desktop-core analog
+  // of the web tier's ResizeObserver-driven resize. On masked tiers, debounce it
+  // during an active drag so the produced frame stays frozen at [_committedSize]
+  // (giving the cover-fit below a stable, known size to mask with) and apply the
+  // first sizing immediately so the map fills the window on load. Other tiers
+  // resize live every layout — their present catches up within ~a frame.
+  void _syncSize(Size size, double dpr) {
+    if (!size.isFinite || size.isEmpty) return;
+    if (!widget.controller.debounceResize) {
+      widget.controller.resize(size, dpr);
+      return;
+    }
+    if (_committedSize == null) {
+      _committedSize = size; // first sizing: apply immediately
+      widget.controller.resize(size, dpr);
+      return;
+    }
+    if (size == _committedSize) return;
+    _resizeDebounce?.cancel();
+    _resizeDebounce = Timer(const Duration(milliseconds: 100), () {
+      if (!mounted) return;
+      widget.controller.resize(size, dpr);
+      setState(() => _committedSize = size);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -164,59 +217,31 @@ class _TextureMapView extends StatelessWidget {
       builder: (context, constraints) {
         final size = constraints.biggest;
         final dpr = MediaQuery.devicePixelRatioOf(context);
-        // Drive the resize during layout (before paint), NOT in a post-frame
-        // callback (which runs after this frame has already rasterized). Posting
-        // the new size a full pipeline phase earlier gives the core's render thread
-        // time to produce the correctly-sized frame before the raster thread samples
-        // the texture — otherwise the texture is one frame behind and Flutter
-        // stretches/squeezes the stale frame to the new box on every resize. This is
-        // the desktop-core analog of the web tier's ResizeObserver-driven resize.
-        if (size.isFinite && !size.isEmpty) {
-          controller.resize(size, dpr);
-        }
+        _syncSize(size, dpr);
 
-        Widget map = Texture(textureId: textureId);
+        Widget map = Texture(textureId: widget.textureId);
 
-        // Mask the resize stretch on tiers whose texture can lag the widget box
-        // (the Windows CPU-readback present): scale a still-old-size frame to the
-        // new box UNIFORMLY (cover) using the texture's *produced* aspect ratio,
-        // so it crops slightly instead of stretching while the render thread
-        // catches up. In steady state the produced aspect equals the box aspect,
-        // so cover is an exact uniform scale (no crop) — pixel-identical to the
-        // bare texture. textureSize is null on tiers without lag (mobile/web own
-        // their surface; macOS zero-copy catches up within a frame), where the
-        // bare texture fills the box as before. Gestures wrap OUTSIDE this fit
-        // stack so pointer coordinates stay in widget-box (logical) space.
-        if (controller.textureSize case final textureSizeListenable?) {
-          map = ValueListenableBuilder<Size>(
-            valueListenable: textureSizeListenable,
-            child: map,
-            builder: (context, produced, child) {
-              if (produced.isEmpty ||
-                  !produced.isFinite ||
-                  size.isEmpty ||
-                  !size.isFinite) {
-                return child!;
-              }
-              return SizedBox.fromSize(
-                size: size,
-                child: ClipRect(
-                  child: FittedBox(
-                    fit: BoxFit.cover,
-                    clipBehavior: Clip.hardEdge,
-                    child: SizedBox(
-                      width: produced.width,
-                      height: produced.height,
-                      child: child,
-                    ),
-                  ),
-                ),
-              );
-            },
+        // Mask the resize stretch on lagging tiers: cover-fit the frozen frame
+        // (rendered at [_committedSize]) to the current box UNIFORMLY, so it crops
+        // slightly instead of stretching. In steady state _committedSize == box,
+        // so cover is an exact uniform scale (no crop) — identical to the bare
+        // texture. Gestures wrap OUTSIDE this fit stack so pointer coordinates stay
+        // in widget-box (logical) space.
+        final committed = _committedSize;
+        if (committed != null && size.isFinite && !size.isEmpty) {
+          map = SizedBox.fromSize(
+            size: size,
+            child: ClipRect(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                clipBehavior: Clip.hardEdge,
+                child: SizedBox.fromSize(size: committed, child: map),
+              ),
+            ),
           );
         }
 
-        if (controller.gestureHandler case final gestures?) {
+        if (widget.controller.gestureHandler case final gestures?) {
           map = _DesktopMapGestures(handler: gestures, child: map);
         }
         return map;

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui' show Size;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
@@ -153,19 +152,12 @@ class MapLibreMapController {
   Future<void> resize(Size size, double devicePixelRatio) async =>
       _platform?.resize(size, devicePixelRatio);
 
-  /// The produced-frame size of the texture when the platform tier can lag the
-  /// widget box on resize (Windows). Null elsewhere — the widget then renders
-  /// the bare texture. Used to cover-fit a stale frame instead of stretching it.
+  /// Whether the bound platform tier's texture lags the widget box on resize
+  /// (Windows), so the widget should **mask** resizes (hold the surface + cover-fit
+  /// while dragging) instead of resizing live. False on tiers that resize cleanly
+  /// (mobile/web/macOS). See [MapLibreResizeMaskHint].
   @internal
-  ValueListenable<Size>? get textureSize {
-    // The platform controller and the texture-size capability are unrelated
-    // types, so `is` does not promote across them — cast inside the guard (as
-    // [gestureHandler] does).
-    final platform = _platform;
-    return platform is MapLibreTextureSizeProvider
-        ? (platform as MapLibreTextureSizeProvider).textureSize
-        : null;
-  }
+  bool get debounceResize => _platform is MapLibreResizeMaskHint;
 }
 
 /// Camera control for a [MapLibreMap], reached via [MapLibreMapController.camera].
