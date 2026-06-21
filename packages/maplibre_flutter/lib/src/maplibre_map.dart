@@ -389,6 +389,36 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // fling a pan on release — the focal drift of a zoom isn't a pan flick.
   bool _gestureHadScale = false;
 
+  // True while a trackpad two-finger pan-zoom gesture is active (set from the raw
+  // PointerPanZoom events). Used to scope the Linux trackpad pan gain to that path
+  // only — never a mouse click-drag (single pointer) or the scroll-wheel path.
+  bool _inTrackpadPanZoom = false;
+
+  // The live pointer (cursor) position, tracked from hover/move/down. Used as the
+  // pinch zoom anchor: a trackpad pinch's gesture focal carries GTK's bogus initial
+  // pan offset (~tens of px), so it doesn't sit on the cursor — the real pointer
+  // position does. On macOS the cursor == focal, so this is equivalent there.
+  Offset _lastPointerPos = Offset.zero;
+  // The pointer position one hover ago. On Linux, GTK warps the pointer to the
+  // two-finger centroid when a trackpad gesture begins, firing one spurious
+  // large-delta hover just before PointerPanZoomStart; that would anchor the pinch
+  // off the cursor. We keep the prior position so the gesture start can undo it.
+  Offset _prevPointerPos = Offset.zero;
+
+  // Linux's GTK embedder reports touchpad two-finger pan deltas ~2x larger than the
+  // equivalent pointer motion (verified from the raw PointerPanZoom stream: the
+  // focal delta we apply equals GTK's panDelta, which is itself doubled), so the
+  // map slid twice as fast as the fingers — "not natural like other platforms".
+  // Scale the pan back on the Linux trackpad pan path only. macOS routes two-finger
+  // swipes through scroll (zoom), not this path, and a mouse drag is a single
+  // pointer — both already track 1:1 and must stay so.
+  static const double _kLinuxTrackpadPanGain = 0.25;
+
+  double get _panGain =>
+      (_inTrackpadPanZoom && defaultTargetPlatform == TargetPlatform.linux)
+      ? _kLinuxTrackpadPanGain
+      : 1.0;
+
   void _stopInertia() {
     _inertiaTicker?.stop();
   }
@@ -422,9 +452,14 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     } else {
       // Pure pan (or pre-pinch): track the focal so the zoom anchor is the point
       // under the gesture right before the pinch starts, and pan by the delta.
+      // Apply the pan gain (Linux trackpad only — see [_panGain]) so the map tracks
+      // the fingers 1:1; scale the velocity too so the release fling matches.
       _zoomAnchor = focal;
-      if (dx != 0 || dy != 0) {
-        widget.handler.moveBy(dx, dy);
+      final gain = _panGain;
+      final pdx = dx * gain;
+      final pdy = dy * gain;
+      if (pdx != 0 || pdy != 0) {
+        widget.handler.moveBy(pdx, pdy);
       }
       // Track a smoothed drag velocity for the release fling — only for a pure
       // pan, so a zoom's focal drift never becomes pan velocity.
@@ -432,7 +467,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       final dt = (nowUs - _lastMoveUs) / 1e6;
       _lastMoveUs = nowUs;
       if (dt > 0 && dt < 0.1) {
-        final instant = Offset(dx / dt, dy / dt); // px/s
+        final instant = Offset(pdx / dt, pdy / dt); // px/s
         const a = 0.6; // EMA weight toward the most recent sample
         _dragVelocity = _dragVelocity * (1 - a) + instant * a;
       }
@@ -441,8 +476,15 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     if (details.scale > 0) {
       final relative = details.scale / _lastScale;
       if (relative != 1.0) {
-        // Zoom about the frozen anchor (≈ the cursor), not the live focal.
-        widget.handler.scaleBy(relative, _zoomAnchor.dx, _zoomAnchor.dy);
+        // Zoom about the real cursor position, not the gesture focal: a trackpad
+        // pinch's focal carries GTK's bogus initial pan offset so it sits ~tens of
+        // px off the cursor. The live pointer position (hover/move-tracked) is on
+        // the cursor; on macOS cursor == focal so this is equivalent. Fall back to
+        // the frozen focal anchor only if no pointer position is known yet.
+        final anchor = _lastPointerPos == Offset.zero
+            ? _zoomAnchor
+            : _lastPointerPos;
+        widget.handler.scaleBy(relative, anchor.dx, anchor.dy);
       }
       _lastScale = details.scale;
     }
@@ -505,10 +547,50 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     }
   }
 
+  // A trackpad pan-zoom gesture brackets the synthesized scale gesture. Track that
+  // we're in one so [_panGain] can scope the Linux pan correction to this path.
+  // GTK warps the pointer to the gesture centroid right as a two-finger gesture
+  // begins, firing one spurious large-delta hover just before this. That moved the
+  // pinch zoom anchor off the cursor (worse after a pan, where the fingers land
+  // further from the cursor). If the last hover was such a jump, restore the
+  // pre-warp position so the zoom anchors where the cursor actually is. Gated to
+  // trackpad pan-zoom starts, so a real fast mouse move is never affected.
+  static const double _kPointerWarpThreshold = 60; // logical px in one hover
+
+  void _onPanZoomStart(PointerPanZoomStartEvent e) {
+    _inTrackpadPanZoom = true;
+    if ((_lastPointerPos - _prevPointerPos).distance > _kPointerWarpThreshold) {
+      _lastPointerPos = _prevPointerPos;
+    }
+  }
+
+  void _onPanZoomEnd(PointerPanZoomEndEvent e) {
+    _inTrackpadPanZoom = false;
+  }
+
+  // Track the live cursor so the pinch can zoom about it (see [_lastPointerPos]).
+  void _onPointerHover(PointerHoverEvent e) {
+    _prevPointerPos = _lastPointerPos;
+    _lastPointerPos = e.localPosition;
+  }
+
+  void _onPointerDown(PointerDownEvent e) {
+    _lastPointerPos = e.localPosition;
+  }
+
+  void _onPointerMove(PointerMoveEvent e) {
+    _lastPointerPos = e.localPosition;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Listener(
       onPointerSignal: _onPointerSignal,
+      onPointerPanZoomStart: _onPanZoomStart,
+      onPointerPanZoomEnd: _onPanZoomEnd,
+      onPointerHover: _onPointerHover,
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
       child: GestureDetector(
         onScaleStart: _onScaleStart,
         onScaleUpdate: _onScaleUpdate,
