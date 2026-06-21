@@ -1,13 +1,11 @@
-/// Loader for the **experimental** native-core WASM renderer.
+/// Loader for the native-core WASM renderer (the default web engine).
 ///
-/// Mirrors `maplibre_gl_loader.dart`, but instead of fetching maplibre-gl-js from
-/// a CDN it loads the Emscripten build of `maplibre_flutter_core` (the `.js` glue
-/// + sibling `.wasm`) and instantiates the module. Idempotent and memoised.
+/// Loads the Emscripten build of `maplibre_flutter_core` (the `.js` glue +
+/// sibling `.wasm`) and instantiates the module. Idempotent and memoised.
 ///
-/// The artifact is **not** produced by `flutter build web` — it is a separate
-/// Emscripten build (see `docs/experimental-web-core-wasm.md`). If the flag is on
-/// but the artifact is missing, this throws a clear, actionable error rather than
-/// failing obscurely.
+/// The artifact is a separate Emscripten build (see
+/// `docs/experimental-web-core-wasm.md`); if it is missing from the served assets
+/// this throws a clear, actionable error rather than failing obscurely.
 library;
 
 import 'dart:async';
@@ -42,11 +40,12 @@ Future<CoreModule> _load() async {
 
   if (!globalContext.has('MaplibreFlutterCore')) {
     throw StateError(
-      'The experimental native-core web renderer is selected '
-      '(--dart-define=MAPLIBRE_WEB_CORE=true), but the Emscripten module was not '
-      'found at "$coreModuleUrl". Build the WASM artifact and serve it (or set '
+      'The native-core web renderer (the default) needs its Emscripten module, '
+      'but it was not found at "$coreModuleUrl". Build the WASM artifact and serve '
+      'it with the required COOP/COEP headers (or set '
       '--dart-define=MAPLIBRE_WEB_CORE_URL), per docs/experimental-web-core-wasm.md. '
-      'The default web renderer (maplibre-gl-js) needs no build step.',
+      'To render with maplibre-gl-js instead (no build step, no special headers), '
+      'add the maplibre_flutter_web_gljs package to your app.',
     );
   }
 

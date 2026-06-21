@@ -1,7 +1,8 @@
-name: maplibre_flutter_web
+name: maplibre_flutter_web_gljs
 description: >-
-  The default Web implementation of maplibre_flutter (mbgl-core compiled to
-  WebAssembly, rendered into a canvas via HtmlElementView).
+  Opt-in maplibre-gl-js web implementation of maplibre_flutter (via
+  dart:js_interop, HtmlElementView). Add it to render with maplibre-gl-js instead
+  of the default mbgl-core WASM renderer.
 version: 0.0.2
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
@@ -32,9 +33,9 @@ flutter:
     implements: maplibre_flutter
     platforms:
       web:
-        # Web's registrant is a Dart class (not dartPluginClass): its
-        # registerWith takes a flutter_web_plugins Registrar. This is the endorsed
-        # default web renderer (mbgl-core WASM → canvas in an HtmlElementView);
-        # the opt-in maplibre_flutter_web_gljs package overrides it when present.
-        pluginClass: MapLibreFlutterWeb
-        fileName: maplibre_flutter_web.dart
+        # Opt-in alternative to the endorsed core (WASM) web default. An app that
+        # depends on this package directly overrides the default and renders with
+        # maplibre-gl-js. Distinct pluginClass name from the core package so both
+        # can coexist in a dependency tree without a registrant collision.
+        pluginClass: MapLibreFlutterWebGljs
+        fileName: maplibre_flutter_web_gljs.dart

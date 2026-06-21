@@ -18,6 +18,7 @@ workspace:
   - packages/maplibre_flutter_windows
   - packages/maplibre_flutter_linux
   - packages/maplibre_flutter_web
+  - packages/maplibre_flutter_web_gljs
   - packages/maplibre_flutter/example
 
 dev_dependencies:
@@ -70,11 +71,12 @@ melos:
       packageFilters:
         flutter: true
         dirExists: test
-        # maplibre_flutter_web's tests are browser-only (@TestOn('browser') —
-        # the impl imports dart:ui_web/js_interop), so a VM `flutter test`
-        # finds none and errors. Run them via `test:web` instead.
+        # The web packages' tests are browser-only (@TestOn('browser') — the impl
+        # imports dart:ui_web/js_interop), so a VM `flutter test` finds none and
+        # errors. Run them via `test:web` instead.
         ignore:
           - maplibre_flutter_web
+          - maplibre_flutter_web_gljs
 
     test:web:
       description: Run the web package's tests in headless Chrome.
@@ -85,6 +87,7 @@ melos:
       packageFilters:
         scope:
           - maplibre_flutter_web
+          - maplibre_flutter_web_gljs
 
     test:native:
       description: >-

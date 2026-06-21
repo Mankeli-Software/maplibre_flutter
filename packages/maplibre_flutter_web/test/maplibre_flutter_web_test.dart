@@ -8,19 +8,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:maplibre_flutter_web/maplibre_flutter_web.dart';
-import 'package:maplibre_flutter_web/src/maplibre_gl_loader.dart';
+import 'package:maplibre_flutter_web/src/core_web/core_wasm_loader.dart';
 
 void main() {
-  test('registerWith installs the platform instance', () {
+  test('registerWith installs the core (WASM) platform instance', () {
     // The Registrar is ignored (no message channel on the data path); a bare
     // instance is enough to drive registration.
     MapLibreFlutterWeb.registerWith(Registrar());
     expect(MapLibreFlutterPlatform.instance, isA<MapLibreFlutterWeb>());
   });
 
-  test('pinned maplibre-gl-js version is a stable 5.x release', () {
-    // Guards against an accidental jump to a prerelease (e.g. 6.0.0-x); bump
-    // deliberately alongside the interop surface (CLAUDE.md §10).
-    expect(maplibreGlVersion, matches(RegExp(r'^5\.\d+\.\d+$')));
+  test('core module URL defaults to the bundled plugin asset path', () {
+    // The WASM artifact ships as a maplibre_flutter_core web asset; the default
+    // loader URL must resolve there (override with MAPLIBRE_WEB_CORE_URL).
+    expect(
+      coreModuleUrl,
+      startsWith('assets/packages/maplibre_flutter_core/web/'),
+    );
+    expect(coreModuleUrl, endsWith('.js'));
   });
 }
