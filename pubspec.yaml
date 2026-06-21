@@ -13,6 +13,7 @@ workspace:
   - packages/maplibre_flutter_platform_interface
   - packages/maplibre_flutter_core
   - packages/maplibre_flutter_android
+  - packages/maplibre_flutter_android_sdk
   - packages/maplibre_flutter_ios
   - packages/maplibre_flutter_macos
   - packages/maplibre_flutter_windows

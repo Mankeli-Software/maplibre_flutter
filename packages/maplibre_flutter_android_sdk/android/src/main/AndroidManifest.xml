@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No `package` attribute (removed in AGP 8/9); the namespace is set in
+         build.gradle.kts. This library needs no permissions of its own — the
+         host app declares INTERNET for tile fetching. -->
+</manifest>

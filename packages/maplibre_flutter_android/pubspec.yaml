@@ -1,6 +1,7 @@
 name: maplibre_flutter_android
 description: >-
-  The Android implementation of maplibre_flutter (jnigen over the Kotlin MapLibre SDK, AndroidView).
+  The default Android implementation of maplibre_flutter (mbgl-core via FFI,
+  rendered into a Flutter Texture).
 version: 0.0.2
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
@@ -14,21 +15,15 @@ dependencies:
   flutter:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
-  # jnigen control layer (CLAUDE.md §5a): Dart drives the native MapLibre map
-  # over JNI, not method channels.
-  jni: ^1.0.0
-  # Experimental core-on-Android path (CLAUDE.md §3): an UNCONDITIONAL dep so the
-  # core controller imports it; --dart-define=MAPLIBRE_EXPERIMENTAL_CORE only
-  # selects it at runtime. Like the iOS POC, the build hook can't see the
-  # dart-define, so the core .so bundles even in SDK-only builds (known POC cost).
+  # The shared desktop core engine: Android renders mbgl-core into a Flutter
+  # Texture (the same engine as every other platform). The native present bridge
+  # lives in android/src/main (a small JNI lib + OkHttp HTTP source).
   maplibre_flutter_core: ^0.0.2
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
-  # Generator for lib/src/*_bindings.g.dart (committed, regenerated via tool/).
-  jnigen: ^0.16.0
 
 flutter:
   plugin:
@@ -36,8 +31,8 @@ flutter:
     platforms:
       android:
         # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
-        # implementation; the native plugin registers the AndroidView factory
-        # with the platform-view registrar (CLAUDE.md §3).
+        # implementation; the native plugin owns the texture registrar that
+        # presents mbgl-core's frames into a Flutter Texture (CLAUDE.md §3).
         dartPluginClass: MapLibreFlutterAndroid
         pluginClass: MaplibreFlutterAndroidPlugin
         package: dev.maplibreflutter.maplibre_flutter_android

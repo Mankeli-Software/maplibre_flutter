@@ -23,9 +23,9 @@ android {
     }
 
     defaultConfig {
-        // 26, not the SDK's 21 floor: the experimental mbgl-core .so (built by the
-        // maplibre_flutter_core hook) references pthread_getname_np, added to bionic
-        // in API 26. Harmless for the default SDK path (the core .so is unused there).
+        // 26, not the legacy 21 floor: mbgl-core's .so (built by the
+        // maplibre_flutter_core hook) references pthread_getname_np, added to
+        // bionic in API 26.
         minSdk = 26
         consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
@@ -35,8 +35,9 @@ android {
         }
     }
 
-    // Native presenter for the experimental core path (JNI → ANativeWindow). Only
-    // loaded when MAPLIBRE_EXPERIMENTAL_CORE selects the core controller.
+    // Native present bridge (JNI → ANativeWindow): copies mbgl-core's frames into
+    // the SurfaceProducer's Surface. Built separately from the maplibre_flutter_core
+    // build hook (which produces libmaplibre_flutter_core.so).
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -51,9 +52,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("androidx.annotation:annotation:1.9.1") // @Keep for jnigen-bound classes.
-    implementation("org.maplibre.gl:android-sdk:11.11.0")
-    // OkHttp backs the experimental core path's HTTP file source (system TLS + trust
-    // store), bridged to mbgl-core over JNI. Unused on the default SDK path.
+    implementation("androidx.annotation:annotation:1.9.1") // @Keep for JNI-called classes.
+    // OkHttp backs mbgl-core's HTTP file source (system TLS + trust store),
+    // bridged to the engine over JNI.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

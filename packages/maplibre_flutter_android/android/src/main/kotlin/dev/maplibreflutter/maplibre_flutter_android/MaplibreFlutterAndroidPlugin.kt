@@ -6,23 +6,19 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 
 /**
- * Native half of the hybrid Android plugin.
+ * Native half of the hybrid Android plugin (the default mbgl-core renderer).
  *
- * Default (SDK) path: registers the [MapLibreViewFactory] with the platform-view
- * registry so the Dart side can embed an `AndroidView` (milestone A/B, jnigen).
+ * Installs a registrar [MethodChannel] — the one sanctioned platform-channel use,
+ * registration only — that hands the engine's [TextureRegistry] (a
+ * `SurfaceProducer`) the core map's native handle so mbgl-core's frames present
+ * into a Flutter `Texture`. The per-frame data path is native + FFI.
  *
- * EXPERIMENTAL core path (CLAUDE.md §3): also installs a registrar [MethodChannel]
- * — the one sanctioned platform-channel use, registration only — that hands the
- * engine's [TextureRegistry] (a `SurfaceProducer`) the core map's native handle so
- * mbgl-core's frames present into a Flutter `Texture`. The channel is inert unless
- * the Dart core controller calls it, so the default SDK build pays nothing.
+ * (The opt-in `maplibre_flutter_android_sdk` package provides the alternative
+ * `AndroidView` factory that renders with the MapLibre Android SDK.)
  */
 class MaplibreFlutterAndroidPlugin :
     FlutterPlugin, MethodChannel.MethodCallHandler {
     companion object {
-        /** Must match the `viewType` the Dart controller reports. */
-        const val VIEW_TYPE = "maplibre_flutter/android"
-
         /** Must match the Dart core controller's registrar channel. */
         const val REGISTRAR_CHANNEL = "maplibre_flutter/android/registrar"
     }
@@ -33,7 +29,6 @@ class MaplibreFlutterAndroidPlugin :
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         this.binding = binding
-        binding.platformViewRegistry.registerViewFactory(VIEW_TYPE, MapLibreViewFactory())
         channel = MethodChannel(binding.binaryMessenger, REGISTRAR_CHANNEL).also {
             it.setMethodCallHandler(this)
         }
