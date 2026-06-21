@@ -1,6 +1,7 @@
 name: maplibre_flutter_ios
 description: >-
-  The iOS implementation of maplibre_flutter (swiftgen over the MapLibre Apple SDK, UiKitView).
+  The default iOS implementation of maplibre_flutter (mbgl-core via FFI, rendered
+  into a Flutter Texture with Metal).
 version: 0.0.2
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
@@ -14,33 +15,15 @@ dependencies:
   flutter:
     sdk: flutter
   maplibre_flutter_platform_interface: ^0.0.2
-  # Experimental core-on-iOS path (MAPLIBRE_EXPERIMENTAL_CORE, CLAUDE.md §3 escape
-  # hatch): renders mbgl-core into a Flutter Texture instead of MLNMapView/UiKitView,
-  # mirroring the macOS desktop tier. The Dart dep is unconditional (the core controller
-  # imports it); the core's build hook builds the native mbgl-core for iOS *device*
-  # targets and skips the iOS Simulator (where Metal can't link/headless-render). The
-  # dart-define selects core-vs-SDK at runtime; an unused core just isn't called.
+  # The shared desktop core engine: iOS renders mbgl-core (Metal) into a Flutter
+  # Texture, the same engine as every other platform. Because this package no
+  # longer links the MapLibre Apple SDK, there is no mbgl symbol duplication.
   maplibre_flutter_core: ^0.0.2
-  # swiftgen control layer (CLAUDE.md §5b): Dart drives the native MapLibre map
-  # over the Objective-C runtime, not method channels.
-  #
-  # Capped below 9.4.1: that release bumped `hooks` to ^2.0.0, but the shared
-  # pub-workspace resolution still pins `hooks ^1.0.0` via maplibre_flutter_core's
-  # build hook (same single-resolution constraint as the melos pin, §6). The
-  # solver backtracks to 9.4.0 here; raise the ceiling once core moves to hooks 2.x.
-  objective_c: ">=9.3.0 <9.4.1"
-  ffi: ^2.1.0 # used by the generated swiftgen bindings
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
-  # Generator for lib/src/*_bindings.g.dart (committed, via tool/swiftgen.dart).
-  swiftgen: ^0.1.2
-  # Imported directly by tool/swiftgen.dart (also transitive via swiftgen).
-  ffigen: ^20.1.1
-  logging: ^1.3.0
-  pub_semver: ^2.2.0
 
 flutter:
   plugin:
@@ -48,8 +31,8 @@ flutter:
     platforms:
       ios:
         # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
-        # implementation; the native plugin registers the UiKitView factory with
-        # the platform-view registrar (CLAUDE.md §3). Packaged for both SPM and
-        # CocoaPods (§9); sharedDarwinSource is deliberately NOT used.
+        # implementation; the native plugin owns the texture registrar that
+        # presents mbgl-core's Metal frames into a Flutter Texture (CLAUDE.md §3).
+        # Packaged for both SPM and CocoaPods (§9); sharedDarwinSource not used.
         dartPluginClass: MapLibreFlutterIos
         pluginClass: MaplibreFlutterIosPlugin

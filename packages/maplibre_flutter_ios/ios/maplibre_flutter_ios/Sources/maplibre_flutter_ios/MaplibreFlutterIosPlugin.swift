@@ -1,21 +1,18 @@
 import Flutter
 import UIKit
 
-/// Native half of the hybrid iOS plugin.
+/// Native half of the hybrid iOS plugin (the default mbgl-core renderer).
 ///
-/// Registers BOTH map paths so the Dart `MAPLIBRE_EXPERIMENTAL_CORE` flag can pick
-/// either at runtime (CLAUDE.md §3):
-///   - DEFAULT (SDK): the `UiKitView` factory that renders with the MapLibre Apple
-///     SDK's `MLNMapView`. Camera/style is driven from Dart over swiftgen.
-///   - EXPERIMENTAL (core): a bootstrap method channel (`maplibre_flutter/ios/registrar`)
-///     that binds an engine `Texture` to an mbgl-core map — the macOS desktop tier
-///     ported to iOS. Registration only (CLAUDE.md §10); the per-frame data path is FFI
-///     to maplibre_flutter_core. The channel is inert unless the Dart core controller
-///     calls it, so the default SDK build pays nothing for it.
+/// Installs a bootstrap method channel (`maplibre_flutter/ios/registrar`) that
+/// binds an engine `Texture` to an mbgl-core map — the macOS desktop tier ported
+/// to iOS. Registration only (CLAUDE.md §10); the per-frame data path is FFI to
+/// maplibre_flutter_core (the core's render thread → the texture's
+/// `copyPixelBuffer`).
+///
+/// (The opt-in `maplibre_flutter_ios_sdk` package provides the alternative
+/// `UiKitView` factory that renders with the MapLibre Apple SDK's `MLNMapView`.)
 public class MaplibreFlutterIosPlugin: NSObject, FlutterPlugin {
-  /// Platform-view type the SDK Dart controller reports.
-  static let viewType = "maplibre_flutter/ios"
-  /// Bootstrap channel for the experimental core path's texture registrar
+  /// Bootstrap channel for the core texture registrar
   /// (mirrors macOS's `maplibre_flutter/macos/registrar`).
   static let registrarChannelName = "maplibre_flutter/ios/registrar"
 
@@ -28,12 +25,8 @@ public class MaplibreFlutterIosPlugin: NSObject, FlutterPlugin {
   }
 
   public static func register(with registrar: FlutterPluginRegistrar) {
-    // Default SDK path: the UiKitView factory (MLNMapView).
-    let factory = MapLibreViewFactory(messenger: registrar.messenger())
-    registrar.register(factory, withId: viewType)
-
-    // Experimental core path: the texture-registrar bootstrap channel. NOTE: on iOS
-    // `messenger`/`textures` are METHODS (they are properties on macOS).
+    // The texture-registrar bootstrap channel. NOTE: on iOS `messenger`/`textures`
+    // are METHODS (they are properties on macOS).
     let channel = FlutterMethodChannel(
       name: registrarChannelName, binaryMessenger: registrar.messenger())
     let instance = MaplibreFlutterIosPlugin(textures: registrar.textures())

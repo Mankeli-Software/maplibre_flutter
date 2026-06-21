@@ -10,7 +10,7 @@ import 'package:objective_c/objective_c.dart' as objc;
 import 'package:ffi/ffi.dart' as pkg_ffi;
 
 late final _class_MapLibreController = objc.getClass(
-  "maplibre_flutter_ios.MapLibreController",
+  "maplibre_flutter_ios_sdk.MapLibreController",
 );
 late final _sel_isKindOfClass_ = objc.registerName("isKindOfClass:");
 final _objc_msgSend_19nvye5 = objc.msgSendPointer
@@ -374,7 +374,7 @@ extension MapLibreController$Methods on MapLibreController {
 }
 
 late final _class_MapRegistry = objc.getClass(
-  "maplibre_flutter_ios.MapRegistry",
+  "maplibre_flutter_ios_sdk.MapRegistry",
 );
 late final _sel_register_ = objc.registerName("register:");
 final _objc_msgSend_qugqlf = objc.msgSendPointer

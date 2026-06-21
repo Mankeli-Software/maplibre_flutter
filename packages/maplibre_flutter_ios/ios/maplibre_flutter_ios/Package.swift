@@ -1,5 +1,8 @@
 // swift-tools-version: 5.9
-// The iOS implementation of maplibre_flutter (CLAUDE.md §9: SPM + CocoaPods both).
+// The default iOS implementation of maplibre_flutter (CLAUDE.md §9: SPM + CocoaPods
+// both). Renders the shared mbgl-core engine via Metal into a Flutter Texture; it
+// does NOT link the MapLibre Apple SDK (so there is no mbgl symbol duplication —
+// the native engine ships via maplibre_flutter_core's build hook).
 import PackageDescription
 
 let package = Package(
@@ -13,18 +16,12 @@ let package = Package(
     dependencies: [
         // Flutter SDK package, injected by the tool (new in Flutter 3.41).
         .package(name: "FlutterFramework", path: "../FlutterFramework"),
-        // MapLibre Apple SDK (MLNMapView). Same distribution CocoaPods uses.
-        .package(
-            url: "https://github.com/maplibre/maplibre-gl-native-distribution",
-            from: "6.27.0"
-        ),
     ],
     targets: [
         .target(
             name: "maplibre_flutter_ios",
             dependencies: [
                 .product(name: "FlutterFramework", package: "FlutterFramework"),
-                .product(name: "MapLibre", package: "maplibre-gl-native-distribution"),
             ]
         ),
     ]
