@@ -12,6 +12,8 @@ excluded but not that the core path looks/feels right.
 - `flutter build apk --debug` → bundles `libmaplibre_flutter_core.so` + `libmaplibre_flutter_android_jni.so`, **no MapLibre Android SDK `.so`** (SDK excluded).
 - `flutter build ios --simulator` → bundles `maplibre_flutter_core.framework` + `maplibre_flutter_ios.framework`, **no `MapLibre.framework`**, **zero duplicate-class warnings** (duplicate-symbol blocker gone).
 - iOS swiftgen bindings regenerated (`dart run tool/swiftgen.dart`) → byte-identical to committed.
+- **Matrix #13 (macOS regression) — PASS:** `flutter run -d macos` builds + launches; the core
+  default renders a real demotiles map (verified by screenshot) with working example controls.
 - Known **pre-existing** failing VM test (NOT from this work): `maplibre_map_test.dart › "pinch
   zoom freezes its anchor"` — fails on base `e6a677e` too; a gesture-anchor question, separate.
 
