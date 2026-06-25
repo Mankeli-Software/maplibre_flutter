@@ -377,6 +377,15 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   static const double _inertiaMinSpeed = 16; // px/s
   // Only fling if released faster than this (ignore slow/precise drags).
   static const double _inertiaStartSpeed = 120; // px/s
+  // Cap the fling speed: glide ≈ v·tau, and at low zoom the world is only ~512 px,
+  // so an unbounded fling would whip the map many times around the globe. 5000 px/s
+  // → ≤ ~1500 px glide, a brisk-but-sane fling at any zoom.
+  static const double _inertiaMaxSpeed = 5000; // px/s
+  // Floor for a velocity sample's dt. High-refresh (120Hz ProMotion) and coalesced
+  // touch events can fire sub-millisecond apart; a tiny dt makes the instantaneous
+  // pdx/dt explode into a bogus multi-thousand-px/s spike that the EMA latches onto
+  // (the "a small flick spins the world 10-20× at zoom 0" bug). One ~120Hz frame.
+  static const double _minVelocitySampleDt = 1 / 120; // ≈ 0.0083 s
 
   // We track the drag velocity ourselves (EMA of focal deltas over time) rather
   // than trusting ScaleEndDetails.velocity, which is unreliable / often ~zero for
@@ -492,7 +501,11 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       final dt = (nowUs - _lastMoveUs) / 1e6;
       _lastMoveUs = nowUs;
       if (dt > 0 && dt < 0.1) {
-        final instant = Offset(pdx / dt, pdy / dt); // px/s
+        // Floor dt to one frame so a sub-ms burst can't turn a small move into a
+        // huge instantaneous speed (see [_minVelocitySampleDt]); a real fast flick
+        // still reports its true speed (large pdx over a real frame).
+        final measuredDt = math.max(dt, _minVelocitySampleDt);
+        final instant = Offset(pdx / measuredDt, pdy / measuredDt); // px/s
         const a = 0.6; // EMA weight toward the most recent sample
         _dragVelocity = _dragVelocity * (1 - a) + instant * a;
       }
@@ -532,7 +545,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     final sinceMoveUs = _clock.elapsedMicroseconds - _lastMoveUs;
     if (sinceMoveUs > 100000) return; // released after a pause → no fling
     if (_dragVelocity.distance < _inertiaStartSpeed) return;
-    _inertiaVelocity = _dragVelocity;
+    // Cap the fling speed (belt-and-braces with the dt floor) so a hard flick can't
+    // glide an absurd distance — at low zoom that would spin the globe many times.
+    final speed = _dragVelocity.distance;
+    _inertiaVelocity = speed > _inertiaMaxSpeed
+        ? _dragVelocity * (_inertiaMaxSpeed / speed)
+        : _dragVelocity;
     _lastInertiaElapsed = Duration.zero;
     // Reuse a single Ticker for the State's life — SingleTickerProviderStateMixin
     // forbids creating a second one, so a per-fling createTicker() throws on the
