@@ -363,24 +363,35 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // it's a no-op on macOS, where the focal doesn't drift.
   Offset _zoomAnchor = Offset.zero;
 
-  // Pan inertia ("fling"): when the drag is released with velocity, keep panning
-  // and decay it, so the custom rendering engines (desktop core + core-on-mobile)
-  // feel like the native SDKs / gl-js. Driven by a Ticker; the velocity decays
-  // exponentially.
+  // Pan inertia ("fling"): on release with velocity, ease the camera by a glide
+  // offset over a computed duration, so the custom rendering engines (desktop core
+  // + core-on-mobile) feel like the native SDKs / gl-js. The model is ported from
+  // the MapLibre Native Android SDK (MapGestureDetector.onFling): both the glide
+  // offset and the animation duration scale with the release speed, so the fling
+  // correlates with how hard you flicked — bounded by a speed cap + a max distance.
   Ticker? _inertiaTicker;
-  Offset _inertiaVelocity = Offset.zero; // logical px/s
-  Duration _lastInertiaElapsed = Duration.zero;
+  Offset _flingOffset = Offset.zero; // total glide for this fling (logical px)
+  double _flingDurationMs = 0;
+  Offset _flingApplied = Offset.zero; // glide applied so far (logical px)
 
-  // Velocity decay time constant; lower = stops sooner. Distance glided ≈ v0·tau.
-  static const double _inertiaTauSeconds = 0.3;
-  // Stop the fling once it slows below this.
-  static const double _inertiaMinSpeed = 16; // px/s
   // Only fling if released faster than this (ignore slow/precise drags).
-  static const double _inertiaStartSpeed = 120; // px/s
-  // Cap the fling speed: glide ≈ v·tau, and at low zoom the world is only ~512 px,
-  // so an unbounded fling would whip the map many times around the globe. 5000 px/s
-  // → ≤ ~1500 px glide, a brisk-but-sane fling at any zoom.
-  static const double _inertiaMaxSpeed = 5000; // px/s
+  static const double _inertiaStartSpeed = 120; // logical px/s
+  // Cap the release speed. The Android SDK leans on the OS max-fling velocity; we
+  // cap explicitly so a velocity spike can't produce a runaway glide.
+  static const double _inertiaMaxSpeed = 5000; // logical px/s
+  // SDK fling formula (MapGestureDetector.onFling):
+  //   animationTime(ms) = speed / (7 / tiltFactor) + base
+  // tiltFactor is 1.5 in the 2D (no-tilt) case → divisor 10.5; base is the SDK's
+  // ANIMATION_DURATION_FLING_BASE. Clamp very fast flicks to a max duration.
+  static const double _flingTimeDivisor = 10.5;
+  static const double _flingBaseTimeMs = 150;
+  static const double _flingMaxTimeMs = 1000;
+  // SDK glide factor (their 0.28): offset = velocity * animationTime * factor,
+  // tuned so the glide begins ≈ at the pre-release pan speed.
+  static const double _flingOffsetFactor = 0.28;
+  // Hard cap on glide distance — "a max distance the map can move even for a very
+  // fast flick" (the Google-Maps-like bound the velocity cap also enforces).
+  static const double _flingMaxDistance = 1000; // logical px
   // Floor for a velocity sample's dt. High-refresh (120Hz ProMotion) and coalesced
   // touch events can fire sub-millisecond apart; a tiny dt makes the instantaneous
   // pdx/dt explode into a bogus multi-thousand-px/s spike that the EMA latches onto
@@ -544,14 +555,29 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     if (_gestureHadScale) return;
     final sinceMoveUs = _clock.elapsedMicroseconds - _lastMoveUs;
     if (sinceMoveUs > 100000) return; // released after a pause → no fling
-    if (_dragVelocity.distance < _inertiaStartSpeed) return;
-    // Cap the fling speed (belt-and-braces with the dt floor) so a hard flick can't
-    // glide an absurd distance — at low zoom that would spin the globe many times.
-    final speed = _dragVelocity.distance;
-    _inertiaVelocity = speed > _inertiaMaxSpeed
-        ? _dragVelocity * (_inertiaMaxSpeed / speed)
-        : _dragVelocity;
-    _lastInertiaElapsed = Duration.zero;
+    var velocity = _dragVelocity;
+    final speed = velocity.distance;
+    if (speed < _inertiaStartSpeed) return;
+    // Cap the release speed (belt-and-braces with the dt floor).
+    if (speed > _inertiaMaxSpeed) {
+      velocity = velocity * (_inertiaMaxSpeed / speed);
+    }
+    // SDK fling model: derive the animation duration and the glide offset from the
+    // release speed, then ease the camera by that offset (below). Both scale with
+    // speed, so a harder flick glides farther and longer.
+    final durationMs =
+        (velocity.distance / _flingTimeDivisor + _flingBaseTimeMs).clamp(
+          _flingBaseTimeMs,
+          _flingMaxTimeMs,
+        );
+    var offset = velocity * (durationMs / 1000.0 * _flingOffsetFactor);
+    final distance = offset.distance;
+    if (distance > _flingMaxDistance) {
+      offset = offset * (_flingMaxDistance / distance); // hard max glide
+    }
+    _flingOffset = offset;
+    _flingDurationMs = durationMs;
+    _flingApplied = Offset.zero;
     // Reuse a single Ticker for the State's life — SingleTickerProviderStateMixin
     // forbids creating a second one, so a per-fling createTicker() throws on the
     // second pan-release. Stop (no-op if idle) then restart from elapsed zero.
@@ -561,18 +587,20 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onInertiaTick(Duration elapsed) {
-    final dt = (elapsed - _lastInertiaElapsed).inMicroseconds / 1e6;
-    _lastInertiaElapsed = elapsed;
-    if (dt <= 0) return;
-    final dx = _inertiaVelocity.dx * dt;
-    final dy = _inertiaVelocity.dy * dt;
-    if (dx != 0 || dy != 0) {
-      widget.handler.moveBy(dx, dy);
+    final t = (elapsed.inMicroseconds / 1000.0 / _flingDurationMs).clamp(
+      0.0,
+      1.0,
+    );
+    // Decelerating ease (≈ the SDK's fling curve): the glide starts near the
+    // release speed and slows to a stop over the duration.
+    final eased = Curves.easeOutCubic.transform(t);
+    final target = _flingOffset * eased;
+    final delta = target - _flingApplied;
+    _flingApplied = target;
+    if (delta.dx != 0 || delta.dy != 0) {
+      widget.handler.moveBy(delta.dx, delta.dy);
     }
-    _inertiaVelocity *= math.exp(-dt / _inertiaTauSeconds);
-    if (_inertiaVelocity.distance < _inertiaMinSpeed) {
-      _stopInertia();
-    }
+    if (t >= 1.0) _stopInertia();
   }
 
   @override
