@@ -140,6 +140,18 @@ class MapLibreMapController {
         : null;
   }
 
+  /// The platform controller's projector when its renderer supports anchoring
+  /// widgets to geographic points (the default `mbgl-core` tiers); null on tiers
+  /// that don't. The widget uses this to decide whether to render the marker
+  /// overlay. Feature-detected like [gestureHandler].
+  @internal
+  MapLibreMapProjector? get projector {
+    final platform = _platform;
+    return platform is MapLibreMapProjector
+        ? platform as MapLibreMapProjector
+        : null;
+  }
+
   /// Applies a new style. The public source of truth for style is the
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.

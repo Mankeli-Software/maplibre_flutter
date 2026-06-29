@@ -82,6 +82,62 @@ external void mbl_map_scale_by(
 );
 
 @ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Int>,
+  )
+>()
+external int mbl_map_pixel_for_lat_lng(
+  ffi.Pointer<MblMap> map,
+  double lat,
+  double lng,
+  ffi.Pointer<ffi.Double> out_x,
+  ffi.Pointer<ffi.Double> out_y,
+  ffi.Pointer<ffi.Int> out_visible,
+);
+
+@ffi.Native<
+  ffi.Uint64 Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Uint32,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Int>,
+  )
+>()
+external int mbl_map_pixels_for_lat_lngs(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Double> in_lat_lng,
+  int count,
+  ffi.Pointer<ffi.Double> out_xy,
+  ffi.Pointer<ffi.Int> out_visible,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+  )
+>()
+external int mbl_map_lat_lng_for_pixel(
+  ffi.Pointer<MblMap> map,
+  double x,
+  double y,
+  ffi.Pointer<ffi.Double> out_lat,
+  ffi.Pointer<ffi.Double> out_lng,
+);
+
+@ffi.Native<ffi.Uint64 Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_proj_generation(ffi.Pointer<MblMap> map);
+
+@ffi.Native<
   ffi.Void Function(
     ffi.Pointer<MblMap>,
     ffi.Pointer<

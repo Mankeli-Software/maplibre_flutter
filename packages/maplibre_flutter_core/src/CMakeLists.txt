@@ -640,6 +640,12 @@ endif()
 
 add_library(maplibre_flutter_core SHARED ${_shim_sources})
 target_include_directories(maplibre_flutter_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+# The shim snapshots mbgl's TransformState for off-thread projection, so it needs
+# mbgl's private src/ headers (transform_state.hpp lives under maplibre-native/src,
+# not the public include/). Public mbgl API alone can't hold the value type. (The
+# Windows arm below also adds this for its Vulkan present headers; a duplicate
+# include dir is harmless.)
+target_include_directories(maplibre_flutter_core PRIVATE "${MLN_ROOT}/src")
 target_link_libraries(maplibre_flutter_core PRIVATE mbgl-core mbgl-compiler-options)
 
 if(APPLE)

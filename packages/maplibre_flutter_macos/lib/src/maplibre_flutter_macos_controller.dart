@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
@@ -25,7 +26,11 @@ const MethodChannel _registrar = MethodChannel(
 /// controller creates the core map, registers the texture, forwards
 /// camera/style, and resizes the off-screen surface to the widget. (§8 M2–M3.)
 class MapLibreFlutterMacosController
-    implements MapLibreMapPlatformController, MapLibreGestureHandler {
+    with MapLibreCameraTickNotifier
+    implements
+        MapLibreMapPlatformController,
+        MapLibreGestureHandler,
+        MapLibreMapProjector {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -106,6 +111,9 @@ class MapLibreFlutterMacosController
     if (_disposed || _ready.isCompleted) return;
     if (_coreMap.awaitFrame(Duration.zero)) {
       _ready.complete();
+      // The first frame implies the transform snapshot exists; tick so any glued
+      // overlay reprojects from off-screen to its real position.
+      notifyCameraChanged();
       return;
     }
     Future<void>.delayed(const Duration(milliseconds: 50), _pollReady);
@@ -159,6 +167,7 @@ class MapLibreFlutterMacosController
       bearing: camera.bearing,
       pitch: camera.pitch,
     );
+    notifyCameraChanged(); // reproject glued widget overlays
   }
 
   @override
@@ -176,6 +185,10 @@ class MapLibreFlutterMacosController
     _renderWidth = w;
     _renderHeight = h;
     _coreMap.resize(w, h);
+    // The viewport size feeds the projection; tick so glued overlays reproject.
+    // (Best-effort: the snapshot updates on the render thread; the next camera
+    // change reconciles any sub-frame lag during an active drag-resize.)
+    notifyCameraChanged();
   }
 
   @override
@@ -185,6 +198,7 @@ class MapLibreFlutterMacosController
     // mbgl's screen coordinates are logical points (Size = logical points),
     // matching the widget's gesture deltas — no DPR scaling.
     _coreMap.moveBy(dx, dy);
+    notifyCameraChanged(); // reproject glued widget overlays
   }
 
   @override
@@ -192,12 +206,54 @@ class MapLibreFlutterMacosController
     if (_disposed) return;
     _animToken++; // a gesture supersedes any running fly-to
     _coreMap.scaleBy(scale, anchorX, anchorY);
+    notifyCameraChanged(); // reproject glued widget overlays
+  }
+
+  // --- MapLibreMapProjector ---------------------------------------------------
+  // Projection runs synchronously over the core's lock-free transform snapshot,
+  // so it is cheap to call from a Flow paint every camera tick. Screen space is
+  // logical points, top-left origin (matching the gesture deltas above).
+
+  // Reused across frames so projecting markers every camera tick allocates
+  // nothing on the Dart side (the core reuses native buffers in turn).
+  Float64List _projIn = Float64List(0);
+  Float64List _projOut = Float64List(0);
+  Int32List _projVis = Int32List(0);
+
+  @override
+  int project(List<LatLng> points, List<ui.Offset> out, {List<bool>? visible}) {
+    if (_disposed || points.isEmpty) return 0;
+    final n = points.length;
+    if (_projIn.length < n * 2) {
+      _projIn = Float64List(n * 2);
+      _projOut = Float64List(n * 2);
+      _projVis = Int32List(n);
+    }
+    for (var i = 0; i < n; i++) {
+      _projIn[i * 2] = points[i].latitude;
+      _projIn[i * 2 + 1] = points[i].longitude;
+    }
+    final gen = _coreMap.projectBatch(n, _projIn, _projOut, visible: _projVis);
+    if (gen == 0) return 0;
+    for (var i = 0; i < n; i++) {
+      out[i] = ui.Offset(_projOut[i * 2], _projOut[i * 2 + 1]);
+      if (visible != null) visible[i] = _projVis[i] != 0;
+    }
+    return gen;
+  }
+
+  @override
+  LatLng? unproject(ui.Offset point) {
+    if (_disposed) return null;
+    final r = _coreMap.unproject(point.dx, point.dy);
+    return r == null ? null : LatLng(r.latitude, r.longitude);
   }
 
   @override
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    disposeCameraTick();
     // Unregister first (clears the native frame callback and stops the engine
     // pulling frames), then destroy the core map (joins its render thread).
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);

@@ -33,6 +33,13 @@ class MapLibreCoreMap {
   int _height;
   bool _disposed = false;
 
+  // Reused native scratch buffers for [projectBatch], grown on demand and freed
+  // in [dispose], so the per-frame projection path allocates nothing.
+  ffi.Pointer<ffi.Double> _projIn = ffi.nullptr;
+  ffi.Pointer<ffi.Double> _projOut = ffi.nullptr;
+  ffi.Pointer<ffi.Int> _projVis = ffi.nullptr;
+  int _projCapacity = 0; // in points
+
   /// Frame width in device pixels.
   int get width => _width;
 
@@ -267,6 +274,97 @@ class MapLibreCoreMap {
     bindings.mbl_map_scale_by(_handle, scale, anchorX, anchorY);
   }
 
+  /// Projects [count] geographic points — read interleaved as
+  /// `[lat0, lng0, lat1, lng1, …]` from the first `2 * count` entries of
+  /// [inLatLng] — to screen positions written into the first `2 * count` entries
+  /// of [outXy] (`[x0, y0, …]`), in one FFI call. Passing [count] explicitly lets
+  /// callers reuse over-sized buffers across frames. Positions are logical points,
+  /// top-left origin (the same screen space as [moveBy]/[scaleBy], i.e. Flutter's
+  /// widget box). When [visible] is given, its first [count] entries are set to 1
+  /// for points in front of the camera and 0 for points behind it on a pitched view.
+  ///
+  /// Returns the projection generation used — a counter that bumps on every
+  /// camera change — or 0 if no camera/transform exists yet (in which case
+  /// nothing is written). Reuses native scratch buffers, so the hot path does no
+  /// allocation. [outXy] (and [visible], if given) must be at least [count] long.
+  int projectBatch(int count, Float64List inLatLng, Float64List outXy,
+      {Int32List? visible}) {
+    _checkAlive();
+    if (count <= 0) return bindings.mbl_map_proj_generation(_handle);
+    _ensureProjCapacity(count);
+    _projIn.asTypedList(count * 2).setRange(0, count * 2, inLatLng);
+    final gen = bindings.mbl_map_pixels_for_lat_lngs(
+      _handle,
+      _projIn,
+      count,
+      _projOut,
+      visible != null ? _projVis : ffi.nullptr,
+    );
+    if (gen == 0) return 0;
+    outXy.setRange(0, count * 2, _projOut.asTypedList(count * 2));
+    if (visible != null) {
+      for (var i = 0; i < count; i++) {
+        visible[i] = _projVis[i]; // Pointer<Int> has no asTypedList; index it.
+      }
+    }
+    return gen;
+  }
+
+  /// Projects a single geographic point to a screen position (logical points,
+  /// top-left origin), with a [visible] flag (false = behind a pitched camera).
+  /// Null if no camera/transform exists yet.
+  ({double x, double y, bool visible})? project(double latitude, double longitude) {
+    _checkAlive();
+    return using((arena) {
+      final x = arena<ffi.Double>();
+      final y = arena<ffi.Double>();
+      final vis = arena<ffi.Int>();
+      final ok = bindings.mbl_map_pixel_for_lat_lng(
+        _handle,
+        latitude,
+        longitude,
+        x,
+        y,
+        vis,
+      );
+      if (ok == 0) return null;
+      return (x: x.value, y: y.value, visible: vis.value != 0);
+    });
+  }
+
+  /// Inverse projection: the geographic point under a screen position (logical
+  /// points, top-left origin), for hit-testing a tap or dragging a marker. Null
+  /// if no camera/transform exists yet.
+  ({double latitude, double longitude})? unproject(double x, double y) {
+    _checkAlive();
+    return using((arena) {
+      final lat = arena<ffi.Double>();
+      final lng = arena<ffi.Double>();
+      final ok = bindings.mbl_map_lat_lng_for_pixel(_handle, x, y, lat, lng);
+      if (ok == 0) return null;
+      return (latitude: lat.value, longitude: lng.value);
+    });
+  }
+
+  /// The current projection generation — a counter that bumps on every camera
+  /// change (0 before the first frame). Lets a caller cheaply detect whether a
+  /// reprojection is needed.
+  int get projectionGeneration {
+    _checkAlive();
+    return bindings.mbl_map_proj_generation(_handle);
+  }
+
+  void _ensureProjCapacity(int count) {
+    if (count <= _projCapacity) return;
+    if (_projIn != ffi.nullptr) malloc.free(_projIn);
+    if (_projOut != ffi.nullptr) malloc.free(_projOut);
+    if (_projVis != ffi.nullptr) malloc.free(_projVis);
+    _projIn = malloc<ffi.Double>(count * 2);
+    _projOut = malloc<ffi.Double>(count * 2);
+    _projVis = malloc<ffi.Int>(count);
+    _projCapacity = count;
+  }
+
   /// Returns the latest rendered frame as tightly-packed BGRA (premultiplied
   /// alpha) bytes, or null if none is available yet. Non-blocking — the render
   /// thread produces frames asynchronously; use [awaitFrame] to wait for the
@@ -314,6 +412,9 @@ class MapLibreCoreMap {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    if (_projIn != ffi.nullptr) malloc.free(_projIn);
+    if (_projOut != ffi.nullptr) malloc.free(_projOut);
+    if (_projVis != ffi.nullptr) malloc.free(_projVis);
     bindings.mbl_map_destroy(_handle);
   }
 

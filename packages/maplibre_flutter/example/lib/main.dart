@@ -43,6 +43,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
   String _style = _demotiles;
   int _placeIndex = 0;
 
+  // A draggable marker (start at Paris) and pins dropped by tapping the map —
+  // both demonstrate the projection round-trip (screen <-> LatLng).
+  LatLng _draggable = const LatLng(48.8566, 2.3522);
+  final List<LatLng> _dropped = <LatLng>[];
+
   @override
   void initState() {
     super.initState();
@@ -82,6 +87,37 @@ class _MapDemoPageState extends State<MapDemoPage> {
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
   }
 
+  List<MapLibreMarker> _buildMarkers() {
+    return <MapLibreMarker>[
+      // A fixed, tappable pin glued to London (tip on the point).
+      MapLibreMarker(
+        point: _places[0].$2,
+        alignment: Alignment.bottomCenter,
+        child: GestureDetector(
+          onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Tapped London')),
+          ),
+          child: const Icon(Icons.location_on, color: Colors.red, size: 40),
+        ),
+      ),
+      // A draggable pin: update its point from the drag callbacks so it settles.
+      MapLibreMarker(
+        point: _draggable,
+        alignment: Alignment.bottomCenter,
+        draggable: true,
+        onDragUpdate: (p) => setState(() => _draggable = p),
+        onDragEnd: (p) => setState(() => _draggable = p),
+        child: const Icon(Icons.push_pin, color: Colors.indigo, size: 40),
+      ),
+      // Pins dropped by tapping the map.
+      for (final p in _dropped)
+        MapLibreMarker(
+          point: p,
+          child: const Icon(Icons.circle, color: Colors.green, size: 16),
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -95,6 +131,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
               options: const MapOptions(
                 initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
               ),
+              markers: _buildMarkers(),
+              onTap: (point) => setState(() => _dropped.add(point)),
             ),
           ),
           Positioned(

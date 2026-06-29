@@ -10,6 +10,8 @@ import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 import 'maplibre_map_controller.dart';
+import 'marker.dart';
+import 'marker_overlay.dart';
 
 /// The public map widget.
 ///
@@ -28,6 +30,8 @@ class MapLibreMap extends StatefulWidget {
     required this.style,
     this.controller,
     this.options = const MapOptions(),
+    this.markers = const <MapLibreMarker>[],
+    this.onTap,
   });
 
   /// MapLibre style document: a URL, asset path, or inline JSON.
@@ -35,6 +39,17 @@ class MapLibreMap extends StatefulWidget {
   /// Declarative — change it (e.g. via `setState`) to switch styles at runtime.
   /// This is the single source of truth for the map's style (CLAUDE.md §3).
   final String style;
+
+  /// Flutter widgets glued to geographic points, composited above the map and
+  /// kept locked to their points as the map moves (see [MapLibreMarker]).
+  /// Declarative — change the list (e.g. via `setState`) to add/move/remove them.
+  /// Rendered only on tiers whose renderer can project coordinates (the default
+  /// `mbgl-core` tiers); ignored elsewhere.
+  final List<MapLibreMarker> markers;
+
+  /// Called when the map (not a marker) is tapped, with the geographic point
+  /// under the tap. Only fires on tiers that can project coordinates.
+  final ValueChanged<LatLng>? onTap;
 
   /// Optional externally-owned controller for driving the map imperatively.
   ///
@@ -116,7 +131,11 @@ class _MapLibreMapState extends State<MapLibreMap> {
             _controller.renderHandle == null) {
           return const SizedBox.shrink();
         }
-        return _MapEmbed(controller: _controller);
+        return _MapEmbed(
+          controller: _controller,
+          markers: widget.markers,
+          onTap: widget.onTap,
+        );
       },
     );
   }
@@ -125,18 +144,25 @@ class _MapLibreMapState extends State<MapLibreMap> {
 /// Resolves the render split (CLAUDE.md §3) to a concrete embed widget. This is
 /// the only place that branches on [MapLibreRenderHandle].
 class _MapEmbed extends StatelessWidget {
-  const _MapEmbed({required this.controller});
+  const _MapEmbed({
+    required this.controller,
+    this.markers = const <MapLibreMarker>[],
+    this.onTap,
+  });
 
   final MapLibreMapController controller;
+  final List<MapLibreMarker> markers;
+  final ValueChanged<LatLng>? onTap;
 
   @override
   Widget build(BuildContext context) {
     final handle = controller.renderHandle!;
+    Widget map;
     switch (handle) {
       case TextureHandle(:final textureId):
-        return _TextureMapView(controller: controller, textureId: textureId);
+        map = _TextureMapView(controller: controller, textureId: textureId);
       case PlatformViewHandle():
-        return _PlatformView(handle: handle);
+        map = _PlatformView(handle: handle);
       case ElementViewHandle(:final viewType):
         // Web tier: the maplibre-gl-js map is the host `<div>` registered under
         // [viewType] by the web controller's view factory. It is the top DOM
@@ -144,8 +170,37 @@ class _MapEmbed extends StatelessWidget {
         // Dart gesture layer (web mirrors the mobile tier, CLAUDE.md §3).
         // Flutter widgets drawn *over* the map need `PointerInterceptor`
         // (handled by the app, e.g. the example's controls), not the map itself.
-        return HtmlElementView(viewType: viewType);
+        map = HtmlElementView(viewType: viewType);
     }
+
+    // Anchored widgets need a projector. Absent one (a tier that can't project),
+    // skip the overlay + map-tap entirely — graceful degradation (CLAUDE.md §3).
+    final projector = controller.projector;
+    if (projector == null) return map;
+
+    // Map taps: a tap on a marker is consumed by the marker (it sits on top of
+    // the Stack, so it is hit-tested first); a tap on empty space falls through
+    // the (transparent) overlay to this detector and reports a LatLng.
+    if (onTap case final onTap?) {
+      map = GestureDetector(
+        onTapUp: (details) {
+          final point = projector.unproject(details.localPosition);
+          if (point != null) onTap(point);
+        },
+        child: map,
+      );
+    }
+
+    if (markers.isEmpty) return map;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        map,
+        Positioned.fill(
+          child: MarkerOverlay(projector: projector, markers: markers),
+        ),
+      ],
+    );
   }
 }
 

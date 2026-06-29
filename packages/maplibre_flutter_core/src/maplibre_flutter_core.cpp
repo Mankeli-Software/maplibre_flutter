@@ -18,6 +18,11 @@
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/map/map_options.hpp>
+// Private mbgl header (under maplibre-native/src, added to this shim's include
+// path in CMakeLists). TransformState is a copyable value type that does the
+// pure projection math (latLng <-> screen, exact for bearing/pitch). We snapshot
+// a copy on every camera change so projection runs off the render thread.
+#include <mbgl/map/transform_state.hpp>
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/resource_options.hpp>
 #include <mbgl/style/style.hpp>
@@ -28,6 +33,7 @@
 #include <mbgl/util/size.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -107,6 +113,16 @@ struct MblMap {
   // Cached camera (set-through, read by the getter without touching the map).
   std::mutex cameraMutex;
   CameraState camera;
+
+  // Projection snapshot for anchoring widgets to LatLng. On each camera/size
+  // change the render thread copies mbgl's TransformState here; the projection
+  // functions (mbl_map_pixel(s)_for_lat_lng(s) / lat_lng_for_pixel) run pure math
+  // on a copy of it from any thread. `projGeneration` bumps on every update (0 =
+  // none yet). A dedicated mutex so projection never contends with getCamera.
+  std::mutex projMutex;
+  mbgl::TransformState projState;
+  uint64_t projGeneration = 0;
+  bool projValid = false;
 
   // Frame-ready callback (called on the render thread).
   std::mutex cbMutex;
@@ -439,6 +455,18 @@ void updateCameraCache(MblMap *m) {
   if (cam.zoom) m->camera.zoom = *cam.zoom;
   if (cam.bearing) m->camera.bearing = *cam.bearing;
   if (cam.pitch) m->camera.pitch = *cam.pitch;
+}
+
+// Render thread only. Snapshots mbgl's current transform so the projection
+// functions can run off-thread. Call after every camera/size change. Copying the
+// TransformState is cheap (no render); getTransfromState() is mbgl's own const
+// accessor (the spelling — "Transfrom" — is mbgl's, not a typo here).
+void updateProjState(MblMap *m) {
+  auto ts = m->map->getTransfromState();
+  std::lock_guard<std::mutex> lk(m->projMutex);
+  m->projState = ts;
+  ++m->projGeneration;
+  m->projValid = true;
 }
 
 // Cap the desktop core's online tile-request concurrency. The non-Apple core uses
@@ -805,6 +833,7 @@ void mbl_map_set_camera(MblMap *m, double lat, double lng, double zoom,
                        .withZoom(zoom)
                        .withBearing(bearing)
                        .withPitch(pitch));
+    updateProjState(m);
     m->renderRequested = true;
   });
 }
@@ -856,6 +885,7 @@ void mbl_map_resize(MblMap *m, uint32_t width, uint32_t height) {
     m->map->setSize(mbgl::Size{w, h});
     m->renderWidth = w;
     m->renderHeight = h;
+    updateProjState(m); // viewport size feeds the projection
     m->renderRequested = true;
   });
 }
@@ -867,6 +897,7 @@ void mbl_map_move_by(MblMap *m, double dx, double dy) {
   m->post([m, dx, dy] {
     m->map->moveBy(mbgl::ScreenCoordinate{dx, dy});
     updateCameraCache(m);
+    updateProjState(m);
     m->renderRequested = true;
   });
 }
@@ -879,8 +910,112 @@ void mbl_map_scale_by(MblMap *m, double scale, double anchor_x,
   m->post([m, scale, anchor_x, anchor_y] {
     m->map->scaleBy(scale, mbgl::ScreenCoordinate{anchor_x, anchor_y});
     updateCameraCache(m);
+    updateProjState(m);
     m->renderRequested = true;
   });
+}
+
+// --- Projection -------------------------------------------------------------
+// All four run pure math on a copy of the transform snapshot (taken out under
+// projMutex, then released), so they never touch the live map and are safe from
+// any thread. The TransformState math returns top-left-origin screen coordinates
+// in mbgl Size units (logical points, matching the gesture/anchor space). The
+// vec4 overload yields clip space: clip[3] (w) > 0 means the point is in front of
+// the camera (visible); w <= 0 means behind it on a pitched view.
+
+// mbgl::LatLng's constructor THROWS std::domain_error on NaN/infinite or
+// |lat| > 90, and a C++ exception crossing this extern "C" boundary is undefined
+// behavior. So sanitize first: reject non-finite, clamp latitude to the valid
+// range. Returns false for a point we should not project (caller parks it).
+static inline bool mbl_sanitize_lat_lng(double &lat, double &lng) {
+  if (!std::isfinite(lat) || !std::isfinite(lng)) return false;
+  if (lat < -90.0) lat = -90.0;
+  if (lat > 90.0) lat = 90.0;
+  return true;
+}
+
+int mbl_map_pixel_for_lat_lng(MblMap *m, double lat, double lng, double *out_x,
+                              double *out_y, int *out_visible) {
+  if (m == nullptr) {
+    return 0;
+  }
+  mbgl::TransformState state;
+  {
+    std::lock_guard<std::mutex> lk(m->projMutex);
+    if (!m->projValid) return 0;
+    state = m->projState;
+  }
+  if (!mbl_sanitize_lat_lng(lat, lng)) {
+    if (out_x) *out_x = 0;
+    if (out_y) *out_y = 0;
+    if (out_visible) *out_visible = 0;
+    return 1;
+  }
+  mbgl::vec4 clip;
+  const auto sc =
+      state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
+  if (out_x) *out_x = sc.x;
+  if (out_y) *out_y = sc.y;
+  if (out_visible) *out_visible = clip[3] > 0.0 ? 1 : 0;
+  return 1;
+}
+
+uint64_t mbl_map_pixels_for_lat_lngs(MblMap *m, const double *in_lat_lng,
+                                     uint32_t count, double *out_xy,
+                                     int *out_visible) {
+  if (m == nullptr || in_lat_lng == nullptr || out_xy == nullptr) {
+    return 0;
+  }
+  mbgl::TransformState state;
+  uint64_t generation;
+  {
+    std::lock_guard<std::mutex> lk(m->projMutex);
+    if (!m->projValid) return 0;
+    state = m->projState;
+    generation = m->projGeneration;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    double lat = in_lat_lng[2 * i];
+    double lng = in_lat_lng[2 * i + 1];
+    if (!mbl_sanitize_lat_lng(lat, lng)) {
+      out_xy[2 * i] = 0;
+      out_xy[2 * i + 1] = 0;
+      if (out_visible) out_visible[i] = 0;
+      continue;
+    }
+    mbgl::vec4 clip;
+    const auto sc = state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
+    out_xy[2 * i] = sc.x;
+    out_xy[2 * i + 1] = sc.y;
+    if (out_visible) out_visible[i] = clip[3] > 0.0 ? 1 : 0;
+  }
+  return generation;
+}
+
+int mbl_map_lat_lng_for_pixel(MblMap *m, double x, double y, double *out_lat,
+                              double *out_lng) {
+  if (m == nullptr) {
+    return 0;
+  }
+  mbgl::TransformState state;
+  {
+    std::lock_guard<std::mutex> lk(m->projMutex);
+    if (!m->projValid) return 0;
+    state = m->projState;
+  }
+  const auto ll =
+      state.screenCoordinateToLatLng(mbgl::ScreenCoordinate{x, y});
+  if (out_lat) *out_lat = ll.latitude();
+  if (out_lng) *out_lng = ll.longitude();
+  return 1;
+}
+
+uint64_t mbl_map_proj_generation(MblMap *m) {
+  if (m == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->projMutex);
+  return m->projGeneration;
 }
 
 void mbl_map_set_frame_callback(MblMap *m, MblFrameCallback callback,

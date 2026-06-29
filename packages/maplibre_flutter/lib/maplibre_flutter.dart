@@ -9,3 +9,4 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 
 export 'src/maplibre_map.dart';
 export 'src/maplibre_map_controller.dart';
+export 'src/marker.dart';

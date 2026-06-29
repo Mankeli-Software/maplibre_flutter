@@ -1712,4 +1712,70 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     builds the example both core-default and with each `_sdk`/`_gljs` override; and the
     native-feel A/B (gesture inertia/fling) vs the SDKs before tagging a `stable` release.
 
+- **2026-06-29 — Glued widget markers (anchor Flutter widgets to LatLng): projection in the
+  shim + a Flow overlay, macOS-first.** New feature: place real,
+  interactive Flutter widgets locked to a geographic point on the map (`MapLibreMap(markers: […])`),
+  smooth through pan/zoom/rotate/pitch/fly-to/inertia, plus tap→LatLng and draggable markers.
+  Scoped (per the user) to a full vertical slice verified on **macOS**; the other tiers are a small
+  per-controller addition next. **No mbgl submodule patch** — mbgl already exposes the projection
+  we need; everything new lives in our own shim/Dart.
+  - **Projection lives in the engine, exposed synchronously (the key enabler).** mbgl's pinned
+    `Map` has `pixelForLatLng`/`pixelsForLatLngs`/`latLngForPixel` and `getTransfromState()`
+    (mbgl's real spelling — note the typo) returning a copyable `mbgl::TransformState`. The shim
+    snapshots a **copy** of that TransformState on the render thread after every camera/size change
+    (`updateProjState`, called from `set_camera`/`move_by`/`scale_by`/`resize`), guarded by a
+    dedicated `projMutex` + a `projGeneration` counter. New C ABI
+    (`mbl_map_pixel_for_lat_lng`/`mbl_map_pixels_for_lat_lngs` (batch, returns generation)/
+    `mbl_map_lat_lng_for_pixel`/`mbl_map_proj_generation`) copies the snapshot out under the lock,
+    releases it, and runs **pure projection math on the thread-confined copy** — so projection is
+    cheap, lock-free of the render thread, callable from Flutter's UI thread every frame, and exact
+    for bearing/pitch (`latLngToScreenCoordinate(latLng, vec4&)`; `clip[3] > 0` ⇒ in front of the
+    camera = visible). Screen space is **logical points, top-left origin** = the gesture/anchor
+    space = Flutter's widget box (confirmed against the controllers' post-2026-06-20 logical-point
+    sizing), so the overlay needs no DPR conversion. **Gotcha:** `mbgl::LatLng`'s ctor THROWS
+    `std::domain_error` on NaN/inf/|lat|>90; a throw across the `extern "C"` boundary is UB, so the
+    projection functions sanitize (reject non-finite, clamp lat) before constructing a LatLng. The
+    shim now needs mbgl's private `src/` on its include path on every platform (for
+    `transform_state.hpp`) — added unconditionally in `src/CMakeLists.txt` (Windows already had it).
+  - **Per-frame camera tick to Dart.** New additive platform-interface capability
+    `MapLibreMapProjector implements Listenable` (`project`/`unproject`) + a reusable
+    `MapLibreCameraTickNotifier` mixin (owns a private `ChangeNotifier`, since the controllers'
+    `dispose()` is async and would clash with `ChangeNotifier.dispose`). The macOS controller mixes
+    it in and calls `notifyCameraChanged()` at the **existing Dart camera choke points**
+    (`_applyCamera`/`moveBy`/`scaleBy`) — so one call per choke point covers gestures, the
+    Dart-stepped fly-to loop, the inertia ticker, and imperative moves — plus on first-frame ready
+    and on resize so the overlay reprojects from off-screen to its real position. Feature-detected
+    with `is` (like `MapLibreGestureHandler`); a controller without it simply renders no overlay.
+  - **`Flow` is the overlay primitive.** `MarkerOverlay` (in `maplibre_flutter`) uses a
+    `FlowDelegate(repaint: projector)`: it reprojects all markers in **one batch call** and
+    re-positions children via paint-time transforms on each camera tick — **no relayout, no widget
+    rebuild** (a regression test asserts the child isn't rebuilt) — and `Flow` hit-tests children at
+    their painted positions, so a marker's own `GestureDetector` works and empty space falls through
+    to the map's gesture layer. `getConstraintsForChild` is loosened (the default forces children to
+    fill the map). Markers behind a pitched camera / pre-first-frame are parked off-screen via the
+    `visible` flag. A dragged marker is positioned by the **live pointer** (overlay space), not its
+    declarative `point`, so it follows the finger and never double-moves even when the app also
+    updates `point` from the drag callbacks.
+  - **Public API (three-bucket rule):** markers are mutable+declarative → a widget prop
+    `MapLibreMap(markers: List<MapLibreMarker>, onTap: ValueChanged<LatLng>)`; `MapLibreMarker`
+    (`point`/`child`/`alignment`/`draggable`/`onDrag*`) is exported from `maplibre_flutter`. No
+    `controller.setMarkers` (same single-source-of-truth model as `style`). `_MapEmbed` wraps the
+    embed in a `Stack` (map below, overlay on top) only when a projector exists; map taps go through
+    a `GestureDetector(onTapUp)` that unprojects (marker taps win by hit-test order). Threads through
+    with **zero platform-interface controller changes** beyond the additive projector capability.
+  - **Tests:** native ctest-style FFI tests (centre↔viewport-centre, screen↔LatLng round-trip incl.
+    bearing+pitch, batch==single, generation bump); widget tests with a mocked projector (placement
+    + alignment, reproject-without-rebuild, marker-tap-vs-map-tap, tap→unproject, draggable end
+    point, no-projector graceful); a platform-interface test for the tick mixin.
+  - **NOT yet built/verified — no Dart/Flutter toolchain or mbgl submodule in this remote env.**
+    All code is written to the established conventions but unbuilt here. **Before merge, on macOS:**
+    (1) `dart run tool/ffigen.dart` to regenerate `maplibre_flutter_core_bindings_generated.dart` —
+    the 4 new bindings were hand-added in ffigen style (same as the 2026-06-19 Windows session) and
+    must be confirmed byte-identical (CI §7.6 diff check); (2) `melos run test:native` (projection
+    math); (3) `melos analyze`/`test`/`format`; (4) `flutter run -d macos` to confirm markers stay
+    glued through drag/zoom/pinch/fly-to/inertia, taps fire, dragging drops at the right LatLng, and
+    map-tap reports a sensible LatLng. **Follow-ups:** add the projector to the Linux/Windows/
+    iOS-core/Android-core controllers (≈10 lines each) + web (gl-js `map.project`, wasm-core embind);
+    temporal-swim correlation via `projGeneration`/presented-frame on slow-present tiers if needed.
+
 _Append new decisions here with date and rationale._

@@ -80,6 +80,52 @@ FFI_PLUGIN_EXPORT void mbl_map_move_by(MblMap *map, double dx, double dy);
 FFI_PLUGIN_EXPORT void mbl_map_scale_by(MblMap *map, double scale,
                                         double anchor_x, double anchor_y);
 
+// --- Projection -------------------------------------------------------------
+//
+// Convert between geographic coordinates and screen positions, for anchoring
+// Flutter widgets ("markers") to a LatLng. Screen positions are in the SAME
+// screen space as mbl_map_move_by / mbl_map_scale_by anchors — mbgl `Size`
+// units, top-left origin (the controllers configure that size in logical
+// points, so these match Flutter's widget-box coordinates with no DPR scaling).
+//
+// These do NOT touch the live mbgl Map: every camera/size change snapshots a
+// copy of mbgl's transform on the render thread, and the functions below run
+// pure projection math on that snapshot under a lightweight lock. So they are
+// cheap and safe to call from any thread (e.g. Flutter's UI thread inside a
+// Flow paint), need no render-thread round trip, and are exact for bearing/pitch.
+
+// Project one geographic point to a screen position. Writes *out_x/*out_y; the
+// (nullable) *out_visible is 0 when the point is behind the camera (off the
+// visible map on a pitched view) and 1 otherwise. Returns 1 on success, 0 if no
+// camera/transform snapshot exists yet (in which case nothing is written).
+FFI_PLUGIN_EXPORT int mbl_map_pixel_for_lat_lng(MblMap *map, double lat,
+                                                double lng, double *out_x,
+                                                double *out_y, int *out_visible);
+
+// Batch project `count` points in one call (one FFI call per frame for all
+// markers). `in_lat_lng` is 2*count doubles [lat0,lng0,lat1,lng1,...]; writes
+// 2*count doubles [x0,y0,x1,y1,...] to `out_xy` and, if non-null, `count` ints
+// to `out_visible`. Returns the snapshot generation used (a value that bumps on
+// every camera change; 0 means no snapshot yet, in which case nothing is
+// written). Acquires the snapshot lock once for the whole batch.
+FFI_PLUGIN_EXPORT uint64_t mbl_map_pixels_for_lat_lngs(MblMap *map,
+                                                       const double *in_lat_lng,
+                                                       uint32_t count,
+                                                       double *out_xy,
+                                                       int *out_visible);
+
+// Inverse projection: the geographic point under a screen position (for
+// hit-testing a tap, or dragging a marker). Writes *out_lat/*out_lng. Returns 1
+// on success, 0 if no camera/transform snapshot exists yet.
+FFI_PLUGIN_EXPORT int mbl_map_lat_lng_for_pixel(MblMap *map, double x, double y,
+                                                double *out_lat,
+                                                double *out_lng);
+
+// The current projection generation: a counter bumped on every camera/size
+// change. Lets a caller cheaply detect whether a reprojection is needed. 0
+// before the first snapshot.
+FFI_PLUGIN_EXPORT uint64_t mbl_map_proj_generation(MblMap *map);
+
 // Register (or clear, with NULL) the frame-ready callback. See MblFrameCallback.
 FFI_PLUGIN_EXPORT void mbl_map_set_frame_callback(MblMap *map,
                                                   MblFrameCallback callback,
