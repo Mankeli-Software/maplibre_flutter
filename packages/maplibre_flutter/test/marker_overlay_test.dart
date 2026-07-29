@@ -79,6 +79,33 @@ class _FixedPlatform extends MapLibreFlutterPlatform {
   }) async => controller;
 }
 
+/// A box that counts how many times it is actually PAINTED, so culling (which
+/// skips paint, not build) can be asserted.
+class _PaintCountingBox extends StatelessWidget {
+  const _PaintCountingBox({required this.counter});
+  final _Counter counter;
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: const Size(20, 20),
+      painter: _CountingPainter(counter),
+    );
+  }
+}
+
+class _Counter {
+  int value = 0;
+}
+
+class _CountingPainter extends CustomPainter {
+  _CountingPainter(this.counter);
+  final _Counter counter;
+  @override
+  void paint(Canvas canvas, Size size) => counter.value++;
+  @override
+  bool shouldRepaint(_CountingPainter old) => true;
+}
+
 /// A stateless box that counts its builds, to prove repaint != rebuild.
 class _CountingBox extends StatelessWidget {
   const _CountingBox({super.key, required this.onBuild});
@@ -149,6 +176,74 @@ void main() {
     expect(
       tester.getRect(find.byKey(const Key('bottom'))).bottomCenter,
       offsetMoreOrLessEquals(const Offset(200, 120), epsilon: 0.5),
+    );
+  });
+
+  testWidgets('culls markers projected outside the viewport (no paint)', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 11));
+    // Marker at (0,0) lands on screen; the one at (10,10) lands far outside the
+    // 400x400 map box.
+    controller.projectFn = (p) =>
+        p.latitude == 0 ? const Offset(200, 200) : const Offset(5000, 5000);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    final onScreen = _Counter();
+    final offScreen = _Counter();
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: _PaintCountingBox(counter: onScreen),
+        ),
+        MapLibreMarker(
+          point: const LatLng(10, 10),
+          child: _PaintCountingBox(counter: offScreen),
+        ),
+      ],
+    );
+
+    expect(onScreen.value, greaterThan(0), reason: 'on-screen marker paints');
+    expect(
+      offScreen.value,
+      0,
+      reason: 'a marker outside the viewport must not be painted at all',
+    );
+
+    // And it starts painting once the camera brings it into view.
+    controller.projectFn = (_) => const Offset(100, 100);
+    controller.generation++;
+    controller.tick();
+    await tester.pump();
+    expect(offScreen.value, greaterThan(0), reason: 'paints once on screen');
+  });
+
+  testWidgets('culls markers behind a pitched camera (not visible)', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 12));
+    controller.projectFn = (_) => const Offset(200, 200);
+    // Reported as behind the camera even though it projects on-screen.
+    controller.visibleFn = (_) => false;
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    final counter = _Counter();
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: _PaintCountingBox(counter: counter),
+        ),
+      ],
+    );
+
+    expect(
+      counter.value,
+      0,
+      reason: 'a point behind a pitched camera must not be painted',
     );
   });
 
@@ -231,7 +326,8 @@ void main() {
     tester,
   ) async {
     final controller = _ProjController(const TextureHandle(textureId: 4));
-    controller.projectFn = (_) => const Offset(-1000, -1000); // marker off-screen
+    controller.projectFn = (_) =>
+        const Offset(-1000, -1000); // marker off-screen
     controller.unprojectFn = (o) => LatLng(o.dy, o.dx);
     MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
 

@@ -23,6 +23,7 @@ class MapLibreMarker {
     this.onDragUpdate,
     this.onDragEnd,
     this.key,
+    this.repaintBoundary = true,
   });
 
   /// The geographic point the marker is anchored to.
@@ -55,4 +56,18 @@ class MapLibreMarker {
   /// Optional identity for the marker, used to match widgets across rebuilds
   /// (preserves child state when the list reorders).
   final Key? key;
+
+  /// Cache [child] in its own compositing layer so camera movement only moves
+  /// the layer instead of re-painting the child's content.
+  ///
+  /// The overlay repositions markers on every camera tick. Without a boundary,
+  /// each tick re-paints every marker's contents; with one, the child rasterises
+  /// once and subsequent ticks are a cheap layer transform. **This is the main
+  /// lever for rich markers** (cards, images, charts) — the more expensive the
+  /// child is to paint, the bigger the win.
+  ///
+  /// Defaults to true. Set it to **false** for very large numbers of trivial
+  /// markers (thousands of plain dots): there each layer costs more than simply
+  /// re-drawing the shape, so boundaries make it slower, not faster.
+  final bool repaintBoundary;
 }

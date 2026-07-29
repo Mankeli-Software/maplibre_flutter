@@ -36,7 +36,9 @@ class _ImplementsPlatform implements MapLibreFlutterPlatform {
 
 /// A minimal projector built on the shared tick mixin, to exercise the
 /// [MapLibreMapProjector] contract + camera-tick notifications.
-class _FakeProjector with MapLibreCameraTickNotifier implements MapLibreMapProjector {
+class _FakeProjector
+    with MapLibreCameraTickNotifier
+    implements MapLibreMapProjector {
   @override
   int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) {
     for (var i = 0; i < points.length; i++) {
