@@ -172,6 +172,23 @@ Future<void> _applySubmodulePatches(
       marker: 'MBL_WIN32_EXTERNAL_MEMORY',
       patch: 'patches/windows-vulkan-external-memory.patch',
     ),
+    // Metal: make 3D custom-drawable geometry actually depth-test. mtl::Drawable
+    // deliberately skips setting its own depth/stencil state when is3D ("handled
+    // by the layer group", drawable.cpp:244) — but mtl::TileLayerGroup only
+    // computed features3d INSIDE `if (stencilTiles && !empty())`. A layer group
+    // with no stencil tiles (which is every CustomDrawableLayer) therefore left
+    // features3d false and set no depth state at all, so 3D geometry fell back to
+    // painter's order: models did not occlude behind fill-extrusion buildings and
+    // did not even self-occlude (a mesh's back faces painted over its front ones).
+    // The patch hoists the scan out of that guard; stencil3d stays gated on
+    // stencil tiles, so tiled layers are unaffected. Metal-only: the GL
+    // (drawable_gl.cpp:46) and Vulkan (drawable.cpp:274) drawables already honour
+    // is3D themselves, so Linux/Android/Windows never had this bug.
+    (
+      file: 'src/mbgl/mtl/tile_layer_group.cpp',
+      marker: 'MBL_CUSTOM_3D_DEPTH',
+      patch: 'patches/metal-custom-drawable-3d-depth.patch',
+    ),
   ];
   for (final p in patches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));

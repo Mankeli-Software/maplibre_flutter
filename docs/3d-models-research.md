@@ -259,33 +259,50 @@ Everything below is measured, not reasoned. Harnesses:
 | Does `triggerRepaint` drive animation through Continuous mode? | **Yes** — ~21k px change per spin step. This was the biggest unknown going in. |
 | Is it real 3D with correct axes? | **Yes** — top-down with the base removed gives the exact expected pinwheel: red=north top, green=east right, blue=south bottom, yellow=west left. |
 
-## The blocker: no depth occlusion, at any level
+## Depth occlusion: was broken, now FIXED (Metal-only mbgl bug)
 
-`addGeometry(..., is3D=true)` sets `setEnableDepth(true)` + `DepthMaskType::ReadWrite`
-(`custom_drawable_layer.cpp:741`), but custom drawable layers declare
-**`pass3d = LayerTypeInfo::Pass3D::NotRequired`** (`custom_drawable_layer.cpp:45`)
-while `fill-extrusion` declares **`Pass3D::Required`** (`fill_extrusion_layer.cpp:26`).
-The layer therefore renders in the **Translucent pass**, whose per-layer depth range
-is too compressed to resolve geometry — the result is **painter's order**.
+Initially the model had **no depth occlusion at all** — not against fill-extrusion
+buildings, and not even against itself (the pyramid's base, drawn last and farther
+away, painted over all four side faces).
 
-Measured two independent ways:
+**Root cause — and it is Metal-specific, not a design limit.** `mtl::Drawable`
+deliberately skips setting its own depth/stencil state when `is3D`, with the comment
+*"For 3D mode, stenciling is handled by the layer group"* (`mtl/drawable.cpp:244`).
+But `mtl::TileLayerGroup` only computed `features3d` **inside**
+`if (stencilTiles && !stencilTiles->empty())` (`mtl/tile_layer_group.cpp:59`). A layer
+group with no stencil tiles — which is *every* `CustomDrawableLayer` — therefore left
+`features3d` false and set **no depth state at all**, so 3D geometry silently fell back
+to painter's order.
 
-1. **Against buildings — none.** Model pixel counts are *byte-identical* with and
-   without 3D buildings across five geometries in dense Midtown Manhattan at 65–75°
-   pitch, including an 18 m model at the centre of the Empire State Building's
-   footprint (844 px both ways, same bbox, same centroid).
-2. **Against itself — none.** The pyramid's base, drawn last and farther from an
-   overhead camera, **paints over all four side faces**. Removing the base makes them
-   appear. So a general 3D model renders with back faces over front faces.
+The GL (`drawable_gl.cpp:46`) and Vulkan (`drawable.cpp:274`) drawables set
+`depthModeFor3D()` themselves, so **Linux, Android and Windows never had this bug.**
 
-(2) is the more serious result: it is not just "models float over buildings", it is
-"models are drawn wrong". Upstream tracks this as #4301, fixed by **PR #4364, merged
-2026-07-09 — three weeks after our pin `fa8a9c8e3261`, and Darwin-only.**
+**Fix:** `patches/metal-custom-drawable-3d-depth.patch` (marker `MBL_CUSTOM_3D_DEPTH`,
+applied idempotently by `hook/build.dart` alongside the two existing Windows patches).
+It hoists the 3D scan out of the stencil-tiles guard; `stencil3d` stays gated on stencil
+tiles, so tiled layers are unaffected.
 
-**Possible mitigation, untested:** back-face culling would make *closed convex* meshes
-look correct without any depth buffer (the base would simply be culled from above).
-`Interface::addGeometry` does not expose cull mode, so this needs a submodule bump or
-a patch. Non-convex models would still be wrong.
+**Verified after the fix:**
+
+| Check | Before | After |
+|---|---|---|
+| 18 m model at the centre of the Empire State Building footprint | 844 px (drawn straight through the tower) | **0 px — fully hidden** |
+| Same camera, no buildings (control) | 844 px | 844 px |
+| Model partially behind a building edge | 3220 px | 3078 px (correctly clipped) |
+| Self-occlusion: base vs side faces, top-down | base covered everything | correct four-face pinwheel |
+
+### Correction to the earlier research
+
+An earlier draft of this document claimed upstream PR **#4364** fixed custom-layer
+occlusion and that our pin merely predated it. **That is wrong.** #4364
+(`14d3c7529d29`) only adds a `nearClippedProjectionMatrix` field to
+`CustomLayerRenderParameters` and exposes it on the ObjC `MLNCustomStyleLayer`; it
+touches no depth or `pass3d` code. Upstream `main` as of `c8dad00be558` still has
+`pass3d = NotRequired` and the same stencil-gated `features3d` scan — i.e. **the bug is
+still present upstream and a submodule bump would not have fixed it.** Worth filing.
+
+Note also that `pass3d = NotRequired` turned out to be a red herring: full depth testing
+works through `depthModeFor3D()` without touching `pass3d` at all.
 
 ## Two bugs found on the way
 
@@ -312,8 +329,17 @@ the mesh ~300x too large. Correct form: XY `metres / metresPerPixel`, Z `metres`
 
 ## Verdict
 
-The mechanism is sound and cheap — but **do not build a model feature on this pin**.
-Depth is the whole game for 3D, and it does not work. The next step is to evaluate
-bumping the submodule past PR #4364 (which is source-breaking for `CustomLayer` and
-Darwin-only, so Windows/Vulkan and Linux/GL need re-validation), or to backport it as a
-third entry in `patches/`.
+**Viable.** Animated, geo-anchored, depth-occluding 3D models render inside mbgl on our
+pinned core, on every backend we ship, with one four-line Metal patch that follows the
+repo's existing patch convention. No submodule bump needed.
+
+Remaining before this is a feature rather than a spike:
+1. Real mesh ingest (`.glb`/`.obj` -> position+uv triangles + one PNG texture).
+2. Verify on the other tiers — GL and Vulkan should need no patch, but that is reasoned,
+   not measured; per the 2026-06-21 lesson, HW-verify rather than extrapolate.
+3. Style-reload survival (`onDidFinishLoadingStyle` + a retained model registry).
+4. A repaint policy: only pump `triggerRepaint` while an animation is on-screen.
+5. Public API: `MapLibreMap(models: ...)` as a declarative widget prop, mirroring
+   `markers` (three-bucket rule).
+6. The unlit-shader ceiling still stands: no normals/lighting/PBR, one texture, and no
+   skeletal animation. Bake lighting into the texture.
