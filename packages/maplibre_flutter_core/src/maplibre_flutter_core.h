@@ -130,6 +130,57 @@ FFI_PLUGIN_EXPORT int mbl_map_lat_lng_for_pixel(MblMap *map, double x, double y,
                                                 double *out_lng,
                                                 uint64_t generation);
 
+// --- Style sources, layers and images ---------------------------------------
+//
+// For point datasets too large to be Flutter widgets (thousands and up): the
+// ENGINE draws these, so they are glued to the map by construction — same
+// transform, same frame, no lag — and scale far past what one-widget-per-point
+// can. Clustering comes free: set `cluster: true` on a geojson source and mbgl
+// runs supercluster internally, re-clustering per zoom.
+//
+// `json` is MapLibre Style Spec JSON, exactly what maplibre-gl-js takes in
+// map.addSource(id, {...}) / map.addLayer({...}), so data-driven styling,
+// expressions and filters all work with no extra API surface here.
+//
+// JSON parsing and conversion happen SYNCHRONOUSLY on the calling thread (they
+// need no map), so a malformed document is reported immediately: these return 1
+// on success, or 0 with a message written to `err` (pass NULL/0 to ignore).
+// Applying the result to the style is then posted to the render thread, where
+// mbgl lives. Errors only detectable there (a duplicate or unknown id) are
+// logged rather than returned.
+
+FFI_PLUGIN_EXPORT int mbl_map_add_source_json(MblMap *map, const char *id,
+                                              const char *json, char *err,
+                                              uint32_t err_len);
+
+// `before_id` (nullable) inserts the layer beneath an existing one, for draw
+// order; NULL appends on top.
+FFI_PLUGIN_EXPORT int mbl_map_add_layer_json(MblMap *map, const char *json,
+                                             const char *before_id, char *err,
+                                             uint32_t err_len);
+
+// Replaces the data of an existing geojson source — the cheap path for dynamic
+// datasets (mbgl re-tiles and re-clusters internally; no layer rebuild).
+FFI_PLUGIN_EXPORT int mbl_map_set_geojson_data(MblMap *map,
+                                               const char *source_id,
+                                               const char *geojson, char *err,
+                                               uint32_t err_len);
+
+FFI_PLUGIN_EXPORT void mbl_map_remove_layer(MblMap *map, const char *id);
+FFI_PLUGIN_EXPORT void mbl_map_remove_source(MblMap *map, const char *id);
+
+// Registers an icon usable as `icon-image` in a symbol layer, from raw
+// premultiplied RGBA (`width * height * 4` bytes, copied here). This is what
+// lets a Flutter widget become an engine-drawn marker: paint the widget to an
+// image, hand the bytes over, and reference it by id. `pixel_ratio` is the
+// image's scale (2 for a @2x bitmap); `sdf` makes it a signed-distance-field
+// icon that can be recoloured/scaled by the style.
+FFI_PLUGIN_EXPORT void mbl_map_add_image(MblMap *map, const char *id,
+                                         const uint8_t *rgba, uint32_t width,
+                                         uint32_t height, float pixel_ratio,
+                                         int sdf);
+FFI_PLUGIN_EXPORT void mbl_map_remove_image(MblMap *map, const char *id);
+
 // The projection generation of the frame most recently PUBLISHED (i.e. the one
 // the compositor is showing). Camera commands are applied asynchronously on the
 // render thread, so the newest transform usually runs ahead of the visible

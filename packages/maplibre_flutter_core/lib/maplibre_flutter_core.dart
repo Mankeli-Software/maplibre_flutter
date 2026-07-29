@@ -245,6 +245,167 @@ class MapLibreCoreMap {
     });
   }
 
+  // --- Style sources / layers / images ---------------------------------------
+  //
+  // Engine-drawn data, for point sets far past what one-widget-per-point can
+  // carry. Because mbgl renders these with the map itself they are glued to it
+  // by construction, and clustering is built in (`cluster: true` on a geojson
+  // source runs supercluster inside the engine).
+  //
+  // The argument is MapLibre Style Spec JSON — the same documents
+  // maplibre-gl-js takes — so expressions, filters and data-driven styling all
+  // work without extra API here.
+  //
+  // TODO(typed-style-api): expose a typed Dart layer/source API
+  // (CircleLayer(circleRadius: ...), Expression builders) over this. Raw JSON is
+  // the right primitive underneath, but it is stringly-typed for callers; a
+  // typed façade is a goal once the shape settles.
+
+  /// Adds a style source under [id]. Throws [ArgumentError] if [json] is not a
+  /// valid source document (reported synchronously — parsing needs no map).
+  void addSourceJson(String id, String json) {
+    _checkAlive();
+    _styleCall(
+      (idPtr, jsonPtr, err) =>
+          bindings.mbl_map_add_source_json(_handle, idPtr, jsonPtr, err, 512),
+      id,
+      json,
+      'source',
+    );
+  }
+
+  /// Adds a style layer. [beforeId] inserts it beneath an existing layer (draw
+  /// order); null appends on top. Throws [ArgumentError] on invalid JSON.
+  void addLayerJson(String json, {String? beforeId}) {
+    _checkAlive();
+    using((arena) {
+      final jsonPtr = json.toNativeUtf8(allocator: arena).cast<ffi.Char>();
+      final beforePtr = beforeId == null
+          ? ffi.nullptr
+          : beforeId.toNativeUtf8(allocator: arena).cast<ffi.Char>();
+      final err = arena<ffi.Char>(512);
+      final ok = bindings.mbl_map_add_layer_json(
+        _handle,
+        jsonPtr,
+        beforePtr,
+        err,
+        512,
+      );
+      if (ok == 0) {
+        throw ArgumentError(
+          'invalid layer JSON: ${err.cast<Utf8>().toDartString()}',
+        );
+      }
+    });
+  }
+
+  /// Replaces the data of an existing geojson source — the cheap path for
+  /// dynamic datasets (mbgl re-tiles and re-clusters; no layer rebuild).
+  void setGeoJsonData(String sourceId, String geoJson) {
+    _checkAlive();
+    _styleCall(
+      (idPtr, jsonPtr, err) =>
+          bindings.mbl_map_set_geojson_data(_handle, idPtr, jsonPtr, err, 512),
+      sourceId,
+      geoJson,
+      'geojson',
+    );
+  }
+
+  void removeLayer(String id) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_remove_layer(
+        _handle,
+        id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+      );
+    });
+  }
+
+  void removeSource(String id) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_remove_source(
+        _handle,
+        id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+      );
+    });
+  }
+
+  /// Registers an icon for use as `icon-image` in a symbol layer, from raw
+  /// premultiplied RGBA (`width * height * 4` bytes).
+  ///
+  /// This is how a Flutter widget becomes an engine-drawn marker: paint the
+  /// widget to an image, pass its bytes here, and reference [id] from the
+  /// layer. [pixelRatio] is the bitmap's scale (2 for @2x); [sdf] makes it a
+  /// signed-distance-field icon the style can recolour and scale.
+  void addImage(
+    String id,
+    Uint8List rgba,
+    int width,
+    int height, {
+    double pixelRatio = 1.0,
+    bool sdf = false,
+  }) {
+    _checkAlive();
+    final expected = width * height * 4;
+    if (rgba.length < expected) {
+      throw ArgumentError(
+        'rgba is ${rgba.length} bytes, expected $expected for ${width}x$height',
+      );
+    }
+    using((arena) {
+      final buf = arena<ffi.Uint8>(expected);
+      buf.asTypedList(expected).setRange(0, expected, rgba);
+      bindings.mbl_map_add_image(
+        _handle,
+        id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        buf,
+        width,
+        height,
+        pixelRatio,
+        sdf ? 1 : 0,
+      );
+    });
+  }
+
+  void removeImage(String id) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_remove_image(
+        _handle,
+        id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+      );
+    });
+  }
+
+  /// Shared marshalling for the (id, json) -> int style calls.
+  void _styleCall(
+    int Function(
+      ffi.Pointer<ffi.Char>,
+      ffi.Pointer<ffi.Char>,
+      ffi.Pointer<ffi.Char>,
+    )
+    call,
+    String id,
+    String json,
+    String what,
+  ) {
+    using((arena) {
+      final err = arena<ffi.Char>(512);
+      final ok = call(
+        id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        json.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        err,
+      );
+      if (ok == 0) {
+        throw ArgumentError(
+          'invalid $what JSON: ${err.cast<Utf8>().toDartString()}',
+        );
+      }
+    });
+  }
+
   /// Blocks up to [timeout] until at least one frame has rendered, returning
   /// true if a frame is then available. Intended for initial-readiness and
   /// headless/test use — not the per-frame present path.

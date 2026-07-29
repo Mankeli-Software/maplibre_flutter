@@ -329,6 +329,219 @@ void main() {
     expect(stale.y, closeTo(newest.y, 0.01));
   });
 
+  // --- Style sources / layers / images (engine-drawn datasets) ---------------
+
+  /// Counts pixels close to [r],[g],[b] in an RGBA frame — how we prove the
+  /// engine actually DREW something, rather than just accepting the calls.
+  int countColor(Uint8List f, int r, int g, int b, {int tol = 24}) {
+    var n = 0;
+    for (var i = 0; i + 3 < f.length; i += 4) {
+      if ((f[i] - r).abs() <= tol &&
+          (f[i + 1] - g).abs() <= tol &&
+          (f[i + 2] - b).abs() <= tol) {
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /// A geojson FeatureCollection of [count] points spread around (lat, lng).
+  String pointsAround(double lat, double lng, int count, double spread) {
+    final features = <String>[];
+    for (var i = 0; i < count; i++) {
+      // Deterministic scatter (no Random, so runs are comparable).
+      final dx = ((i * 37) % 100) / 100.0 - 0.5;
+      final dy = ((i * 71) % 100) / 100.0 - 0.5;
+      features.add(
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":'
+        '[${lng + dx * spread},${lat + dy * spread}]},"properties":{}}',
+      );
+    }
+    return '{"type":"FeatureCollection","features":[${features.join(",")}]}';
+  }
+
+  test('draws a geojson circle layer the engine renders itself', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 9);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    final before = countColor(map.copyFrame()!, 255, 0, 255);
+
+    map.addSourceJson('pts', '''
+      {"type":"geojson","data":${pointsAround(60.45, 22.27, 200, 0.4)}}
+    ''');
+    // Unmistakable magenta, so the count can't be confused with map colours.
+    map.addLayerJson('''
+      {"id":"pts-circles","type":"circle","source":"pts",
+       "paint":{"circle-radius":4,"circle-color":"#ff00ff"}}
+    ''');
+
+    // Style mutations are applied on the render thread; wait for the repaint.
+    final sw = Stopwatch()..start();
+    var after = 0;
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      after = countColor(map.copyFrame()!, 255, 0, 255);
+      if (after > before + 50) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      after,
+      greaterThan(before + 50),
+      reason: 'the circle layer must actually paint pixels',
+    );
+    expect(map.writePng('/tmp/maplibre_circles.png'), isTrue);
+  });
+
+  test('clusters points in-engine when the source sets cluster: true', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    // Zoomed out, so a dense cluster collapses to a few cluster circles.
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 4);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.addSourceJson('c', '''
+      {"type":"geojson","cluster":true,"clusterRadius":50,"clusterMaxZoom":14,
+       "data":${pointsAround(60.45, 22.27, 500, 0.5)}}
+    ''');
+    // Only CLUSTERS are drawn (point_count exists only on cluster features), so
+    // any paint here proves supercluster ran inside the engine.
+    map.addLayerJson('''
+      {"id":"clusters","type":"circle","source":"c","filter":["has","point_count"],
+       "paint":{"circle-radius":14,"circle-color":"#ff00ff"}}
+    ''');
+
+    final sw = Stopwatch()..start();
+    var painted = 0;
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      painted = countColor(map.copyFrame()!, 255, 0, 255);
+      if (painted > 50) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      painted,
+      greaterThan(50),
+      reason: 'clustered features must render (filter matches only clusters)',
+    );
+    expect(map.writePng('/tmp/maplibre_clusters.png'), isTrue);
+  });
+
+  test('rejects malformed style JSON synchronously', () {
+    final map = MapLibreCoreMap.create(
+      width: 64,
+      height: 64,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+
+    expect(
+      () => map.addSourceJson('bad', '{not json'),
+      throwsA(isA<ArgumentError>()),
+    );
+    expect(
+      () => map.addLayerJson('{"id":"x","type":"nonsense","source":"y"}'),
+      throwsA(isA<ArgumentError>()),
+    );
+    // A well-formed source is accepted.
+    map.addSourceJson(
+      'ok',
+      '{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}',
+    );
+  });
+
+  test('registers an image usable as a symbol icon', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 9);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    // A solid magenta 16x16 icon — stands in for a Flutter widget painted to
+    // an image (the widget-as-engine-marker path).
+    const w = 16, h = 16;
+    final rgba = Uint8List(w * h * 4);
+    for (var i = 0; i < w * h; i++) {
+      rgba[i * 4] = 255; // r
+      rgba[i * 4 + 1] = 0; // g
+      rgba[i * 4 + 2] = 255; // b
+      rgba[i * 4 + 3] = 255; // a
+    }
+    map.addImage('pin', rgba, w, h);
+    map.addSourceJson('ipts', '''
+      {"type":"geojson","data":${pointsAround(60.45, 22.27, 40, 0.3)}}
+    ''');
+    map.addLayerJson('''
+      {"id":"ipins","type":"symbol","source":"ipts",
+       "layout":{"icon-image":"pin","icon-allow-overlap":true}}
+    ''');
+
+    final sw = Stopwatch()..start();
+    var painted = 0;
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      painted = countColor(map.copyFrame()!, 255, 0, 255);
+      if (painted > 50) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      painted,
+      greaterThan(50),
+      reason: 'the registered icon must render via the symbol layer',
+    );
+    expect(map.writePng('/tmp/maplibre_icons.png'), isTrue);
+  });
+
+  test('setGeoJsonData replaces a source without rebuilding the layer', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 9);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.addSourceJson(
+      'dyn',
+      '{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}',
+    );
+    map.addLayerJson('''
+      {"id":"dyn-c","type":"circle","source":"dyn",
+       "paint":{"circle-radius":5,"circle-color":"#ff00ff"}}
+    ''');
+
+    // Empty source: nothing of ours painted yet.
+    map.setGeoJsonData('dyn', pointsAround(60.45, 22.27, 150, 0.3));
+
+    final sw = Stopwatch()..start();
+    var painted = 0;
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      painted = countColor(map.copyFrame()!, 255, 0, 255);
+      if (painted > 50) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      painted,
+      greaterThan(50),
+      reason: 'new data must appear through the existing layer',
+    );
+  });
+
   test('projection returns null before any frame/transform exists', () {
     final map = MapLibreCoreMap.create(
       width: 128,

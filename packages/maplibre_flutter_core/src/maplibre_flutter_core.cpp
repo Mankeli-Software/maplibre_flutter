@@ -26,6 +26,18 @@
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/resource_options.hpp>
 #include <mbgl/style/style.hpp>
+// Style mutation (sources/layers/images) for engine-drawn datasets. The
+// conversion headers live under mbgl's private src/, which is already on this
+// shim's include path (see CMakeLists) — convertJSON gives us the whole style
+// spec, including cluster options and data-driven expressions, for free.
+#include <mbgl/style/conversion/geojson.hpp>
+#include <mbgl/style/conversion/json.hpp>
+#include <mbgl/style/conversion/layer.hpp>
+#include <mbgl/style/conversion/source.hpp>
+#include <mbgl/style/image.hpp>
+#include <mbgl/style/layer.hpp>
+#include <mbgl/style/source.hpp>
+#include <mbgl/style/sources/geojson_source.hpp>
 #include <mbgl/util/client_options.hpp>
 #include <mbgl/util/geo.hpp>
 #include <mbgl/util/image.hpp>
@@ -1088,6 +1100,160 @@ int mbl_map_lat_lng_for_pixel(MblMap *m, double x, double y, double *out_lat,
   if (out_lat) *out_lat = ll.latitude();
   if (out_lng) *out_lng = ll.longitude();
   return 1;
+}
+
+// --- Style sources / layers / images ----------------------------------------
+// Parsing runs on the CALLING thread (it needs no map), so bad JSON is reported
+// synchronously; only the style mutation is posted to the render thread. The
+// converted object is move-only, and `post` stores a copyable std::function, so
+// it travels inside a shared_ptr holder.
+
+static void mbl_set_err(char *err, uint32_t err_len, const std::string &msg) {
+  if (err == nullptr || err_len == 0) return;
+  const size_t n = std::min<size_t>(msg.size(), err_len - 1);
+  std::memcpy(err, msg.data(), n);
+  err[n] = '\0';
+}
+
+int mbl_map_add_source_json(MblMap *m, const char *id, const char *json,
+                            char *err, uint32_t err_len) {
+  if (m == nullptr || id == nullptr || json == nullptr) {
+    mbl_set_err(err, err_len, "null argument");
+    return 0;
+  }
+  mbgl::style::conversion::Error error;
+  auto source = mbgl::style::conversion::convertJSON<
+      std::unique_ptr<mbgl::style::Source>>(json, error, std::string(id));
+  if (!source) {
+    mbl_set_err(err, err_len, error.message);
+    return 0;
+  }
+  auto holder = std::make_shared<std::unique_ptr<mbgl::style::Source>>(
+      std::move(*source));
+  m->post([m, holder] {
+    try {
+      m->map->getStyle().addSource(std::move(*holder));
+      m->renderRequested = true;
+    } catch (const std::exception &e) {
+      fprintf(stderr, "maplibre_flutter_core: addSource failed: %s\n", e.what());
+    }
+  });
+  return 1;
+}
+
+int mbl_map_add_layer_json(MblMap *m, const char *json, const char *before_id,
+                           char *err, uint32_t err_len) {
+  if (m == nullptr || json == nullptr) {
+    mbl_set_err(err, err_len, "null argument");
+    return 0;
+  }
+  mbgl::style::conversion::Error error;
+  auto layer = mbgl::style::conversion::convertJSON<
+      std::unique_ptr<mbgl::style::Layer>>(json, error);
+  if (!layer) {
+    mbl_set_err(err, err_len, error.message);
+    return 0;
+  }
+  auto holder =
+      std::make_shared<std::unique_ptr<mbgl::style::Layer>>(std::move(*layer));
+  // Copy the id now: the caller's buffer is not guaranteed to outlive the post.
+  std::string before = before_id != nullptr ? std::string(before_id) : "";
+  m->post([m, holder, before] {
+    try {
+      if (before.empty()) {
+        m->map->getStyle().addLayer(std::move(*holder));
+      } else {
+        m->map->getStyle().addLayer(std::move(*holder), before);
+      }
+      m->renderRequested = true;
+    } catch (const std::exception &e) {
+      fprintf(stderr, "maplibre_flutter_core: addLayer failed: %s\n", e.what());
+    }
+  });
+  return 1;
+}
+
+int mbl_map_set_geojson_data(MblMap *m, const char *source_id,
+                             const char *geojson, char *err, uint32_t err_len) {
+  if (m == nullptr || source_id == nullptr || geojson == nullptr) {
+    mbl_set_err(err, err_len, "null argument");
+    return 0;
+  }
+  mbgl::style::conversion::Error error;
+  auto data =
+      mbgl::style::conversion::convertJSON<mbgl::GeoJSON>(geojson, error);
+  if (!data) {
+    mbl_set_err(err, err_len, error.message);
+    return 0;
+  }
+  auto holder = std::make_shared<mbgl::GeoJSON>(std::move(*data));
+  std::string id(source_id);
+  m->post([m, holder, id] {
+    auto *src = m->map->getStyle().getSource(id);
+    if (src == nullptr) {
+      fprintf(stderr, "maplibre_flutter_core: no such source '%s'\n",
+              id.c_str());
+      return;
+    }
+    auto *geo = src->as<mbgl::style::GeoJSONSource>();
+    if (geo == nullptr) {
+      fprintf(stderr, "maplibre_flutter_core: source '%s' is not geojson\n",
+              id.c_str());
+      return;
+    }
+    geo->setGeoJSON(*holder);
+    m->renderRequested = true;
+  });
+  return 1;
+}
+
+void mbl_map_remove_layer(MblMap *m, const char *id) {
+  if (m == nullptr || id == nullptr) return;
+  std::string layerId(id);
+  m->post([m, layerId] {
+    m->map->getStyle().removeLayer(layerId);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_remove_source(MblMap *m, const char *id) {
+  if (m == nullptr || id == nullptr) return;
+  std::string sourceId(id);
+  m->post([m, sourceId] {
+    m->map->getStyle().removeSource(sourceId);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_add_image(MblMap *m, const char *id, const uint8_t *rgba,
+                       uint32_t width, uint32_t height, float pixel_ratio,
+                       int sdf) {
+  if (m == nullptr || id == nullptr || rgba == nullptr || width == 0 ||
+      height == 0) {
+    return;
+  }
+  // Copy the pixels now — the caller's buffer (Dart-owned) may be gone by the
+  // time the render thread runs this.
+  const size_t bytes = static_cast<size_t>(width) * height * 4;
+  mbgl::PremultipliedImage img({width, height});
+  std::memcpy(img.data.get(), rgba, bytes);
+  auto holder = std::make_shared<mbgl::PremultipliedImage>(std::move(img));
+  std::string imageId(id);
+  const bool isSdf = sdf != 0;
+  m->post([m, holder, imageId, pixel_ratio, isSdf] {
+    m->map->getStyle().addImage(std::make_unique<mbgl::style::Image>(
+        imageId, std::move(*holder), pixel_ratio, isSdf));
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_remove_image(MblMap *m, const char *id) {
+  if (m == nullptr || id == nullptr) return;
+  std::string imageId(id);
+  m->post([m, imageId] {
+    m->map->getStyle().removeImage(imageId);
+    m->renderRequested = true;
+  });
 }
 
 uint64_t mbl_map_presented_generation(MblMap *m) {

@@ -140,6 +140,96 @@ external int mbl_map_lat_lng_for_pixel(
   int generation,
 );
 
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external int mbl_map_add_source_json(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+  ffi.Pointer<ffi.Char> json,
+  ffi.Pointer<ffi.Char> err,
+  int err_len,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external int mbl_map_add_layer_json(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> json,
+  ffi.Pointer<ffi.Char> before_id,
+  ffi.Pointer<ffi.Char> err,
+  int err_len,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external int mbl_map_set_geojson_data(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  ffi.Pointer<ffi.Char> geojson,
+  ffi.Pointer<ffi.Char> err,
+  int err_len,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_remove_layer(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_remove_source(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Float,
+    ffi.Int,
+  )
+>()
+external void mbl_map_add_image(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+  ffi.Pointer<ffi.Uint8> rgba,
+  int width,
+  int height,
+  double pixel_ratio,
+  int sdf,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_remove_image(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+);
+
 @ffi.Native<ffi.Uint64 Function(ffi.Pointer<MblMap>)>()
 external int mbl_map_presented_generation(ffi.Pointer<MblMap> map);
 
