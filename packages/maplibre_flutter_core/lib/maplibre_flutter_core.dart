@@ -225,6 +225,41 @@ class MapLibreCoreMap {
     );
   }
 
+  /// Adds the 3D-model spike's test mesh — a spinning, per-face-coloured
+  /// pyramid — anchored at [latitude]/[longitude].
+  ///
+  /// EXPERIMENTAL, and not a stable API: this exists to answer whether an mbgl
+  /// [CustomDrawableLayer] renders and depth-occludes on each tier. Expect it to
+  /// be replaced by a real model API (caller-supplied mesh + texture).
+  ///
+  /// Asynchronous — the layer is added on the render thread. Call after the
+  /// style has loaded; changing the style drops the layer.
+  void addTestModel({
+    required double latitude,
+    required double longitude,
+    double metresPerUnit = 50,
+    double spinDegreesPerSecond = 90,
+  }) {
+    _checkAlive();
+    bindings.mbl_map_add_test_model(
+      _handle,
+      latitude,
+      longitude,
+      metresPerUnit,
+      spinDegreesPerSecond,
+    );
+  }
+
+  /// Asks mbgl for one more frame.
+  ///
+  /// Continuous mode is update-driven, not vsync-driven: with nothing
+  /// invalidating the map an animated layer renders once and stops. Anything
+  /// driving an animation must pump this (e.g. from a [Ticker]).
+  void triggerRepaint() {
+    _checkAlive();
+    bindings.mbl_map_trigger_repaint(_handle);
+  }
+
   /// Reads the last-set camera.
   CoreCamera getCamera() {
     _checkAlive();

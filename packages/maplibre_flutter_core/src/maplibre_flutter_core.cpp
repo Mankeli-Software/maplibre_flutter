@@ -12,6 +12,8 @@
 // the latest frame for the present path.
 #include "maplibre_flutter_core.h"
 
+#include "maplibre_flutter_core_model.hpp"
+
 #include <mbgl/gfx/backend_scope.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
 #include <mbgl/map/camera.hpp>
@@ -818,6 +820,41 @@ void mbl_map_set_style(MblMap *m, const char *style_uri) {
   });
 }
 
+void mbl_map_add_test_model(MblMap *m, double lat, double lng,
+                            double metres_per_unit, double spin_dps) {
+  if (m == nullptr) {
+    return;
+  }
+  m->post([m, lat, lng, metres_per_unit, spin_dps] {
+    if (m->map == nullptr) {
+      return;
+    }
+    // A style reload drops custom layers, so re-adding under the same id must
+    // not throw on the render thread (an escaping exception here would take the
+    // render loop down). Remove any previous instance first.
+    static constexpr const char *kLayerId = "mbl-test-model";
+    if (m->map->getStyle().getLayer(kLayerId) != nullptr) {
+      m->map->getStyle().removeLayer(kLayerId);
+    }
+    m->map->getStyle().addLayer(std::make_unique<mbgl::style::CustomDrawableLayer>(
+        kLayerId, mblMakeTestModelHost(lat, lng, metres_per_unit, spin_dps)));
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_trigger_repaint(MblMap *m) {
+  if (m == nullptr) {
+    return;
+  }
+  m->post([m] {
+    if (m->map == nullptr) {
+      return;
+    }
+    m->map->triggerRepaint();
+    m->renderRequested = true;
+  });
+}
+
 void mbl_map_set_camera(MblMap *m, double lat, double lng, double zoom,
                         double bearing, double pitch) {
   if (m == nullptr) {
@@ -955,7 +992,14 @@ int mbl_map_pixel_for_lat_lng(MblMap *m, double lat, double lng, double *out_x,
   const auto sc =
       state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
   if (out_x) *out_x = sc.x;
-  if (out_y) *out_y = sc.y;
+  // mbgl::TransformState::latLngToScreenCoordinate returns a BOTTOM-LEFT-origin
+  // y (transform_state.cpp:775 does `size.height - y`), which is NOT the space
+  // mbgl's own gesture anchors use — scaleBy/moveBy take a TOP-LEFT-origin
+  // ScreenCoordinate, hardware-verified on Linux and Windows. Flutter's widget
+  // box is top-left too, so flip back here to make the two spaces agree and
+  // match this header's contract. Without it every marker is mirrored
+  // vertically about the map centre.
+  if (out_y) *out_y = static_cast<double>(state.getSize().height) - sc.y;
   if (out_visible) *out_visible = clip[3] > 0.0 ? 1 : 0;
   return 1;
 }
@@ -986,7 +1030,8 @@ uint64_t mbl_map_pixels_for_lat_lngs(MblMap *m, const double *in_lat_lng,
     mbgl::vec4 clip;
     const auto sc = state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
     out_xy[2 * i] = sc.x;
-    out_xy[2 * i + 1] = sc.y;
+    // Bottom-left -> top-left, as in mbl_map_pixel_for_lat_lng above.
+    out_xy[2 * i + 1] = static_cast<double>(state.getSize().height) - sc.y;
     if (out_visible) out_visible[i] = clip[3] > 0.0 ? 1 : 0;
   }
   return generation;
@@ -1003,8 +1048,11 @@ int mbl_map_lat_lng_for_pixel(MblMap *m, double x, double y, double *out_lat,
     if (!m->projValid) return 0;
     state = m->projState;
   }
-  const auto ll =
-      state.screenCoordinateToLatLng(mbgl::ScreenCoordinate{x, y});
+  // Inverse of the flip above: callers pass top-left-origin screen coordinates
+  // (Flutter widget space), and screenCoordinateToLatLng expects mbgl's
+  // bottom-left-origin ScreenCoordinate.
+  const auto ll = state.screenCoordinateToLatLng(
+      mbgl::ScreenCoordinate{x, static_cast<double>(state.getSize().height) - y});
   if (out_lat) *out_lat = ll.latitude();
   if (out_lng) *out_lng = ll.longitude();
   return 1;

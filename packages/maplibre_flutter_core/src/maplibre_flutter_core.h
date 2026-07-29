@@ -88,6 +88,11 @@ FFI_PLUGIN_EXPORT void mbl_map_scale_by(MblMap *map, double scale,
 // units, top-left origin (the controllers configure that size in logical
 // points, so these match Flutter's widget-box coordinates with no DPR scaling).
 //
+// NOTE: mbgl itself is not internally consistent here. Its gesture anchors
+// (scaleBy/moveBy) are top-left origin, but TransformState::latLngToScreenCoordinate
+// returns a BOTTOM-LEFT-origin y. The implementation flips y so everything this
+// header exposes is genuinely top-left; do not remove that flip.
+//
 // These do NOT touch the live mbgl Map: every camera/size change snapshots a
 // copy of mbgl's transform on the render thread, and the functions below run
 // pure projection math on that snapshot under a lightweight lock. So they are
@@ -220,6 +225,33 @@ FFI_PLUGIN_EXPORT int mbl_map_current_d3d_handle(MblMap *map, void **out_handle,
 // plugin/Dart confirm zero-copy activated before committing to the
 // GpuSurfaceTexture path. 0 on non-Windows.
 FFI_PLUGIN_EXPORT int mbl_map_d3d_active(MblMap *map);
+
+// --- 3D models (SPIKE — not a stable API) ------------------------------------
+//
+// EXPERIMENTAL. Draws an animated 3D mesh inside mbgl, anchored to a LatLng, via
+// mbgl::style::CustomDrawableLayer. Present only to answer two questions that
+// cannot be settled by reading source: whether a custom drawable renders at all
+// under Metal + CORE_ONLY + our headless frontend, and whether it depth-occludes
+// against fill-extrusion buildings. Expect this surface to be replaced by a real
+// model API (mesh + texture supplied by the caller) before it ships.
+
+// Add the test model — a spinning, per-face-coloured pyramid — at `lat`/`lng`.
+// `metres_per_unit` sizes it in real-world metres (the mesh spans 2 units in X,
+// 1 in Y, 1.5 in Z, so 50 gives a 100m x 50m footprint 75m tall), so it keeps its
+// ground footprint across zooms. `spin_dps` is the rotation rate in degrees per
+// second about the vertical axis (0 = static). Asynchronous: the layer is added
+// on the render thread. Call after the style has loaded — a subsequent
+// mbl_map_set_style REPLACES the style and drops the layer.
+FFI_PLUGIN_EXPORT void mbl_map_add_test_model(MblMap *map, double lat,
+                                              double lng,
+                                              double metres_per_unit,
+                                              double spin_dps);
+
+// Ask mbgl for one more frame. Continuous mode is update-driven, not
+// vsync-driven: with nothing invalidating the map, an animated layer renders
+// once and stops. Anything driving an animation must pump this (a Dart Ticker,
+// or the harness loop). No-op in Static mode, which never animates.
+FFI_PLUGIN_EXPORT void mbl_map_trigger_repaint(MblMap *map);
 
 // Debug/verification: encode the latest frame to a PNG file at `path` using
 // mbgl's own PNG encoder. Returns 1 on success, 0 if no frame or the write failed.

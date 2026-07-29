@@ -608,7 +608,10 @@ elseif(WIN32)
 endif()
 
 # ---- The C ABI shim ----
-set(_shim_sources maplibre_flutter_core.cpp)
+# maplibre_flutter_core_model.cpp is the 3D-model layer (mbgl CustomDrawableLayer).
+# Backend-agnostic — mbgl's own CustomGeometryShader exists for Metal, Vulkan, GL
+# and WebGPU — so it builds on every platform arm, no per-backend variant.
+set(_shim_sources maplibre_flutter_core.cpp maplibre_flutter_core_model.cpp)
 if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
@@ -704,4 +707,13 @@ option(MAPLIBRE_FLUTTER_BUILD_HARNESS "Build the headless render-to-PNG test har
 if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   add_executable(render_harness render_harness.cpp)
   target_link_libraries(render_harness PRIVATE maplibre_flutter_core)
+
+  # The 3D-model spike's assertion loop: renders a sequence of frames with the
+  # animated custom-drawable layer and checks the pixels actually change.
+  add_executable(model_harness model_harness.cpp)
+  target_link_libraries(model_harness PRIVATE maplibre_flutter_core)
+
+  # Directional sign check for the projection C ABI (mbl_map_pixel_for_lat_lng).
+  add_executable(proj_probe proj_probe.cpp)
+  target_link_libraries(proj_probe PRIVATE maplibre_flutter_core)
 endif()
