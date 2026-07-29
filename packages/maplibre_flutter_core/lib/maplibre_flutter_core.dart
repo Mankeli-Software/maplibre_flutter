@@ -287,8 +287,18 @@ class MapLibreCoreMap {
   /// camera change — or 0 if no camera/transform exists yet (in which case
   /// nothing is written). Reuses native scratch buffers, so the hot path does no
   /// allocation. [outXy] (and [visible], if given) must be at least [count] long.
-  int projectBatch(int count, Float64List inLatLng, Float64List outXy,
-      {Int32List? visible}) {
+  ///
+  /// [generation] selects which transform to project against: 0 (the default)
+  /// uses the newest, while passing [presentedGeneration] projects against the
+  /// frame currently on screen — see that getter for why that is what anchored
+  /// widgets want.
+  int projectBatch(
+    int count,
+    Float64List inLatLng,
+    Float64List outXy, {
+    Int32List? visible,
+    int generation = 0,
+  }) {
     _checkAlive();
     if (count <= 0) return bindings.mbl_map_proj_generation(_handle);
     _ensureProjCapacity(count);
@@ -299,6 +309,7 @@ class MapLibreCoreMap {
       count,
       _projOut,
       visible != null ? _projVis : ffi.nullptr,
+      generation,
     );
     if (gen == 0) return 0;
     outXy.setRange(0, count * 2, _projOut.asTypedList(count * 2));
@@ -313,7 +324,11 @@ class MapLibreCoreMap {
   /// Projects a single geographic point to a screen position (logical points,
   /// top-left origin), with a [visible] flag (false = behind a pitched camera).
   /// Null if no camera/transform exists yet.
-  ({double x, double y, bool visible})? project(double latitude, double longitude) {
+  ({double x, double y, bool visible})? project(
+    double latitude,
+    double longitude, {
+    int generation = 0,
+  }) {
     _checkAlive();
     return using((arena) {
       final x = arena<ffi.Double>();
@@ -326,6 +341,7 @@ class MapLibreCoreMap {
         x,
         y,
         vis,
+        generation,
       );
       if (ok == 0) return null;
       return (x: x.value, y: y.value, visible: vis.value != 0);
@@ -335,15 +351,39 @@ class MapLibreCoreMap {
   /// Inverse projection: the geographic point under a screen position (logical
   /// points, top-left origin), for hit-testing a tap or dragging a marker. Null
   /// if no camera/transform exists yet.
-  ({double latitude, double longitude})? unproject(double x, double y) {
+  ({double latitude, double longitude})? unproject(
+    double x,
+    double y, {
+    int generation = 0,
+  }) {
     _checkAlive();
     return using((arena) {
       final lat = arena<ffi.Double>();
       final lng = arena<ffi.Double>();
-      final ok = bindings.mbl_map_lat_lng_for_pixel(_handle, x, y, lat, lng);
+      final ok = bindings.mbl_map_lat_lng_for_pixel(
+        _handle,
+        x,
+        y,
+        lat,
+        lng,
+        generation,
+      );
       if (ok == 0) return null;
       return (latitude: lat.value, longitude: lng.value);
     });
+  }
+
+  /// The projection generation of the frame currently ON SCREEN.
+  ///
+  /// Camera commands are applied asynchronously on the core's render thread, so
+  /// [projectionGeneration] (the newest transform) usually runs ahead of the
+  /// frame the compositor is showing. Projecting anchored widgets against the
+  /// newest transform therefore makes them swim against the map while it moves;
+  /// projecting against this generation keeps them glued to it. 0 before the
+  /// first frame.
+  int get presentedGeneration {
+    _checkAlive();
+    return bindings.mbl_map_presented_generation(_handle);
   }
 
   /// The current projection generation — a counter that bumps on every camera

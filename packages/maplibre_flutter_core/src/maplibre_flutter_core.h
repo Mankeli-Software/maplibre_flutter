@@ -98,9 +98,16 @@ FFI_PLUGIN_EXPORT void mbl_map_scale_by(MblMap *map, double scale,
 // (nullable) *out_visible is 0 when the point is behind the camera (off the
 // visible map on a pitched view) and 1 otherwise. Returns 1 on success, 0 if no
 // camera/transform snapshot exists yet (in which case nothing is written).
+//
+// `generation` selects WHICH transform to project against: pass 0 for the newest
+// one, or a generation from mbl_map_presented_generation() to project against the
+// frame currently on screen (see that function — this is what keeps anchored
+// widgets from swimming during movement). An unknown/evicted generation quietly
+// falls back to the newest transform.
 FFI_PLUGIN_EXPORT int mbl_map_pixel_for_lat_lng(MblMap *map, double lat,
                                                 double lng, double *out_x,
-                                                double *out_y, int *out_visible);
+                                                double *out_y, int *out_visible,
+                                                uint64_t generation);
 
 // Batch project `count` points in one call (one FFI call per frame for all
 // markers). `in_lat_lng` is 2*count doubles [lat0,lng0,lat1,lng1,...]; writes
@@ -112,14 +119,24 @@ FFI_PLUGIN_EXPORT uint64_t mbl_map_pixels_for_lat_lngs(MblMap *map,
                                                        const double *in_lat_lng,
                                                        uint32_t count,
                                                        double *out_xy,
-                                                       int *out_visible);
+                                                       int *out_visible,
+                                                       uint64_t generation);
 
 // Inverse projection: the geographic point under a screen position (for
 // hit-testing a tap, or dragging a marker). Writes *out_lat/*out_lng. Returns 1
 // on success, 0 if no camera/transform snapshot exists yet.
 FFI_PLUGIN_EXPORT int mbl_map_lat_lng_for_pixel(MblMap *map, double x, double y,
                                                 double *out_lat,
-                                                double *out_lng);
+                                                double *out_lng,
+                                                uint64_t generation);
+
+// The projection generation of the frame most recently PUBLISHED (i.e. the one
+// the compositor is showing). Camera commands are applied asynchronously on the
+// render thread, so the newest transform usually runs ahead of the visible
+// frame; projecting anchored widgets against this generation instead keeps them
+// locked to the map through pan/zoom rather than lagging it. 0 before the first
+// frame.
+FFI_PLUGIN_EXPORT uint64_t mbl_map_presented_generation(MblMap *map);
 
 // The current projection generation: a counter bumped on every camera/size
 // change. Lets a caller cheaply detect whether a reprojection is needed. 0

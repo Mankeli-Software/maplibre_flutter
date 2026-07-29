@@ -233,7 +233,18 @@ class MapLibreFlutterMacosController
       _projIn[i * 2] = points[i].latitude;
       _projIn[i * 2 + 1] = points[i].longitude;
     }
-    final gen = _coreMap.projectBatch(n, _projIn, _projOut, visible: _projVis);
+    // Project against the transform of the frame ON SCREEN, not the newest one.
+    // Camera commands apply asynchronously on the render thread, so the newest
+    // transform typically leads the visible frame — projecting against it makes
+    // markers swim/lag during movement. (0 before the first frame, which the
+    // core treats as "newest".)
+    final gen = _coreMap.projectBatch(
+      n,
+      _projIn,
+      _projOut,
+      visible: _projVis,
+      generation: _coreMap.presentedGeneration,
+    );
     if (gen == 0) return 0;
     for (var i = 0; i < n; i++) {
       out[i] = ui.Offset(_projOut[i * 2], _projOut[i * 2 + 1]);
@@ -245,7 +256,13 @@ class MapLibreFlutterMacosController
   @override
   LatLng? unproject(ui.Offset point) {
     if (_disposed) return null;
-    final r = _coreMap.unproject(point.dx, point.dy);
+    // Same frame the user is looking at (and the same one project() used), so a
+    // tap maps to the point actually under the cursor mid-movement.
+    final r = _coreMap.unproject(
+      point.dx,
+      point.dy,
+      generation: _coreMap.presentedGeneration,
+    );
     return r == null ? null : LatLng(r.latitude, r.longitude);
   }
 

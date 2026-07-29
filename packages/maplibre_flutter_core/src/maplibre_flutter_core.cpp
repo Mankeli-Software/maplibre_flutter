@@ -124,6 +124,26 @@ struct MblMap {
   uint64_t projGeneration = 0;
   bool projValid = false;
 
+  // Frame-correlated projection. Camera commands are applied ASYNCHRONOUSLY on
+  // the render thread, so the newest transform is typically one or more updates
+  // AHEAD of the frame the compositor is actually showing. Projecting against
+  // the newest one makes anchored widgets swim against the map during movement.
+  //
+  // So keep a small ring of recent transforms keyed by generation, and record
+  // which generation produced the frame that was last published. A caller can
+  // then project against the transform of the frame ON SCREEN and stay glued.
+  // The ring is tiny and fixed: only a few frames can be in flight, and a miss
+  // (generation already evicted) degrades to the newest transform.
+  static constexpr size_t kProjRing = 8;
+  mbgl::TransformState projRing[kProjRing];
+  uint64_t projRingGen[kProjRing] = {};
+  // Generation of the most recently PUBLISHED frame. Guarded by projMutex.
+  uint64_t presentedGeneration = 0;
+  // Render-thread-only handoff: the generation captured for the frame currently
+  // being presented, applied to `presentedGeneration` when the frame lands (the
+  // zero-copy blit completes asynchronously on a GPU-callback thread).
+  uint64_t pendingPresentGen = 0;
+
   // Frame-ready callback (called on the render thread).
   std::mutex cbMutex;
   MblFrameCallback frameCb = nullptr;
@@ -235,7 +255,16 @@ void announceFrame(MblMap *m) {
   }
 }
 
+// Defined with the projection helpers below; used by the present paths here.
+void markPresented(MblMap *m, uint64_t generation);
+uint64_t updateProjState(MblMap *m);
+
 void publishFrame(MblMap *m, mbgl::PremultipliedImage img) {
+  // Record this frame's transform BEFORE announcing the frame. `frameCount` is
+  // the "a frame is ready" signal that awaitFrame() and the present path wait
+  // on, so anything woken by it must already see the matching generation —
+  // marking afterwards races (the waiter reads the PREVIOUS generation).
+  markPresented(m, m->pendingPresentGen);
   {
     std::lock_guard<std::mutex> lk(m->frameMutex);
     m->frame = std::move(img);
@@ -248,6 +277,11 @@ void publishFrame(MblMap *m, mbgl::PremultipliedImage img) {
 // CPU image (the default, and the fallback when zero-copy is unavailable).
 void renderCpu(MblMap *m) {
   auto result = m->frontend->render(*m->map);
+  // Render thread: the frame is drawn, so snapshot the transform that produced
+  // it and tag the frame with that generation (publishFrame consumes this).
+  // Static mode renders here rather than through publishCurrentFrame, so this
+  // is what keeps frame-correlated projection working outside Continuous mode.
+  m->pendingPresentGen = updateProjState(m);
   publishFrame(m, std::move(result.image));
 }
 
@@ -258,6 +292,8 @@ void renderCpu(MblMap *m) {
 // the map is freed.
 void blitDone(void *user, IOSurfaceRef surface) {
   auto *m = static_cast<MblMap *>(user);
+  // Before the frameCount bump below announces the frame — see publishFrame.
+  markPresented(m, m->pendingPresentGen);
   {
     std::lock_guard<std::mutex> lk(m->frameMutex);
     // Hold our own ref on the published surface so it outlives the blitter's ring.
@@ -302,6 +338,9 @@ bool renderZeroCopyInner(MblMap *m) {
       std::rethrow_exception(error);
     }
   }
+  // Same as the CPU path: tag this frame with the transform it was drawn with,
+  // for blitDone to adopt when the async blit lands.
+  m->pendingPresentGen = updateProjState(m);
   // The concrete backend is the mtl HeadlessBackend; getMetalTexture() exposes
   // the texture renderStill just drew into, and getCommandQueue() its queue.
   auto *backend =
@@ -461,12 +500,46 @@ void updateCameraCache(MblMap *m) {
 // functions can run off-thread. Call after every camera/size change. Copying the
 // TransformState is cheap (no render); getTransfromState() is mbgl's own const
 // accessor (the spelling — "Transfrom" — is mbgl's, not a typo here).
-void updateProjState(MblMap *m) {
+uint64_t updateProjState(MblMap *m) {
   auto ts = m->map->getTransfromState();
   std::lock_guard<std::mutex> lk(m->projMutex);
   m->projState = ts;
   ++m->projGeneration;
   m->projValid = true;
+  // Retain it in the ring so a frame published later can still be projected
+  // against the transform that actually produced it.
+  const size_t slot = m->projGeneration % MblMap::kProjRing;
+  m->projRing[slot] = ts;
+  m->projRingGen[slot] = m->projGeneration;
+  return m->projGeneration;
+}
+
+// Marks `generation` as the transform of the frame now on screen. Called when a
+// frame is published (CPU readback immediately; zero-copy when the blit lands).
+void markPresented(MblMap *m, uint64_t generation) {
+  if (generation == 0) return;
+  std::lock_guard<std::mutex> lk(m->projMutex);
+  // Frames can complete out of order across present paths; never move backwards.
+  if (generation > m->presentedGeneration) m->presentedGeneration = generation;
+}
+
+// Copies out the transform to project against. `generation` 0 means "newest".
+// A requested generation still in the ring is used; otherwise (evicted, or not
+// yet recorded) this falls back to the newest snapshot. Returns 0 when there is
+// no snapshot at all, else the generation actually used.
+uint64_t takeProjState(MblMap *m, uint64_t generation,
+                       mbgl::TransformState &out) {
+  std::lock_guard<std::mutex> lk(m->projMutex);
+  if (!m->projValid) return 0;
+  if (generation != 0) {
+    const size_t slot = generation % MblMap::kProjRing;
+    if (m->projRingGen[slot] == generation) {
+      out = m->projRing[slot];
+      return generation;
+    }
+  }
+  out = m->projState;
+  return m->projGeneration;
 }
 
 // Cap the desktop core's online tile-request concurrency. The non-Apple core uses
@@ -619,6 +692,8 @@ bool presentAndroid(MblMap *m) {
       return false;
     }
   }
+  // Before the frameCount bump announces the frame — see publishFrame.
+  markPresented(m, m->pendingPresentGen);
   {
     std::lock_guard<std::mutex> lk(m->frameMutex);
     ++m->frameCount;
@@ -632,6 +707,13 @@ void publishCurrentFrame(MblMap *m) {
   if (m->map == nullptr || m->frontend == nullptr) {
     return;
   }
+  // Render thread, immediately after mbgl finished this frame: snapshot the
+  // transform that produced it and remember that generation, so whichever
+  // present path runs below can tag the frame with it. (In Continuous mode mbgl
+  // advances its own transitions, so re-snapshotting here — rather than reusing
+  // the generation from the last camera command — is what keeps the recorded
+  // transform truly equal to the one the frame was drawn with.)
+  m->pendingPresentGen = updateProjState(m);
   try {
 #if defined(__ANDROID__)
     if (m->androidZeroCopy && m->androidPresenter != nullptr) {
@@ -918,10 +1000,19 @@ void mbl_map_scale_by(MblMap *m, double scale, double anchor_x,
 // --- Projection -------------------------------------------------------------
 // All four run pure math on a copy of the transform snapshot (taken out under
 // projMutex, then released), so they never touch the live map and are safe from
-// any thread. The TransformState math returns top-left-origin screen coordinates
-// in mbgl Size units (logical points, matching the gesture/anchor space). The
-// vec4 overload yields clip space: clip[3] (w) > 0 means the point is in front of
-// the camera (visible); w <= 0 means behind it on a pitched view.
+// any thread. Screen coordinates are in mbgl Size units (logical points,
+// matching the gesture/anchor space). The vec4 overload yields clip space:
+// clip[3] (w) > 0 means the point is in front of the camera (visible); w <= 0
+// means behind it on a pitched view.
+//
+// Y-AXIS: TransformState::latLngToScreenCoordinate returns a BOTTOM-UP y (its
+// `size.height - y` converts *into* GL's bottom-up convention, not out of it),
+// and screenCoordinateToLatLng expects the same. Flutter widget space is
+// TOP-LEFT origin, so this shim flips y on the way out of project and on the way
+// into unproject. Verified empirically, not assumed: a point NORTH of the camera
+// centre must project ABOVE it (smaller y) — see the orientation tests. NOTE the
+// flip is symmetric, so a project∘unproject round-trip CANNOT detect it; test
+// against absolute directions, never only round-trips.
 
 // mbgl::LatLng's constructor THROWS std::domain_error on NaN/infinite or
 // |lat| > 90, and a C++ exception crossing this extern "C" boundary is undefined
@@ -935,16 +1026,13 @@ static inline bool mbl_sanitize_lat_lng(double &lat, double &lng) {
 }
 
 int mbl_map_pixel_for_lat_lng(MblMap *m, double lat, double lng, double *out_x,
-                              double *out_y, int *out_visible) {
+                              double *out_y, int *out_visible,
+                              uint64_t generation) {
   if (m == nullptr) {
     return 0;
   }
   mbgl::TransformState state;
-  {
-    std::lock_guard<std::mutex> lk(m->projMutex);
-    if (!m->projValid) return 0;
-    state = m->projState;
-  }
+  if (takeProjState(m, generation, state) == 0) return 0;
   if (!mbl_sanitize_lat_lng(lat, lng)) {
     if (out_x) *out_x = 0;
     if (out_y) *out_y = 0;
@@ -955,25 +1043,21 @@ int mbl_map_pixel_for_lat_lng(MblMap *m, double lat, double lng, double *out_x,
   const auto sc =
       state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
   if (out_x) *out_x = sc.x;
-  if (out_y) *out_y = sc.y;
+  if (out_y) *out_y = static_cast<double>(state.getSize().height) - sc.y;
   if (out_visible) *out_visible = clip[3] > 0.0 ? 1 : 0;
   return 1;
 }
 
 uint64_t mbl_map_pixels_for_lat_lngs(MblMap *m, const double *in_lat_lng,
                                      uint32_t count, double *out_xy,
-                                     int *out_visible) {
+                                     int *out_visible, uint64_t want_generation) {
   if (m == nullptr || in_lat_lng == nullptr || out_xy == nullptr) {
     return 0;
   }
   mbgl::TransformState state;
-  uint64_t generation;
-  {
-    std::lock_guard<std::mutex> lk(m->projMutex);
-    if (!m->projValid) return 0;
-    state = m->projState;
-    generation = m->projGeneration;
-  }
+  const uint64_t generation = takeProjState(m, want_generation, state);
+  if (generation == 0) return 0;
+  const double height = static_cast<double>(state.getSize().height);
   for (uint32_t i = 0; i < count; ++i) {
     double lat = in_lat_lng[2 * i];
     double lng = in_lat_lng[2 * i + 1];
@@ -986,28 +1070,32 @@ uint64_t mbl_map_pixels_for_lat_lngs(MblMap *m, const double *in_lat_lng,
     mbgl::vec4 clip;
     const auto sc = state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
     out_xy[2 * i] = sc.x;
-    out_xy[2 * i + 1] = sc.y;
+    out_xy[2 * i + 1] = height - sc.y;
     if (out_visible) out_visible[i] = clip[3] > 0.0 ? 1 : 0;
   }
   return generation;
 }
 
 int mbl_map_lat_lng_for_pixel(MblMap *m, double x, double y, double *out_lat,
-                              double *out_lng) {
+                              double *out_lng, uint64_t generation) {
   if (m == nullptr) {
     return 0;
   }
   mbgl::TransformState state;
-  {
-    std::lock_guard<std::mutex> lk(m->projMutex);
-    if (!m->projValid) return 0;
-    state = m->projState;
-  }
-  const auto ll =
-      state.screenCoordinateToLatLng(mbgl::ScreenCoordinate{x, y});
+  if (takeProjState(m, generation, state) == 0) return 0;
+  const auto ll = state.screenCoordinateToLatLng(
+      mbgl::ScreenCoordinate{x, static_cast<double>(state.getSize().height) - y});
   if (out_lat) *out_lat = ll.latitude();
   if (out_lng) *out_lng = ll.longitude();
   return 1;
+}
+
+uint64_t mbl_map_presented_generation(MblMap *m) {
+  if (m == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->projMutex);
+  return m->presentedGeneration;
 }
 
 uint64_t mbl_map_proj_generation(MblMap *m) {
