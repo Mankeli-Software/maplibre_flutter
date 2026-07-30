@@ -274,6 +274,38 @@ int main(int argc, char **argv) {
     }
   }
 
+  // --- 5. does the model SURVIVE a style change? ---
+  //
+  // Loading a style replaces the layer list, dropping every custom layer. The
+  // core re-adds retained models from onDidFinishLoadingStyle; without that a
+  // user switching basemaps silently loses their models.
+  Diff afterStyle;
+  bool testedStyle = false;
+  if (!glb.empty()) {
+    const std::string otherStyle =
+        style.find("demotiles") != std::string::npos
+            ? "https://tiles.openfreemap.org/styles/liberty"
+            : "https://demotiles.maplibre.org/style.json";
+    mbl_map_set_style(map, otherStyle.c_str());
+    std::this_thread::sleep_for(std::chrono::seconds(12));
+    pump(map, 800);
+    Frame styled;
+    Frame styledNoModel;
+    if (capture(map, styled)) {
+      mbl_map_write_png(map, (outDir + "/model_4_after_style.png").c_str());
+      // Remove the model and re-capture: whatever changes is the model, which
+      // isolates it from the completely different basemap underneath.
+      mbl_map_remove_model(map, "mbl-model");
+      pump(map, 800);
+      if (capture(map, styledNoModel)) {
+        afterStyle = diffFrames(styled, styledNoModel);
+        testedStyle = true;
+        printf("after style:    %zu px changed by removing the model\n",
+               afterStyle.changed);
+      }
+    }
+  }
+
   mbl_map_destroy(map);
 
   // --- verdict ---
@@ -336,6 +368,17 @@ int main(int argc, char **argv) {
     } else {
       printf("PASS: set_model_transform moves the model east (%.1f -> %.1f)\n",
              added.centroidX, moved.centroidX);
+    }
+  }
+
+  if (testedStyle) {
+    if (afterStyle.changed < kMinModelPixels) {
+      printf("FAIL: model did not survive a style change (%zu px)\n",
+             afterStyle.changed);
+      ++failures;
+    } else {
+      printf("PASS: model survives a style change (%zu px)\n",
+             afterStyle.changed);
     }
   }
 

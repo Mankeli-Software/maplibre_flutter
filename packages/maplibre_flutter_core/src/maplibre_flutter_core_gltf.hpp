@@ -73,6 +73,14 @@ struct MblMeshData {
     bool wrapRepeatU = true;
     bool wrapRepeatV = true;
     bool filterLinear = true;
+
+    // glTF alphaMode BLEND, or a base-colour alpha below 1.
+    //
+    // Blended parts are emitted AFTER all opaque ones, because every part is
+    // drawn with depth write on: glass drawn before the bodywork behind it would
+    // write depth and cull that bodywork entirely — you would look through a
+    // windscreen and see nothing of the car's far side.
+    bool blended = false;
   };
 
   std::vector<Part> parts;

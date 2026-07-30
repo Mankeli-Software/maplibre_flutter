@@ -62,8 +62,11 @@ struct MblModelPlacement {
 //
 // Must be called on the render thread — the host is handed straight to
 // mbgl::style::CustomDrawableLayer, whose lifecycle mbgl drives.
+// `mesh` is shared and immutable, so the same parsed model can back several
+// hosts over time — notably when a style reload destroys the layer and it is
+// re-added, which must not re-read the .glb.
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
-mblMakeModelHost(MblMeshData mesh,
+mblMakeModelHost(std::shared_ptr<const MblMeshData> mesh,
                  std::shared_ptr<MblModelPlacement> placement);
 
 // The procedural test mesh: a rectangular-base pyramid, 2 units across X, 1

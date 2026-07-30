@@ -23,7 +23,8 @@ using TriangleIndexVector = mbgl::gfx::IndexVector<mbgl::gfx::Triangles>;
 
 class ModelHost final : public mbgl::style::CustomDrawableLayerHost {
 public:
-  ModelHost(MblMeshData meshData, std::shared_ptr<MblModelPlacement> placement)
+  ModelHost(std::shared_ptr<const MblMeshData> meshData,
+            std::shared_ptr<MblModelPlacement> placement)
       : mesh(std::move(meshData)), placement(std::move(placement)) {}
 
   void initialize() override {}
@@ -46,24 +47,24 @@ public:
     // Textures are uploaded once per distinct image and shared by every part that
     // references it (Texture2DPtr is shared), so 149 parts over 20 images cost 20
     // uploads, not 149.
-    std::vector<mbgl::gfx::Texture2DPtr> textures(mesh.images.size());
+    std::vector<mbgl::gfx::Texture2DPtr> textures(mesh->images.size());
 
     // The animation clock is shared by every part, so they move as one rigid
     // body rather than drifting apart.
     const auto start = std::chrono::steady_clock::now();
 
-    for (const auto &part : mesh.parts) {
+    for (const auto &part : mesh->parts) {
       if (part.vertices.empty() || part.indices.empty()) {
         continue;
       }
 
       Interface::GeometryOptions options;
       if (part.imageIndex >= 0 &&
-          static_cast<size_t>(part.imageIndex) < mesh.images.size()) {
+          static_cast<size_t>(part.imageIndex) < mesh->images.size()) {
         auto &cached = textures[static_cast<size_t>(part.imageIndex)];
-        if (!cached && mesh.images[static_cast<size_t>(part.imageIndex)]) {
+        if (!cached && mesh->images[static_cast<size_t>(part.imageIndex)]) {
           cached = interface.context.createTexture2D();
-          cached->setImage(mesh.images[static_cast<size_t>(part.imageIndex)]);
+          cached->setImage(mesh->images[static_cast<size_t>(part.imageIndex)]);
           // Take wrap/filter from the glTF sampler, NOT a hardcoded guess: glTF
           // defaults to REPEAT and models tile deliberately (BoxTextured spans
           // u=[0,6]), so clamping collapses them to one edge colour.
@@ -162,7 +163,7 @@ public:
   }
 
 private:
-  MblMeshData mesh;
+  std::shared_ptr<const MblMeshData> mesh;
   // Shared with the shim's registry and re-read every frame, so the model can be
   // moved (driven along a path) without touching its uploaded geometry.
   std::shared_ptr<MblModelPlacement> placement;
@@ -192,7 +193,7 @@ void pushTriangle(MblMeshData::Part &part, const std::array<float, 3> &a,
 } // namespace
 
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
-mblMakeModelHost(MblMeshData mesh,
+mblMakeModelHost(std::shared_ptr<const MblMeshData> mesh,
                  std::shared_ptr<MblModelPlacement> placement) {
   return std::make_unique<ModelHost>(std::move(mesh), std::move(placement));
 }

@@ -176,12 +176,19 @@ struct MblMap {
   bool androidZeroCopy = false;
 #endif
 
-  // Live models by layer id (render thread only). Holds a reference to each
-  // model's placement so mbl_map_set_model_transform can move it without
-  // re-uploading geometry; sharing with the host keeps it valid across a style
-  // reload that destroys the layer.
-  std::unordered_map<std::string, std::shared_ptr<MblModelPlacement>>
-      modelPlacements;
+  // Live models by layer id (render thread only).
+  //
+  // Holds the parsed mesh AND the placement, both shared with the host. The
+  // placement lets mbl_map_set_model_transform move a model without re-uploading
+  // geometry; keeping the mesh lets a model be re-added after a style reload
+  // (which destroys every custom layer) WITHOUT re-reading and re-parsing the
+  // .glb — tens of megabytes for a real asset. The mesh is immutable, so sharing
+  // costs nothing.
+  struct ModelEntry {
+    std::shared_ptr<const MblMeshData> mesh;
+    std::shared_ptr<MblModelPlacement> placement;
+  };
+  std::unordered_map<std::string, ModelEntry> models;
 
   // Current render-target size in device pixels (render thread only), used to size
   // the GL presenter's ring to match each frame.
@@ -696,6 +703,13 @@ void publishCurrentFrame(MblMap *m) {
   }
 }
 
+// Defined further down with the model C API; declared here because the style
+// observer below re-adds models.
+void addModelLayerNow(MblMap *m, const std::string &layerId,
+                      std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblModelPlacement> placement);
+void requestModelRender(MblMap *m);
+
 // Observes the Continuous-mode map; each rendered frame (partial or full) is
 // published, so the texture refines progressively as tiles stream in.
 class FrameObserver final : public mbgl::MapObserver {
@@ -703,6 +717,20 @@ public:
   explicit FrameObserver(MblMap *map) : m(map) {}
   void onDidFinishRenderingFrame(const RenderFrameStatus &) override {
     publishCurrentFrame(m);
+  }
+
+  // Loading a style REPLACES the whole layer list, so every custom layer — and
+  // therefore every model — is dropped. Re-add them here rather than making
+  // callers notice and re-add by hand. Free: the parsed mesh is retained and
+  // shared, so nothing is re-read or re-parsed.
+  void onDidFinishLoadingStyle() override {
+    for (const auto &entry : m->models) {
+      addModelLayerNow(m, entry.first, entry.second.mesh,
+                       entry.second.placement);
+    }
+    if (!m->models.empty()) {
+      requestModelRender(m);
+    }
   }
 
 private:
@@ -833,29 +861,47 @@ namespace {
 // Post a model host onto the render thread as a CustomDrawableLayer. Re-adding
 // under the same id must not throw there (an escaping exception would take the
 // render loop down), so any previous instance is removed first.
+// Adds (or replaces) a model layer on the render thread. Assumes the caller is
+// already on it.
+void addModelLayerNow(MblMap *m, const std::string &layerId,
+                      std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblModelPlacement> placement) {
+  if (m->map == nullptr) {
+    return;
+  }
+  if (m->map->getStyle().getLayer(layerId) != nullptr) {
+    m->map->getStyle().removeLayer(layerId);
+  }
+  m->map->getStyle().addLayer(std::make_unique<mbgl::style::CustomDrawableLayer>(
+      layerId, mblMakeModelHost(std::move(mesh), std::move(placement))));
+}
+
+// A model's placement lives outside mbgl, so changing it does not invalidate the
+// map. In Continuous mode nothing consumes `renderRequested` — rendering is
+// driven by mbgl invalidation — so without an explicit triggerRepaint a moved
+// model only appears to move when something ELSE redraws the map (a pan, a tile
+// load). That is exactly the "it only drives while the map is moving" symptom.
+void requestModelRender(MblMap *m) {
+  m->renderRequested = true;
+  if (m->map != nullptr) {
+    m->map->triggerRepaint();
+  }
+}
+
 void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh,
                    MblModelPlacement placement) {
   // The mesh goes through a shared_ptr because post() takes a std::function,
   // which requires a COPYABLE callable — and MblMeshData holds a
   // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
   // by move would make the lambda move-only and fail to convert.
-  auto meshPtr = std::make_shared<MblMeshData>(std::move(mesh));
+  auto meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
   auto placementPtr = std::make_shared<MblModelPlacement>(placement);
   m->post([m, layerId = std::move(layerId), meshPtr, placementPtr] {
-    if (m->map == nullptr) {
-      return;
-    }
-    if (m->map->getStyle().getLayer(layerId) != nullptr) {
-      m->map->getStyle().removeLayer(layerId);
-    }
-    m->map->getStyle().addLayer(
-        std::make_unique<mbgl::style::CustomDrawableLayer>(
-            layerId, mblMakeModelHost(std::move(*meshPtr), placementPtr)));
-    // Keep a reference so later transform updates can find this model. The
-    // placement is shared with the host, so it stays valid even if a style
-    // reload destroys the layer.
-    m->modelPlacements[layerId] = placementPtr;
-    m->renderRequested = true;
+    addModelLayerNow(m, layerId, meshPtr, placementPtr);
+    // Retained so transform updates can find this model and so it can be re-added
+    // after a style reload.
+    m->models[layerId] = MblMap::ModelEntry{meshPtr, placementPtr};
+    requestModelRender(m);
   });
 }
 
@@ -910,18 +956,19 @@ void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
   }
   m->post([m, layerId = std::string(layer_id), lat, lng, scale, heading_deg,
            elevation_m] {
-    const auto it = m->modelPlacements.find(layerId);
-    if (it == m->modelPlacements.end() || !it->second) {
+    const auto it = m->models.find(layerId);
+    if (it == m->models.end() || !it->second.placement) {
       return;
     }
     // Mutating the shared placement is enough — the host re-reads it every frame,
     // so the geometry is never re-uploaded.
-    it->second->lat = lat;
-    it->second->lng = lng;
-    it->second->scale = scale;
-    it->second->headingDegrees = heading_deg;
-    it->second->elevationMetres = elevation_m;
-    m->renderRequested = true;
+    auto &p = *it->second.placement;
+    p.lat = lat;
+    p.lng = lng;
+    p.scale = scale;
+    p.headingDegrees = heading_deg;
+    p.elevationMetres = elevation_m;
+    requestModelRender(m);
   });
 }
 
@@ -935,9 +982,9 @@ void mbl_map_remove_model(MblMap *m, const char *layer_id) {
     }
     if (m->map->getStyle().getLayer(layerId) != nullptr) {
       m->map->getStyle().removeLayer(layerId);
-      m->renderRequested = true;
+      requestModelRender(m);
     }
-    m->modelPlacements.erase(layerId);
+    m->models.erase(layerId);
   });
 }
 

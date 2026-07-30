@@ -301,6 +301,7 @@ std::array<double, 3> transformPoint(const Mat4 &m,
 // Resolved base-colour material state for one primitive.
 struct Material {
   int imageIndex = -1;
+  bool blended = false;
   std::array<float, 4> factor = {1.0f, 1.0f, 1.0f, 1.0f};
   bool wrapRepeatU = true;
   bool wrapRepeatV = true;
@@ -418,6 +419,10 @@ struct Loader {
     }
     const JSValue &m =
         (*materials)[static_cast<rapidjson::SizeType>(matV->GetUint())];
+    if (const auto *am = member(m, "alphaMode");
+        am != nullptr && am->IsString()) {
+      mat.blended = std::string(am->GetString()) == "BLEND";
+    }
     const auto *pbr = member(m, "pbrMetallicRoughness");
     if (pbr == nullptr) {
       return mat;
@@ -427,6 +432,9 @@ struct Loader {
         f != nullptr && f->IsArray() && f->Size() == 4) {
       for (rapidjson::SizeType i = 0; i < 4; ++i) {
         mat.factor[i] = static_cast<float>((*f)[i].GetDouble());
+      }
+      if (mat.factor[3] < 1.0f) {
+        mat.blended = true;
       }
     }
 
@@ -607,6 +615,7 @@ struct Loader {
     part.wrapRepeatU = mat.wrapRepeatU;
     part.wrapRepeatV = mat.wrapRepeatV;
     part.filterLinear = mat.filterLinear;
+    part.blended = mat.blended;
 
     // Source index -> index within the current part.
     std::unordered_map<uint32_t, uint16_t> remap;
@@ -620,6 +629,7 @@ struct Loader {
       part.wrapRepeatU = mat.wrapRepeatU;
       part.wrapRepeatV = mat.wrapRepeatV;
       part.filterLinear = mat.filterLinear;
+      part.blended = mat.blended;
       remap.clear();
     };
 
@@ -819,5 +829,12 @@ bool mblLoadGlb(const std::string &path, MblMeshData &out,
     error = "GLB contained no triangle geometry";
     return false;
   }
+
+  // Opaque geometry first, blended last. Every part writes depth, so glass drawn
+  // before the bodywork behind it would cull that bodywork — looking through a
+  // windscreen you would see straight out the other side of the car. Stable, so
+  // authoring order is otherwise preserved.
+  std::stable_partition(out.parts.begin(), out.parts.end(),
+                        [](const MblMeshData::Part &p) { return !p.blended; });
   return true;
 }

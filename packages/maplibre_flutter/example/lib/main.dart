@@ -131,8 +131,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Ticker? _driveTicker;
   bool _driving = false;
   LatLng _modelAnchor = _modelSite;
-  static const double _driveRadiusMetres = 30;
-  static const double _drivePeriodSeconds = 12;
+  // A tight fast circle reads as "spinning on the spot" rather than driving: a
+  // 30 m loop in 12 s is ~57 km/h with the model yawing 30 deg/s. Wider and
+  // slower is ~45 km/h at 12 deg/s, which looks like a vehicle following a road.
+  static const double _driveRadiusMetres = 60;
+  static const double _drivePeriodSeconds = 30;
 
   // Where to put the model when the map is still zoomed out. A few-metre object
   // is sub-pixel below roughly z18, and the example opens at world view, so
@@ -210,11 +213,24 @@ class _MapDemoPageState extends State<MapDemoPage> {
     );
   }
 
-  Future<void> _tiltBy(double degrees) async {
+  // Cycles pitch rather than only increasing it. mbgl clamps pitch to
+  // DEFAULT_PITCH_MAX = 60 degrees (util/constants.hpp), and adding a model
+  // already sets 60, so an "increase" button had nothing left to do and looked
+  // broken.
+  static const List<double> _pitchSteps = [0, 30, 60];
+
+  Future<void> _cyclePitch() async {
     final camera = await _controller.camera.getPosition();
-    final pitch = (camera.pitch + degrees).clamp(0.0, 85.0);
+    var next = _pitchSteps.first;
+    for (var i = 0; i < _pitchSteps.length; i++) {
+      if (camera.pitch < _pitchSteps[i] - 1) {
+        next = _pitchSteps[i];
+        break;
+      }
+      next = _pitchSteps[(i + 1) % _pitchSteps.length];
+    }
     await _controller.camera.move(
-      camera.copyWith(pitch: pitch),
+      camera.copyWith(pitch: next),
       duration: const Duration(milliseconds: 400),
     );
   }
@@ -368,7 +384,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
                       FloatingActionButton(
                         heroTag: 'tilt',
                         tooltip: 'Tilt map',
-                        onPressed: _ready ? () => _tiltBy(15) : null,
+                        onPressed: _ready ? _cyclePitch : null,
                         child: const Icon(Icons.threed_rotation),
                       ),
                     ],
