@@ -8,28 +8,43 @@ it is deliberately exhaustive so the gap between "what the engine can do" and "w
 is always visible. Rows come from the canonical MapLibre feature surface (style-spec, gl-js, and the
 native SDKs); cells reflect what is actually wired in this repo today.
 
-_Last updated: 2026-06-19_
+_Last updated: 2026-07-30._ Engines in play: **`mbgl-core`** (pinned by
+`MBGL_CORE_VERSION`) is the default renderer on **every** platform since the 2026-06-21
+core-primary inversion; the MapLibre Android SDK 11.11.0, Apple SDK 6.27.0 and
+maplibre-gl-js 5.24.0 are **opt-in** packages (`maplibre_flutter_{android,ios}_sdk`,
+`maplibre_flutter_web_gljs`).
 
-> **⚠️ STALE as of 2026-07-30 — do not trust the cells below without checking.** This matrix
-> predates both the 2026-06-21 core-primary inversion (it still describes Android and iOS as
-> rendering through the native SDKs, which are now opt-in) and the annotation / typed-style / 3D
-> work of 2026-07-29–30. In particular its "only camera + style are wired" bottom line is no longer
-> true: widget markers, engine sources/layers/images, `queryRenderedFeatures`, a generated typed
-> style API covering the whole style spec, and 3D `.glb` models have all landed on the `mbgl-core`
-> tiers. For the current state, what is verified where, and the per-platform backlog, see
-> **`docs/cross-platform-continuation.md`**. This file needs a full pass to catch up.
+Two consequences for reading this matrix:
 
----
+- **All five native columns are one engine.** Android, iOS, macOS, Windows and Linux run the
+  same `mbgl-core` through the same C ABI and the same Dart tier, so a feature wired on one is
+  wired on all five. They differ only in what has been *run on hardware* — hence 🧪 below.
+- **The Web column means the WASM core**, which is the default. Rows marked **web_only** are
+  gl-js features: reachable today only by adding the opt-in `maplibre_flutter_web_gljs`
+  package, and not implemented in our web binding either way.
+
+For what landed most recently, what is verified where, and the ordered per-platform backlog,
+see **`docs/cross-platform-continuation.md`**.
 
 ## Legend
 
 | Symbol | Meaning |
 | ------ | ------- |
 | ✅ | **Supported** — wired through the plugin API and verified (example-app demo or test). |
+| 🧪 | **Wired, unverified here** — the binding exists and is shared with a platform where it IS verified, but it has never been run on this one. Code, not evidence. |
 | 🟡 | **Partial** — some of the feature works, but not the whole API surface. |
 | ❌ | **Not yet** — the platform's engine supports it, but the binding has not been written. |
 | 🚧 | **Planned-engine** — the platform's rendering engine is not wired *at all*. No platform is in this state today (every platform renders); retained for any future not-yet-wired engine. |
 | ➖ | **N/A** — the feature does not exist on that engine (e.g. offline storage on Web, DOM markers on native). |
+
+### Key distinction — ✅ vs 🧪
+
+**🧪 exists because five platforms share one engine and one binding, but only some have been
+run.** When a capability is forwarded by all five native controllers, the *code* is equally
+present everywhere; claiming ✅ on that basis would be asserting evidence that does not exist.
+So the platform it was developed and demonstrated on gets ✅ and the others get 🧪 until someone
+runs them. Most of today's 🧪 cells are macOS-developed features awaiting a Linux, Windows,
+Android or iOS run — see `docs/cross-platform-continuation.md` for how to clear them.
 
 ### Key distinction — ❌ vs ➖
 
@@ -54,39 +69,49 @@ Treat the count of ❌ as the parity backlog and the count of ➖ as the irreduc
 
 ## Current reality (what actually works TODAY)
 
-Derived strictly from the current implementation status in this repo:
+Derived strictly from the current implementation status in this repo. Since the core-primary
+inversion every platform runs `mbgl-core`, so this splits by **binding tier**, not by OS.
 
-- **Android** (MapLibre Android SDK 11.11.0, `AndroidView`): `getCamera`, `moveCamera` (with optional
-  animation), `setStyle`, `onReady`, `dispose`. Camera reads are served from a cached state updated by
-  an idle listener; mutations marshal to the main looper. **Gestures (pan / zoom / rotate / tilt) work
-  natively via the SDK platform view.** `resize` is a no-op (the `AndroidView` auto-sizes). No layers,
-  sources, annotations, events, or queries are exposed.
-- **iOS** (MapLibre Apple SDK 6.27.0, `UiKitView`): at parity with Android — `getCamera`, `moveCamera`
-  (animated via `MLNMapView.fly` / instant via `setCamera`), `setStyle`, `onReady`, `dispose`.
-  **Gestures handled natively by the SDK.** `resize` is a no-op. Nothing beyond camera + style wired.
-- **macOS** (mbgl-core via ffigen, Flutter `Texture`): `getCamera` / `setCamera`, `moveCamera` (Dart-side
-  eased fly arc), `setStyle`, `resize`, plus **pan (`moveBy`) and zoom (`scaleBy`) gestures implemented
-  in the shared Dart tier** (no native gesture views). Off-screen headless rendering with zero-copy
-  Metal present and Continuous/Static render modes. No layer/source/query/event/annotation APIs.
-- **Windows** (mbgl-core via ffigen on the **Vulkan** backend, Flutter `Texture`): at parity with the
-  rest of the desktop tier — `getCamera` / `setCamera`, `moveCamera` (Dart-side eased fly arc),
-  `setStyle`, `resize`, plus **pan (`moveBy`) and zoom (`scaleBy`) gestures from the shared Dart tier**.
-  CPU pixel-buffer present is the verified-on-device default; D3D11 shared-texture zero-copy is opt-in but falls back to CPU on the Intel test GPU (untested on discrete GPUs). No
-  layer/source/query/event/annotation APIs.
-- **Linux** (mbgl-core via ffigen on the **OpenGL ES / EGL** backend, `FlTextureGL`): same wired surface
-  as macOS/Windows — camera, `setStyle`, `resize`, and the shared Dart pan/zoom tier. CPU pixel-buffer
-  present by default; dmabuf zero-copy is opt-in. Verified on device. No layer/source/query/event/
-  annotation APIs.
-- **Web** (maplibre-gl-js 5.24.0, `HtmlElementView`): Map construction, `setStyle`, `jumpTo`, `flyTo`,
-  `getCamera` (`getCenter` / `getZoom` / `getBearing` / `getPitch`), `resize`, `remove` (dispose),
-  and `on` / `off` event subscription used internally. **All gestures (pan / zoom / rotate / pitch /
-  inertia) delegated to maplibre-gl-js natively.** `easeTo` is declared in interop but not yet called.
-  No layers, markers, popups, controls, or source management wired.
+**The five native platforms** (Android, iOS, macOS, Windows, Linux) — `mbgl-core` via ffigen into a
+Flutter `Texture`, driven by one shared Dart tier:
 
-> Bottom line: across all platforms, only **camera + style (+ gestures)** are wired today. Everything
-> else in the tables below is ❌ (binding backlog) or ➖ (true N/A). The three desktop platforms
-> (macOS, Windows, Linux) share one `mbgl-core` engine and one Dart control/gesture tier, so their
-> columns are identical.
+- **Camera**: `getCamera` / `moveCamera` (jump or eased), a Dart-side fly arc, `resize`, `onReady`,
+  `dispose`. Bearing and pitch are settable and exercised (the example has rotate/tilt buttons —
+  there is still no rotate or pitch *gesture*).
+- **Gestures**: pan (with inertia/fling ported from the native SDK model) and zoom-about-anchor,
+  implemented once in Dart over the engine. No rotate, pitch, double-tap or quick-zoom gestures.
+- **Widget markers**: real Flutter widgets glued to a `LatLng` (`MapLibreMap.markers`) — tappable,
+  draggable, animatable — positioned from a synchronous projection snapshot that is correlated to
+  the frame actually on screen, so they do not swim during movement.
+- **Engine sources / layers / images**: `controller.layers` takes MapLibre Style Spec JSON for any
+  source or layer type, plus `setGeoJsonData`, `addImage` / `removeImage`, and `addWidgetIcon`
+  (a Flutter widget rasterised into a style image). In-engine clustering works (`cluster: true`).
+- **Typed style API**: generated from the vendored style spec — all 10 layer types, all 6 source
+  types, 33 enums, all 84 expression operators — serialising to the JSON path above.
+- **Queries**: `queryRenderedFeatures(rect)`, returning what the engine actually drew (including
+  the clusters it created, with `point_count`).
+- **Style transitions**: `setTransitionOptions` (duration / delay / placement fade), style-wide.
+- **Camera-change notification**: `onCameraChanged`, a `Listenable` ticked at every camera change.
+- **3D `.glb` models**: `addModel` / `updateModel` / `removeModel` and `MapLibreMap(models:)`,
+  drawn inside the engine so they depth-occlude against buildings. **macOS/Metal only.**
+
+Verified on hardware: **macOS** for everything above. Linux and Windows have the whole binding but
+have only been run for camera / style / gestures. iOS and Android likewise, and their most recent
+device runs predate the annotation work.
+
+**Web** (`maplibre_flutter_web`, the WASM core in a `<canvas>`): map construction, `setStyle`,
+camera get/set, fly, `resize`, dispose, and gestures owned by the engine glue. **None** of the
+annotation, layer, query, projection or model surface is bound on web — no projector, no
+`MapLibreStyleLayers`, no model host. This is the largest single gap in the matrix.
+
+**Opt-in renderers**: adding `maplibre_flutter_android_sdk` / `_ios_sdk` swaps that platform to the
+native SDK and its native gestures (rotate, pitch, double-tap, quick-zoom) but takes the shared
+Dart annotation tier out of play; `maplibre_flutter_web_gljs` swaps web to maplibre-gl-js. Neither
+opt-in package binds anything beyond camera + style today.
+
+> Bottom line: camera, style, gestures, **widget markers, engine sources/layers/images, the typed
+> style API, queries and transitions** are wired on the native tier — verified on macOS, 🧪 on the
+> other four. Web has none of it. 3D models are macOS-only.
 
 ---
 
@@ -94,41 +119,41 @@ Derived strictly from the current implementation status in this repo:
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
-| Vector source (`type='vector'`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Loaded indirectly via style JSON, but no runtime source API. |
-| Vector source — `url` (TileJSON) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `tiles` (URL templates) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `bounds` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `scheme` (xyz/tms) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `minzoom` / `maxzoom` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `attribution` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Vector source — `promoteId` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Required for feature-state on vector tiles. |
-| Vector source — `volatile` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Vector source (`type='vector'`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `url` (TileJSON) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `tiles` (URL templates) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `bounds` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `scheme` (xyz/tms) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `minzoom` / `maxzoom` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `attribution` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `promoteId` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Vector source — `volatile` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
 | Vector source — `encoding` (mvt/mlt) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: MLT encoding exercised in gl-js; not in mbgl-core/native. |
-| Raster source (`type='raster'`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Raster source — `tileSize` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Raster source — url/tiles/bounds/scheme/zoom/attribution/volatile | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Shared tiled-source options. |
-| Raster-DEM source (`type='raster-dem'`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Raster-DEM — `encoding` (mapbox/terrarium/custom) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Raster-DEM — custom encoding factors | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | redFactor/greenFactor/blueFactor/baseShift. |
-| Raster-DEM — url/tiles/bounds/zoom/tileSize/attribution/volatile | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON source (`type='geojson'`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `data` (inline or URL) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `maxzoom` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `buffer` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `tolerance` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `filter` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `lineMetrics` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Enables line-gradient. |
-| GeoJSON — `generateId` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `promoteId` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON — `attribution` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Android `GeoJsonOptions` lacks `withAttribution`. |
-| GeoJSON clustering — `cluster` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON clustering — `clusterRadius` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON clustering — `clusterMaxZoom` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON clustering — `clusterMinPoints` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| GeoJSON clustering — `clusterProperties` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | map/reduce aggregates. |
-| Image source (`type='image'`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Image source — `url` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Image source — `coordinates` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Raster source (`type='raster'`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster source — `tileSize` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster source — url/tiles/bounds/scheme/zoom/attribution/volatile | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster-DEM source (`type='raster-dem'`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster-DEM — `encoding` (mapbox/terrarium/custom) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster-DEM — custom encoding factors | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Raster-DEM — url/tiles/bounds/zoom/tileSize/attribution/volatile | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON source (`type='geojson'`) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS via `layers.addPoints` / `GeoJsonSource`, incl. in-engine clustering with pixel-asserted native tests. |
+| GeoJSON — `data` (inline or URL) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS via `layers.addPoints` / `GeoJsonSource`, incl. in-engine clustering with pixel-asserted native tests. |
+| GeoJSON — `maxzoom` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `buffer` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `tolerance` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `filter` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `lineMetrics` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `generateId` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `promoteId` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON — `attribution` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON clustering — `cluster` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS via `layers.addPoints` / `GeoJsonSource`, incl. in-engine clustering with pixel-asserted native tests. |
+| GeoJSON clustering — `clusterRadius` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS via `layers.addPoints` / `GeoJsonSource`, incl. in-engine clustering with pixel-asserted native tests. |
+| GeoJSON clustering — `clusterMaxZoom` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS via `layers.addPoints` / `GeoJsonSource`, incl. in-engine clustering with pixel-asserted native tests. |
+| GeoJSON clustering — `clusterMinPoints` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| GeoJSON clustering — `clusterProperties` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Image source (`type='image'`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Image source — `url` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
+| Image source — `coordinates` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addSourceJson` takes the whole spec document (mbgl `convertJSON<Source>`), and the generated typed API has a field for it. |
 | Video source (`type='video'`) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: no `VideoSource` in MapLibre Native. |
 | Video source — `urls` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Video source — `coordinates` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
@@ -137,12 +162,12 @@ Derived strictly from the current implementation status in this repo:
 | Canvas source — play / pause / getCanvas | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | CustomGeometrySource / `MLNComputedShapeSource` | ❌ | ❌ | ➖ | ➖ | ➖ | ➖ | **native_only** (Android/iOS SDK concept); no gl-js or mbgl-core surface. |
 | CustomGeometrySource — options | ❌ | ❌ | ➖ | ➖ | ➖ | ➖ | **native_only**. |
-| Add source at runtime — `addSource` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Remove source at runtime — `removeSource` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Add source at runtime — `addSource` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addSource` / `removeSource`, typed or raw JSON. |
+| Remove source at runtime — `removeSource` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addSource` / `removeSource`, typed or raw JSON. |
 | Get source — `getSource` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Source loaded state — `isSourceLoaded` / `loaded` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | All tiles loaded — `areTilesLoaded` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
-| GeoJSON `setData` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Primary dynamic-data update path. |
+| GeoJSON `setData` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.setGeoJsonData` — the engine re-tiles and re-clusters; no layer rebuild. |
 | GeoJSON `updateData` (incremental diff) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | GeoJSON `getData` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | GeoJSON `getBounds` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
@@ -165,37 +190,37 @@ Derived strictly from the current implementation status in this repo:
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
-| Background layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Renders if present in style JSON; no runtime layer API. |
-| Background paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | background-color / -pattern / -opacity. |
-| Fill layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Fill paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | fill-color / -opacity / -outline-color / -pattern / -antialias / -translate. |
-| Fill layout (sort-key, visibility) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Line layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Line paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | line-color / -width / -dasharray / -gradient / -offset / -blur / -gap-width. |
-| Line layout properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | line-cap / -join / -miter-limit / -round-limit / -sort-key. |
-| Symbol layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Symbol icon paint/layout | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | icon-image / -size / -rotate / -anchor / -offset / -color / -halo-*. |
-| Symbol text paint/layout | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | text-field / -font / -size / -anchor / -color / -halo-* / -transform. |
-| Symbol placement and collision | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | symbol-placement / -spacing / *-allow-overlap / *-ignore-placement. |
-| Circle layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Circle paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | circle-radius / -color / -blur / -stroke-* / -pitch-scale / -pitch-alignment. |
-| Fill-extrusion layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Fill-extrusion paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | -color / -height / -base / -opacity / -pattern / -vertical-gradient. |
-| Raster layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Raster paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | raster-opacity / -hue-rotate / -brightness-* / -saturation / -contrast / -resampling. |
-| Heatmap layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Heatmap paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | heatmap-radius / -weight / -intensity / -color / -opacity. |
-| Hillshade layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Hillshade paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | See §9 for the full per-property breakdown. |
-| Color-relief layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Newer style-spec layer type. |
-| Color-relief paint properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | color-relief-color / -opacity. |
+| Background layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Background paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Fill layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Fill paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Fill layout (sort-key, visibility) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Line layer | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `LineLayer` with dasharray + zoom-interpolated width. |
+| Line paint properties | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `LineLayer` with dasharray + zoom-interpolated width. |
+| Line layout properties | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `LineLayer` with dasharray + zoom-interpolated width. |
+| Symbol layer | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `SymbolLayer` cluster counts and widget-derived `icon-image`. |
+| Symbol icon paint/layout | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `SymbolLayer` cluster counts and widget-derived `icon-image`. |
+| Symbol text paint/layout | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `SymbolLayer` cluster counts and widget-derived `icon-image`. |
+| Symbol placement and collision | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Circle layer | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `CircleLayer` / `addPoints`, incl. data-driven colour and radius. |
+| Circle paint properties | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `CircleLayer` / `addPoints`, incl. data-driven colour and radius. |
+| Fill-extrusion layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Fill-extrusion paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Raster layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Raster paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Heatmap layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Heatmap paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Hillshade layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Hillshade paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Color-relief layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Color-relief paint properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
 | Sky / atmosphere (root `sky`) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: no sky in MapLibre Native `LayerFactory`. |
 | Custom layer (WebGL) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: `CustomLayerInterface` over WebGL. |
 | Custom layer (native C++) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**: `mbgl::style::CustomLayer` / `CustomLayerHost`. |
-| Universal layer properties | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | id / type / source / source-layer / minzoom / maxzoom / filter / metadata. |
-| Layer visibility (`layout.visibility`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| `addLayer` (+ beforeId) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| `removeLayer` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Universal layer properties | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| Layer visibility (`layout.visibility`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible: `addLayerJson` takes the whole spec document (mbgl `convertJSON<Layer>`), and the generated typed API covers every property. |
+| `addLayer` (+ beforeId) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addLayer` (typed) / `addLayerJson` / `removeLayer`; beforeId supported. |
+| `removeLayer` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addLayer` (typed) / `addLayerJson` / `removeLayer`; beforeId supported. |
 | `moveLayer` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `getLayer` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `getLayersOrder` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
@@ -209,43 +234,46 @@ Derived strictly from the current implementation status in this repo:
 
 ## 3. Data-driven styling: expressions, filters, feature-state, transitions, functions
 
-Expressions are evaluated **inside the engine** when a style is loaded — so they "work" wherever the
-style loads, but there is no Dart API to build, inspect, or set them at runtime. They are marked ❌
-(no runtime/data-path binding) until a styling API is exposed.
+Expressions are evaluated **inside the engine**, but they are now *buildable from Dart*: the
+generated `Expr` class has a builder for every one of the 84 operators in the spec, plus
+`Expr.raw` for anything it does not model, and an `Expression` is assignable to any typed style
+property. So "can I construct and send this?" is yes on the native tier; what stays ❌ is
+*inspecting or mutating* an existing layer's expression at runtime (`getFilter`, `setPaintProperty`),
+which needs C ABI that does not exist yet.
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
-| Decision expressions (case/match/coalesce/==/!=/all/any/!) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Engine-evaluated via style JSON only. |
-| Ramp/scale/curve (step / interpolate) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | linear / exponential / cubic-bezier. |
-| Color-space interpolation (interpolate-hcl / -lab) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Math expressions (+ - * / % ^ trig logs rounding) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Geometric math — `distance` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Type expressions (assertions & coercions) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | array/string/number/boolean/object/typeof/to-*/format/image/number-format. |
-| Lookup expressions (at/in/index-of/slice/length/get/has) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| String expressions (concat/upcase/downcase/resolved-locale) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Decision expressions (case/match/coalesce/==/!=/all/any/!) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Ramp/scale/curve (step / interpolate) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Color-space interpolation (interpolate-hcl / -lab) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Math expressions (+ - * / % ^ trig logs rounding) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Geometric math — `distance` | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Type expressions (assertions & coercions) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Lookup expressions (at/in/index-of/slice/length/get/has) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| String expressions (concat/upcase/downcase/resolved-locale) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
 | `split` / `join` string expressions | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: not yet in mbgl-core. |
-| Color construction (rgb/rgba/to-rgba) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Variable binding (`let` / `var`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Feature data (get/has/properties/geometry-type/id) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Color construction (rgb/rgba/to-rgba) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Variable binding (`let` / `var`) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Feature data (get/has/properties/geometry-type/id) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `Expr.get`/`has` filters partition clustered sources, and `Expr.interpolate` over `Expr.zoom()` drives line width. |
 | `feature-state` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Paint-only; not in filters. |
-| `within` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| `line-progress` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | For line-gradient. |
-| `accumulated` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Cluster property accumulation. |
-| `zoom` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| `heatmap-density` expression | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| `within` expression | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| `line-progress` expression | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| `accumulated` expression | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| `zoom` expression | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Verified on macOS: `Expr.get`/`has` filters partition clustered sources, and `Expr.interpolate` over `Expr.zoom()` drives line width. |
+| `heatmap-density` expression | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
 | `sky-radial-progress` expression | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: ties to sky layer. |
 | `global-state` expression | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: native tracking issue #3302 open. |
 | `setGlobalStateProperty` API | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | `elevation` expression (color-relief) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: not in mbgl-core's expression set. |
-| Legacy expression-based filters | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Legacy (deprecated) filter syntax | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Auto-converted to expressions. |
+| Legacy expression-based filters | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
+| Legacy (deprecated) filter syntax | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Buildable from Dart via the generated `Expr` builders (or `Expr.raw`); sent as part of a layer document. |
 | Runtime filter API (set/get) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `setFeatureState` API | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `getFeatureState` API | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `removeFeatureState` API | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Runtime paint/layout property API | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Property transitions (transitionable paint props) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Transition object (duration, delay) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Property transitions (transitionable paint props) | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Per-property `*-transition` is a field on every generated layer (`StyleTransition`). |
+| Transition object (duration, delay) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.setTransitionOptions(duration:, delay:, placementTransitions:)` — style-wide, sticky across style loads. Continuous mode only. |
 | Zoom functions (legacy) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Predecessor to zoom interpolate. |
 | Property (data-driven) functions (legacy) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Zoom-and-property functions (legacy) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
@@ -319,33 +347,38 @@ This is the **most-implemented** domain — camera control is the wired surface 
 
 ## 5. User interaction / gesture handlers
 
-Pan / zoom / rotate / pitch gestures **work today** on Android, iOS, and Web — handled natively by the
-SDK / maplibre-gl-js — and on macOS, Windows, and Linux via the shared Dart gesture tier (pan + zoom).
-What is ❌ below is
-the **per-gesture configuration / toggle API** (enable/disable, sensitivity, inertia tuning), none of
-which is exposed through the plugin interface yet.
+**Corrected for the core-primary inversion.** Android and iOS no longer get the native SDK's
+gesture stack by default — they run `mbgl-core` and the same shared Dart gesture tier as the
+desktop platforms. That tier implements **pan (with inertia/fling) and zoom-about-anchor**, and
+nothing else: there is no rotate, pitch, double-tap or quick-zoom gesture on any native platform
+today. Adding `maplibre_flutter_android_sdk` / `_ios_sdk` restores the SDK's full native gesture
+set on that platform.
+
+Bearing and pitch are still reachable imperatively (`moveCamera`), which is what the example's
+rotate/tilt buttons use. What is ❌ below is either a missing gesture or the per-gesture
+configuration API (enable/disable, sensitivity, inertia tuning), none of which is exposed.
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
-| Drag-pan gesture (works) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Native SDK / gl-js; macOS via Dart `moveBy`. |
+| Drag-pan gesture (works) | ✅ | ✅ | ✅ | 🧪 | 🧪 | ✅ | Shared Dart tier over `moveBy`, with an inertia/fling model ported from the native SDK. Verified on macOS, Android and iOS device runs. |
 | Drag-pan enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Drag-pan inertia options | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: `DragPanOptions`. |
 | Horizontal-scroll-only pan toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
-| Scroll-zoom gesture (works) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | macOS via Dart `scaleBy`. |
+| Scroll-zoom gesture (works) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Shared Dart tier over `scaleBy`. Trackpad pinch anchoring was a real bug on Windows/Linux and is fixed + regression-tested. |
 | Scroll-zoom enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Scroll-zoom around-center option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Scroll-zoom rate tuning | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Box-zoom handler | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (shift-drag). |
-| Double-click-zoom gesture | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | Native SDK / gl-js; macOS Dart tier has no double-tap yet. |
+| Double-click-zoom gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion: was an SDK gesture on Android/iOS. The Dart tier has no double-tap. Restored by the opt-in `_sdk` packages. |
 | Double-click-zoom enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Quick-zoom gesture (double-tap-hold-drag) | ✅ | ✅ | ❌ | ❌ | ❌ | ➖ | **native_only** SDK gesture; works via the platform view. |
-| Touch zoom-rotate (pinch) gesture | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | macOS Dart tier has no pinch-rotate yet. |
+| Quick-zoom gesture (double-tap-hold-drag) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only** SDK gesture; only via the opt-in `_sdk` packages now. |
+| Touch zoom-rotate (pinch) gesture | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | ✅ | Pinch ZOOM works on all five via the Dart tier (anchor frozen at pinch onset — see the focal-drift fix); pinch ROTATE does not exist there. |
 | Touch zoom-rotate enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Touch zoom-rotate: rotation sub-toggle | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Touch zoom-rotate around-center option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
-| Touch-pitch gesture | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | Native SDK / gl-js. |
+| Touch-pitch gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion; no pitch gesture in the Dart tier. Pitch is settable via `moveCamera` (example has a Tilt button). |
 | Touch-pitch enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Drag-rotate gesture | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | Native SDK / gl-js. |
+| Drag-rotate gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion; no rotate gesture in the Dart tier. Bearing is settable via `moveCamera` (example has rotate buttons). |
 | Drag-rotate enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `pitchWithRotate` option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `rollEnabled` option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
@@ -375,6 +408,13 @@ Native annotation/ornament APIs are **native_only** (Android/iOS SDK). None are 
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
+| **`maplibre_flutter` widget markers** (`MapLibreMap.markers`) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | **Our own tier, no MapLibre equivalent**: real Flutter widgets glued to a `LatLng` via the projector, positioned against the presented frame. Verified on macOS. |
+| Widget marker — tap / drag callbacks | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | A marker's own `GestureDetector` works; empty space falls through to the map. Dragging is positioned from the live pointer. |
+| Widget marker — alignment, viewport culling, repaint boundary | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Off-screen markers are culled; `repaintBoundary` (default on) rasterises rich children once. |
+| Map tap → LatLng (`MapLibreMap(onTap:)`) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Unprojects the tap; marker hits win by hit-test order. |
+| **Engine-drawn point helper** (`layers.addPoints`, optional clustering) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | One call builds the geojson source + circle layers (+ a symbol count layer); scales to 50k+ where widgets cannot. |
+| **Flutter widget → style image** (`layers.addWidgetIcon`) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Rasterises a widget off-screen and registers it as `icon-image`, so bulk points are styled with Flutter widgets. A snapshot: no gestures, no animation. |
+| **3D `.glb` model** (`controller.addModel`, `MapLibreMap(models:)`) | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | **Our own extension** over mbgl `CustomDrawableLayer`; depth-occludes against buildings. macOS/Metal only — see §9. |
 | Marker (DOM marker) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**: `maplibregl.Marker`. |
 | Marker custom element | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Marker color / scale / anchor / offset | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
@@ -446,7 +486,7 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 | `resize` event | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `webglcontextlost` / `webglcontextrestored` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `cooperativegestureprevented` event | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
-| `click` event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Native: `OnMapClickListener`. |
+| `click` event | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | ❌ | `MapLibreMap(onTap:)` reports the unprojected LatLng of a tap on the map. No per-layer hit-test callback (compose with queryRenderedFeatures). |
 | `dblclick` event | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `mousedown` / `mouseup` / `mousemove` events | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (pointer events). |
 | `mouseenter` / `mouseleave` (per-layer) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
@@ -456,7 +496,7 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 | `touchstart`/`touchend`/`touchmove`/`touchcancel` events | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Native long-press (`OnMapLongClickListener`) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
 | Native fling (`OnFlingListener`) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
-| `movestart` / `move` / `moveend` events | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Native: `OnCameraMove*Listener`. |
+| `movestart` / `move` / `moveend` events | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | ❌ | `controller.onCameraChanged` is a Listenable ticked on every camera change — enough to drive overlays, but not discrete start/move/end events. |
 | `dragstart` / `drag` / `dragend` events | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `zoomstart` / `zoom` / `zoomend` events | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `rotatestart` / `rotate` / `rotateend` events | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (named events). |
@@ -465,12 +505,12 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 | `isMoving` / `isZooming` / `isRotating` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Native camera-move listeners (`OnCameraMove*`) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
 | Native gesture-detail listeners (Rotate/Scale/Shove) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
-| `queryRenderedFeatures` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| `queryRenderedFeatures` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.queryRenderedFeatures(rect)` → parsed features incl. engine-made clusters with `point_count`. Rect only (no point/geometry overload), no filter argument. |
 | `querySourceFeatures` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `queryTerrainElevation` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Terrain itself is web_only today (see §10). |
 | `getCameraTargetElevation` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
-| `project` (LngLat → pixel) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| `unproject` (pixel → LngLat) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| `project` (LngLat → pixel) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `MapLibreMapProjector`, synchronous and lock-light, projected against the frame ON SCREEN (not the newest transform) so anchored widgets do not swim. Batched for the marker overlay. |
+| `unproject` (pixel → LngLat) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `MapLibreMapProjector`, synchronous and lock-light, projected against the frame ON SCREEN (not the newest transform) so anchored widgets do not swim. Batched for the marker overlay. |
 | Native projection toScreen/fromScreen | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
 | `getBounds` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `setMaxBounds` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
@@ -489,20 +529,20 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
-| `addImage` (runtime) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| `addImage` (runtime) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addImage(id, rgba, w, h, pixelRatio:, sdf:)`; raw premultiplied RGBA. |
 | `addImages` (batch) | ❌ | ➖ | ➖ | ➖ | ➖ | ➖ | **native_only** (Android `Style.addImages`). |
 | `addImageAsync` / `addImagesAsync` | ❌ | ➖ | ➖ | ➖ | ➖ | ➖ | **native_only** (Android). |
 | `updateImage` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
-| `removeImage` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| `removeImage` | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | `layers.addImage(id, rgba, w, h, pixelRatio:, sdf:)`; raw premultiplied RGBA. |
 | `hasImage` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | `getImage` / `imageForName` | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only**. |
 | `loadImage` (from URL) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | `listImages` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
-| SDF icons | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| SDF icons | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Both are parameters of `addImage`. |
 | Stretchable images (stretchX/stretchY) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Content box (`content`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Text-fit constraints (textFitWidth/Height) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js metadata). |
-| pixelRatio (high-DPI images) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| pixelRatio (high-DPI images) | 🧪 | 🧪 | ✅ | 🧪 | 🧪 | ❌ | Both are parameters of `addImage`. |
 | Animated / dynamic images (`StyleImageInterface`) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `styleimagemissing` event | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (event form); native is in §7. |
 | Sprite root property (single source) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Loaded via style JSON; no runtime sprite API. |
@@ -527,8 +567,14 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 
 ## 9. 3D & atmosphere
 
-3D terrain, sky, fog, globe atmosphere are **web_only** (maplibre-gl-js). DEM sources, hillshade,
-3D lighting, and fill-extrusion exist on every engine (✅-capable once bound) but are not yet wired.
+3D terrain, sky, fog and globe atmosphere are **web_only** (maplibre-gl-js) — and note that on web
+they are reachable only through the opt-in gl-js package, not our default WASM core.
+
+What changed: **hillshade and fill-extrusion are now expressible** on the native tier, because any
+layer document can be sent (typed or raw), so they are 🧪 rather than ❌ — the binding exists,
+nobody has run them. The root `light` object still has no binding. And `maplibre_flutter` now has
+its own **3D model** layer, which is not a MapLibre feature at all: MapLibre has no model layer in
+the spec, in gl-js, or in Native, so this is an extension over mbgl's `CustomDrawableLayer`.
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
@@ -536,16 +582,16 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 | `getTerrain` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | terrain `source` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | terrain `exaggeration` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
-| raster-dem source | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Cross-engine (also in §1). |
+| raster-dem source | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
 | raster-dem encoding (mapbox/terrarium/custom) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** for the encoding enum specifically. |
-| Hillshade layer | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-illumination-direction | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-illumination-altitude | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-illumination-anchor | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-exaggeration | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-shadow-color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-highlight-color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| hillshade-accent-color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Hillshade layer | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-illumination-direction | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-illumination-altitude | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-illumination-anchor | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-exaggeration | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-shadow-color | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-highlight-color | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| hillshade-accent-color | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
 | hillshade-method | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Sky layer (style `sky` property) | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | sky-color | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
@@ -561,20 +607,26 @@ native "map loaded" / web `'load'` callback). The web controller uses `on`/`off`
 | light position | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | light color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | light intensity | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Fill-extrusion 3D buildings | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-height | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-base | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-color | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-opacity | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-pattern | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-translate | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-translate-anchor | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| fill-extrusion-vertical-gradient | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Fill-extrusion 3D buildings | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-height | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-base | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-color | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-opacity | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-pattern | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-translate | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-translate-anchor | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
+| fill-extrusion-vertical-gradient | 🧪 | 🧪 | 🧪 | 🧪 | 🧪 | ❌ | Expressible via a typed layer or `addLayerJson`; never run. |
 | Globe projection | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | vertical-perspective projection | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Projection interpolation/transition | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `setProjection` / `getProjection` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Globe atmosphere | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
+| **3D `.glb` model layer** (`maplibre_flutter` extension) | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Not a MapLibre feature: no model layer exists in the spec, gl-js or Native. Ours draws glTF through mbgl `CustomDrawableLayer`. Verified on macOS/Metal. |
+| Model — geo-anchored placement, scale, heading, elevation | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | `MapLibreModel`; `updateModel` moves one per frame without re-parsing the .glb. |
+| Model — depth occlusion against fill-extrusion | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Needed an mbgl patch: `mtl::TileLayerGroup` never computed `features3d` for a layer group with no stencil tiles. **Metal-only patch.** |
+| Model — per-material mesh splitting, shared GPU textures | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Draw calls scale with parts, not instances; meshes are shared between instances. |
+| Model — directional lighting | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | mbgl's custom-geometry shader has no normals; our patch adds a NORMAL attribute + half-lambert across all four backends, but **only the Metal edits have been run** — GL/Vulkan/WebGPU are unverified mirrors. |
+| Model — texture REPEAT wrapping | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | Metal `constexpr sampler` defaulted to clamp-to-edge, collapsing tiled glTF textures to an edge colour. **Metal-only patch.** |
 
 ---
 
@@ -641,14 +693,19 @@ Linux share macOS's `mbgl-core` engine, so their cells match the macOS column.
    with a fixed easing instead of caller-supplied curve), mark 🟡 and note exactly what is missing.
 3. **❌ is the binding backlog.** Keep ❌ wherever the engine *can* do it but no binding exists. Do
    not downgrade ❌ to ➖ to make the matrix look better — ➖ is reserved for genuine engine limits.
-4. **Keep the desktop columns in lockstep.** macOS, Windows, and Linux share one `mbgl-core` engine and
-   one Dart control/gesture tier, so a feature wired on one is wired on all three — their columns should
-   stay identical. Update the macOS column, then mirror it to Windows and Linux.
-5. **Respect `native_only` / `web_only`.** A feature flagged `web_only` is ➖ on all native columns;
+4. **Keep ALL FIVE native columns in lockstep — as 🧪, not ✅.** Since the core-primary inversion,
+   Android, iOS, macOS, Windows and Linux share one `mbgl-core` engine and one Dart tier, so a feature
+   wired on one is wired on all five. Mark the platform you actually ran ✅ and the rest 🧪; do not
+   promote 🧪 to ✅ by inference, and do not leave a shared binding as ❌ on the platforms you have not
+   run — ❌ would claim the code is absent when it is not.
+5. **Clearing a 🧪 is a hardware run, and it is cheap.** Build the example on that platform and drive
+   the relevant scenario; `docs/cross-platform-continuation.md` lists what to check per platform. If it
+   fails, the cell goes to 🟡 or ❌ with a note saying what broke — that is a finding, not a setback.
+6. **Respect `native_only` / `web_only`.** A feature flagged `web_only` is ➖ on all native columns;
    `native_only` is ➖ on Web. Re-check these flags when a feature graduates across engines (e.g. if
    globe/sky ever land in MapLibre Native, flip those native ➖ cells to ❌).
-6. **Regenerate the row list when MapLibre ships new features.** Re-derive the canonical feature
+7. **Regenerate the row list when MapLibre ships new features.** Re-derive the canonical feature
    surface (style-spec, gl-js, native SDK changelogs) periodically and add new rows; never silently
    drop a row — a removed/deprecated feature stays, annotated as deprecated.
-7. **Keep `_Last updated:`** current and note the engine versions in play (Android SDK 11.11.0,
+8. **Keep `_Last updated:`** current and note the engine versions in play (Android SDK 11.11.0,
    Apple SDK 6.27.0, mbgl-core pinned via `MBGL_CORE_VERSION`, maplibre-gl-js 5.24.0) whenever they bump.

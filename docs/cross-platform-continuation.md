@@ -7,7 +7,9 @@ merely *written*, and what has to happen per platform before any of it can be ca
 supported.
 
 Read this with CLAUDE.md §12 (the decision log carries the *why* for each piece) and
-`FEATURE_MATRIX.md` (the exhaustive parity backlog, which predates all of this).
+`FEATURE_MATRIX.md` (the exhaustive per-feature parity backlog, brought up to date on 2026-07-30
+with everything below — it is the place to look up a single feature; this file is the place to look
+up what to *do next*).
 
 ---
 
