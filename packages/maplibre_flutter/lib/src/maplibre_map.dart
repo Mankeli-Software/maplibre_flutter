@@ -31,6 +31,7 @@ class MapLibreMap extends StatefulWidget {
     this.controller,
     this.options = const MapOptions(),
     this.markers = const <MapLibreMarker>[],
+    this.models = const <MapLibreModel>[],
     this.onTap,
   });
 
@@ -46,6 +47,22 @@ class MapLibreMap extends StatefulWidget {
   /// Rendered only on tiers whose renderer can project coordinates (the default
   /// `mbgl-core` tiers); ignored elsewhere.
   final List<MapLibreMarker> markers;
+
+  /// 3D models drawn INSIDE the map engine and anchored to geographic points.
+  ///
+  /// Declarative — change the list (e.g. via `setState`) to add, move or remove
+  /// them. Unlike [markers], which are Flutter widgets composited above the map,
+  /// these are real geometry in the scene, so they depth-occlude against 3D
+  /// buildings and each other.
+  ///
+  /// Rendered only on tiers whose renderer supports models (the default
+  /// `mbgl-core` tiers); ignored elsewhere.
+  ///
+  /// For PER-FRAME animation (driving a model along a route) prefer the
+  /// controller's `updateModel`: rebuilding the widget tree every frame to move a
+  /// model is the wrong tool, and the same high-frequency reasoning is why the
+  /// camera is imperative (CLAUDE.md §3 three-bucket rule).
+  final List<MapLibreModel> models;
 
   /// Called when the map (not a marker) is tapped, with the geographic point
   /// under the tap. Only fires on tiers that can project coordinates.
@@ -81,6 +98,53 @@ class _MapLibreMapState extends State<MapLibreMap> {
       _internalController = MapLibreMapController();
     }
     _attach = _controller.attach(style: widget.style, options: widget.options);
+    _applyModelsWhenAttached(const <MapLibreModel>[], widget.models);
+  }
+
+  /// Applies a model diff once the native map exists.
+  ///
+  /// Loading parses the `.glb` synchronously and throws on a bad file, so failures
+  /// are reported through [FlutterError] rather than becoming an unhandled async
+  /// error or a silently missing model.
+  void _applyModelsWhenAttached(
+    List<MapLibreModel> previous,
+    List<MapLibreModel> next,
+  ) {
+    _attach?.then((_) {
+      if (!mounted) return;
+      _syncModels(previous, next);
+    });
+  }
+
+  void _syncModels(List<MapLibreModel> previous, List<MapLibreModel> next) {
+    final before = <String, MapLibreModel>{for (final m in previous) m.id: m};
+    final after = <String, MapLibreModel>{for (final m in next) m.id: m};
+
+    for (final id in before.keys) {
+      if (!after.containsKey(id)) _controller.removeModel(id);
+    }
+    for (final model in next) {
+      final old = before[model.id];
+      try {
+        if (old == null || !model.isSamePlacementSourceAs(old)) {
+          // New, a different mesh, or a changed spin: has to be (re)loaded.
+          _controller.addModel(model);
+        } else if (model != old) {
+          // Placement only — move it in place. Re-adding would re-parse the
+          // whole .glb, which for a real model is tens of megabytes.
+          _controller.updateModel(model);
+        }
+      } on ArgumentError catch (error, stack) {
+        FlutterError.reportError(FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'maplibre_flutter',
+          context: ErrorDescription(
+            'while loading model "${model.id}" from "${model.assetPath}"',
+          ),
+        ));
+      }
+    }
   }
 
   @override
@@ -107,6 +171,11 @@ class _MapLibreMapState extends State<MapLibreMap> {
     } else if (widget.style != oldWidget.style) {
       // Declarative style: push the new style to the native map.
       _controller.setStyle(widget.style);
+    }
+    if (!identical(widget.models, oldWidget.models)) {
+      // A style change drops custom layers, but the core re-adds retained models
+      // itself, so this only has to handle what the caller actually changed.
+      _applyModelsWhenAttached(oldWidget.models, widget.models);
     }
   }
 

@@ -59,6 +59,33 @@ class MapLibreModel {
   /// A non-zero value makes the map render continuously while the model is alive,
   /// which costs power — prefer 0 unless something is actually meant to spin.
   final double spinDegreesPerSecond;
+
+  /// Whether only the PLACEMENT differs, so this model can be moved in place
+  /// rather than reloaded.
+  ///
+  /// [assetPath] is excluded because a different mesh has to be re-read, and
+  /// [spinDegreesPerSecond] because the spin clock starts when the model is
+  /// created — changing it in place would make the rotation jump.
+  bool isSamePlacementSourceAs(MapLibreModel other) =>
+      id == other.id &&
+      assetPath == other.assetPath &&
+      spinDegreesPerSecond == other.spinDegreesPerSecond;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MapLibreModel &&
+          other.id == id &&
+          other.assetPath == assetPath &&
+          other.point == point &&
+          other.scale == scale &&
+          other.headingDegrees == headingDegrees &&
+          other.elevationMetres == elevationMetres &&
+          other.spinDegreesPerSecond == spinDegreesPerSecond;
+
+  @override
+  int get hashCode => Object.hash(id, assetPath, point, scale, headingDegrees,
+      elevationMetres, spinDegreesPerSecond);
 }
 
 /// Optional capability: a platform controller that can draw 3D models inside the
