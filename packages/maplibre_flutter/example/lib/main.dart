@@ -118,28 +118,47 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   Future<void> _cycleEnginepoints() async {
     _engineIndex = (_engineIndex + 1) % _engineCounts.length;
-    final count = _engineCounts[_engineIndex];
     setState(() {});
+    await _applyEnginePoints();
+  }
+
+  /// (Re)builds the engine dataset for the current count/mode.
+  ///
+  /// Also called after a style swap: `setStyle` replaces the whole style
+  /// document, so every source and layer we added goes with it and has to be
+  /// re-applied.
+  Future<void> _applyEnginePoints() async {
+    final count = _engineCounts[_engineIndex];
 
     final layers = _controller.layers;
     layers.removePoints('bulk');
+    // The icons path uses its own layer id, outside removePoints' scheme.
+    layers
+      ..removeLayer('bulk-points')
+      ..removeSource('bulk');
     if (count == 0) return;
 
     if (_engineIcons) {
       // A Flutter widget, painted once and then drawn by the ENGINE at every
       // point — the bridge between the two annotation styles.
+      //
+      // The rasterized box must leave room for anything the widget paints
+      // OUTSIDE its content, or it gets clipped: _FancyMarker casts a shadow, so
+      // the icon is sized with padding around it (see _IconFrame).
       await layers.addWidgetIcon(
         'bulk-pin',
-        const _FancyMarker(),
-        size: const Size(28, 20),
+        const _IconFrame(child: _FancyMarker()),
+        size: const Size(44, 34),
       );
+      // NOT clustered here: clustering collapses everything into a handful of
+      // bubbles, so a wide view shows a single icon and the demo looks broken.
+      // Unclustered is also the more interesting stress test — thousands of
+      // widget-derived icons, all drawn by the engine.
       layers
         ..addSourceJson(
           'bulk',
           jsonEncode({
             'type': 'geojson',
-            'cluster': true,
-            'clusterRadius': 50,
             'data': {
               'type': 'FeatureCollection',
               'features': [
@@ -167,7 +186,19 @@ class _MapDemoPageState extends State<MapDemoPage> {
       return;
     }
 
-    layers.addPoints('bulk', _finland(count), cluster: true, radius: 4);
+    layers.addPoints(
+      'bulk',
+      _finland(count),
+      cluster: true,
+      radius: 4,
+      // Cluster counts need a font THIS style serves. Naming one it does not
+      // have makes every tile 404 its glyphs, which stops the whole source from
+      // rendering (not just the text) — the bug that made these points vanish
+      // after a style toggle.
+      clusterTextFont: [
+        _style == _demotiles ? 'Open Sans Regular' : 'Noto Sans Regular',
+      ],
+    );
   }
 
   @override
@@ -205,8 +236,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   // Style is declarative: change the widget's `style` prop and rebuild. The
   // widget pushes the new style to the native map (CLAUDE.md §3).
-  void _toggleStyle() {
+  Future<void> _toggleStyle() async {
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
+    // Loading a style REPLACES the whole document, taking our sources and
+    // layers with it — so re-apply them once the new style has settled. (Widget
+    // markers are unaffected: they live in Flutter, not the style.)
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    if (mounted) await _applyEnginePoints();
   }
 
   List<MapLibreMarker> _buildMarkers() {
@@ -391,6 +427,23 @@ class _Dot extends StatelessWidget {
         shape: BoxShape.circle,
         border: Border.all(color: Colors.white, width: 1.5),
       ),
+    );
+  }
+}
+
+/// Padding around a marker being rasterized into an engine icon.
+///
+/// [MapLibreLayersController.rasterizeWidget] captures exactly the box it is
+/// given, so anything drawn OUTSIDE the child's own bounds — a shadow, a glow, a
+/// stroke — is clipped at the edges. Framing the child leaves room for it.
+class _IconFrame extends StatelessWidget {
+  const _IconFrame({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(padding: const EdgeInsets.all(8), child: child),
     );
   }
 }

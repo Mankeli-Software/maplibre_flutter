@@ -89,6 +89,8 @@ void main() {
       cluster: true,
       clusterRadius: 60,
       clusterMaxZoom: 12,
+      // Named so the count layer is emitted — see the font-guard test below.
+      clusterTextFont: ['Open Sans Regular'],
     );
 
     final src = jsonDecode(rec.sources['c']!) as Map<String, Object?>;
@@ -115,6 +117,48 @@ void main() {
       'symbol',
       reason: 'count labels are a symbol layer',
     );
+  });
+
+  // Regression: addPoints used to emit the count label with no `text-font`, so
+  // mbgl fell back to "Open Sans Regular,Arial Unicode MS Regular" — present in
+  // demotiles, absent from OpenFreeMap Liberty. On Liberty every tile 404'd its
+  // glyphs, which does not merely drop the text: it stops the whole source from
+  // rendering, so the dataset silently vanished after a style toggle.
+  test('omits the cluster count layer unless a font is named', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+
+    layers.addPoints('c', const [LatLng(1, 2)], cluster: true);
+
+    final ids = rec.layers
+        .map((l) => (jsonDecode(l) as Map<String, Object?>)['id'])
+        .toList();
+    expect(ids, ['c-clusters', 'c-points']);
+    expect(
+      rec.layers.any((l) => l.contains('text-field')),
+      isFalse,
+      reason: 'no text layer without a known-good font',
+    );
+  });
+
+  test('adds the count layer with the given font when one is named', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+
+    layers.addPoints(
+      'c',
+      const [LatLng(1, 2)],
+      cluster: true,
+      clusterTextFont: ['Noto Sans Regular'],
+    );
+
+    final count =
+        rec.layers
+                .map((l) => jsonDecode(l) as Map<String, Object?>)
+                .firstWhere((l) => l['id'] == 'c-count')['layout']
+            as Map<String, Object?>;
+    expect(count['text-font'], ['Noto Sans Regular']);
+    expect(count['text-field'], ['get', 'point_count_abbreviated']);
   });
 
   test('removePoints tears down every layer addPoints created', () {

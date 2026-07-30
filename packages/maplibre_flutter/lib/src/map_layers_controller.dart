@@ -91,9 +91,16 @@ class MapLibreLayersController {
   /// Adds [points] as an engine-drawn circle layer, optionally clustered.
   ///
   /// The common case in one call: builds the GeoJSON, the source and the layers.
-  /// With [cluster] on, mbgl runs supercluster internally and this adds three
-  /// layers — cluster bubbles, their counts, and the unclustered points — the
-  /// same arrangement the MapLibre clustering example uses.
+  /// With [cluster] on, mbgl runs supercluster internally and this adds cluster
+  /// bubbles plus the leftover single points.
+  ///
+  /// **Cluster counts need a font you know the style has.** Pass
+  /// [clusterTextFont] (e.g. `['Open Sans Regular']` for MapLibre demotiles,
+  /// `['Noto Sans Regular']` for OpenFreeMap Liberty) to label each bubble with
+  /// its point count. It is **null by default and the label layer is then
+  /// omitted entirely**, because a library cannot know which fonts a given style
+  /// serves: naming one it does not have makes mbgl request glyphs that 404 on
+  /// every tile, which at best loses the text and at worst holds up the source.
   ///
   /// Ids are derived from [id] (`<id>`, `<id>-clusters`, `<id>-count`,
   /// `<id>-points`), so [removePoints] can clean them all up.
@@ -107,6 +114,7 @@ class MapLibreLayersController {
     double clusterRadiusPx = 18,
     int clusterRadius = 50,
     int clusterMaxZoom = 14,
+    List<String>? clusterTextFont,
     String? beforeId,
   }) {
     if (_layers == null) return;
@@ -165,21 +173,27 @@ class MapLibreLayersController {
       }),
       beforeId: beforeId,
     );
-    addLayerJson(
-      jsonEncode({
-        'id': '$id-count',
-        'type': 'symbol',
-        'source': id,
-        'filter': ['has', 'point_count'],
-        'layout': {
-          'text-field': ['get', 'point_count_abbreviated'],
-          'text-size': 12,
-          'text-allow-overlap': true,
-        },
-        'paint': {'text-color': '#ffffff'},
-      }),
-      beforeId: beforeId,
-    );
+    // Only when the caller has told us a font the style actually serves —
+    // otherwise mbgl falls back to "Open Sans Regular,Arial Unicode MS Regular"
+    // and 404s the glyph range on every tile.
+    if (clusterTextFont != null) {
+      addLayerJson(
+        jsonEncode({
+          'id': '$id-count',
+          'type': 'symbol',
+          'source': id,
+          'filter': ['has', 'point_count'],
+          'layout': {
+            'text-field': ['get', 'point_count_abbreviated'],
+            'text-font': clusterTextFont,
+            'text-size': 12,
+            'text-allow-overlap': true,
+          },
+          'paint': {'text-color': '#ffffff'},
+        }),
+        beforeId: beforeId,
+      );
+    }
     addLayerJson(
       jsonEncode({
         'id': '$id-points',

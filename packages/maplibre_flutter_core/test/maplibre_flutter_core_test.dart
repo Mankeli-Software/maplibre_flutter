@@ -436,6 +436,62 @@ void main() {
     expect(map.writePng('/tmp/maplibre_clusters.png'), isTrue);
   });
 
+  // HAZARD, verified: a symbol layer naming a font the style cannot serve makes
+  // mbgl request glyphs that 404 — and that does NOT merely lose the text. The
+  // failure propagates out of the RENDER itself ("render failed: HTTP status
+  // code 404" from renderNow's catch), so no frame is produced at all: the map
+  // stops updating, not just that layer.
+  //
+  // This bit for real: MapLibreLayersController.addPoints used to emit a cluster
+  // count label with no `text-font`, so mbgl fell back to "Open Sans Regular,
+  // Arial Unicode MS Regular" — served by demotiles, absent from OpenFreeMap
+  // Liberty — and switching to Liberty silently killed the whole dataset. Hence
+  // clusterTextFont is required for counts and the label layer is omitted
+  // otherwise. This test pins the engine behaviour that makes that necessary.
+  test('a symbol layer with an unavailable font BLOCKS its whole source', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 4);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.addSourceJson('g', '''
+      {"type":"geojson","cluster":true,"clusterRadius":50,
+       "data":${pointsAround(60.45, 22.27, 300, 0.5)}}
+    ''');
+    map.addLayerJson('''
+      {"id":"g-circles","type":"circle","source":"g","filter":["has","point_count"],
+       "paint":{"circle-radius":14,"circle-color":"#ff00ff"}}
+    ''');
+    // Deliberately bogus font: the glyph fetch must fail.
+    map.addLayerJson('''
+      {"id":"g-count","type":"symbol","source":"g","filter":["has","point_count"],
+       "layout":{"text-field":"x","text-font":["No Such Font Regular"]}}
+    ''');
+
+    // Give it well past the time a healthy source needs (the working cluster
+    // test above paints within a second).
+    final sw = Stopwatch()..start();
+    var painted = 0;
+    while (sw.elapsed < const Duration(seconds: 8)) {
+      painted = countColor(map.copyFrame()!, 255, 0, 255);
+      if (painted > 50) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      painted,
+      lessThanOrEqualTo(50),
+      reason:
+          'documents the hazard: the bad glyph fetch blocks the circle layer '
+          'too. If this ever starts passing, mbgl has been fixed and the '
+          'clusterTextFont guard could be relaxed.',
+    );
+  });
+
   test('rejects malformed style JSON synchronously', () {
     final map = MapLibreCoreMap.create(
       width: 64,
