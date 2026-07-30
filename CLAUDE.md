@@ -574,6 +574,15 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
 - Example: display_brightness: https://github.com/Mankeli-Software/display_brightness
 - MapLibre Native platforms/core docs: https://maplibre.org/maplibre-native/docs/book/platforms/
 - Prior art (KMP, same core-on-desktop move): maplibre-compose
+- MapLibre Style Spec: https://maplibre.org/maplibre-style-spec/ (machine-readable copy is
+  vendored at `third_party/maplibre-native/scripts/style-spec-reference/v8.json`)
+
+### Design docs in `docs/`
+
+- `typed-style-api.md` — design + plan for a **generated** typed Dart style API (not built).
+- `experimental-web-core-wasm.md` — mbgl-core → WASM status, build steps, remaining work.
+- `core-primary-inversion-plan.md` / `core-primary-inversion-validation.md` — the 2026-06-21
+  inversion and its on-device validation matrix.
 
 ---
 
@@ -1838,5 +1847,25 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     18/18 with pixel assertions (clusters verified by eye in dumped PNGs); `maplibre_flutter`
     30 passing with the one pre-existing `"pinch zoom freezes its anchor"` failure that also
     fails on `main`.
+
+- **2026-07-30 — Style API takes spec JSON for now; a typed API should be GENERATED. Design
+  recorded in `docs/typed-style-api.md` (NOT implemented).** `controller.layers` exposes
+  `addSourceJson`/`addLayerJson`/`setGeoJsonData` taking MapLibre Style Spec JSON, plus typed
+  convenience for the common case (`addPoints(cluster: true, …)`, `addWidgetIcon`,
+  `queryRenderedFeatures → List<MapLibreQueriedFeature>`). Rationale: seven C functions over
+  mbgl's `convertJSON<T>` buy the **entire** spec — every layer type, expressions, filters,
+  data-driven styling — for a fraction of the surface of typed accessors, and it is the shape
+  gl-js users know. Cost: a bad document is a runtime `ArgumentError`, not a compile error.
+  - **When it is built, generate it.** Measured from the spec vendored in our own submodule
+    (`third_party/maplibre-native/scripts/style-spec-reference/v8.json`): **10 layer types, 138
+    paint+layout properties, 84 expression operators.** Hand-maintaining that drifts from the
+    spec on every core bump, silently.
+  - **Precedent: mbgl already generates its own C++ layer classes from that same file**
+    (`scripts/generate-style-code.mjs` + `include/mbgl/style/layers/layer.hpp.ejs`). A Dart
+    generator uses the identical source of truth and tracks the pinned `MBGL_CORE_VERSION`.
+  - **No C ABI change needed** — a typed layer is a pure Dart façade that serialises to the
+    existing `addLayerJson`; the raw methods stay as the escape hatch. Expressions get builders
+    plus a raw hatch (84 operators is too many to model perfectly up front). CI regen-diff check
+    like ffigen so spec drift fails visibly. Suggested order: circle, symbol, line, fill, rest.
 
 _Append new decisions here with date and rationale._
