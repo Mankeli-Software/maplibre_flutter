@@ -172,6 +172,68 @@ Future<void> _applySubmodulePatches(
       marker: 'MBL_WIN32_EXTERNAL_MEMORY',
       patch: 'patches/windows-vulkan-external-memory.patch',
     ),
+    // Metal: make 3D custom-drawable geometry actually depth-test. mtl::Drawable
+    // deliberately skips setting its own depth/stencil state when is3D ("handled
+    // by the layer group", drawable.cpp:244) — but mtl::TileLayerGroup only
+    // computed features3d INSIDE `if (stencilTiles && !empty())`. A layer group
+    // with no stencil tiles (which is every CustomDrawableLayer) therefore left
+    // features3d false and set no depth state at all, so 3D geometry fell back to
+    // painter's order: models did not occlude behind fill-extrusion buildings and
+    // did not even self-occlude (a mesh's back faces painted over its front ones).
+    // The patch hoists the scan out of that guard; stencil3d stays gated on
+    // stencil tiles, so tiled layers are unaffected. Metal-only: the GL
+    // (drawable_gl.cpp:46) and Vulkan (drawable.cpp:274) drawables already honour
+    // is3D themselves, so Linux/Android/Windows never had this bug.
+    (
+      file: 'src/mbgl/mtl/tile_layer_group.cpp',
+      marker: 'MBL_CUSTOM_3D_DEPTH',
+      patch: 'patches/metal-custom-drawable-3d-depth.patch',
+    ),
+    // Directional lighting for custom geometry, across all four backends.
+    //
+    // mbgl's CustomGeometryShader is texture x tint with no normals, so 3D models
+    // render completely flat — the single biggest thing between a model and
+    // looking placed in the scene. This adds a NORMAL vertex attribute and a light
+    // vec4 to the drawable UBO, plus a half-lambert term in the shader.
+    //
+    // The light is in the drawable's own MODEL space rather than world space, so
+    // no normal matrix is needed and callers rotate the world light by the model's
+    // yaw — which is what keeps a turning model consistently lit. Alpha is left
+    // untouched so blended parts stay blended.
+    //
+    // Touches shader_defines, the shared UBO, all four backend shaders and their
+    // attribute tables, plus Interface::GeometryVertex and the attribute wiring.
+    // VERIFIED ON METAL ONLY; the GL, Vulkan and WebGPU edits are mechanical
+    // mirrors and unverified on hardware.
+    (
+      file: 'include/mbgl/shaders/custom_geometry_ubo.hpp',
+      marker: 'MBL_CUSTOM_GEOMETRY_LIGHTING',
+      patch: 'patches/custom-geometry-lighting.patch',
+    ),
+    // Metal: let custom-geometry textures honour REPEAT wrapping. The Metal
+    // CustomGeometryShader declares `constexpr sampler` INSIDE the shader, and a
+    // Metal constexpr sampler defaults to address::clamp_to_edge, so it ignores
+    // the wrap state mbgl sets on the Texture2D. The GL and Vulkan variants
+    // sample through a sampler2D whose wrap mbgl does control, so only Metal was
+    // affected. glTF defaults to REPEAT and real models tile (the Khronos
+    // BoxTextured sample spans u=[0,6], one unit per face), so clamping collapsed
+    // them to a single edge colour that reads as "the texture never bound".
+    // Switching to address::repeat is safe: UVs inside [0,1] never sample outside
+    // the texture, so clamp and repeat are indistinguishable for them.
+    //
+    // MUST COME AFTER the lighting patch, and is then normally a no-op: the
+    // lighting patch was generated from a working tree that already had this
+    // applied, so it carries this change (and this marker) with it. In the other
+    // order neither patch applies to a fresh tree and a source build fails —
+    // which it did, invisibly, on any machine whose submodule had been patched
+    // incrementally in the historical order. Kept as its own entry so the
+    // rationale above stays with the change, and so it still applies if the
+    // lighting patch is ever regenerated without it.
+    (
+      file: 'include/mbgl/shaders/mtl/custom_geometry.hpp',
+      marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
+      patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
+    ),
   ];
   for (final p in patches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));

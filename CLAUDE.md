@@ -2016,5 +2016,102 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     frame, mid-life, and across a style load (the sticky path), and that rendering continues. It
     does **not** assert the fade is gone — that is a per-frame opacity ramp, invisible in a still
     frame, and needs an on-device look.
+- **2026-07-30 — Animated 3D models (.glb) render inside mbgl, depth-occluding against
+  buildings; three Metal-only mbgl bugs and one of our own fixed along the way. On
+  `feat/3d-model-spike`, verified on macOS/Metal.** MapLibre has **no model layer** — not in
+  the style spec, not in gl-js, not in Native, not on the roadmap (upstream closed
+  maplibre-native #3096 with "can now be done using plugins"; #2806 is open and dormant). Every
+  3D model on a MapLibre map is drawn through an escape hatch. Of the three, only one is usable
+  here: **`CustomDrawableLayer`**, whose `CustomGeometryShader` exists for Metal, Vulkan, GL and
+  WebGPU and whose factory is registered unconditionally. The raw `CustomLayer` is a dead end —
+  `CustomLayerFactory` is gated on `#ifdef MLN_RENDER_BACKEND_OPENGL`
+  (`layer_manager.cpp:82`), so `addLayer` would `assert(false)` on Metal and Vulkan.
+  - **What ships:** a hand-written GLB reader (`src/maplibre_flutter_core_gltf.{hpp,cpp}`) using
+    mbgl's **already-vendored rapidjson** + mbgl's image decoder — **no new dependency, no
+    FetchContent, no build-time network** on any arm. The mesh is split into **parts**, one
+    drawable each, because mbgl's `IndexVector` is `uint16` (65536-vertex ceiling **per
+    drawable, not per model**) and because one texture per model would smear a single material
+    over everything. A real Sketchfab car (509k verts, 728k tris, 149 primitives, 64 materials,
+    20 images) renders correctly at 149 draw calls. Parts split by re-indexing when a single
+    primitive exceeds the ceiling; textures upload once per distinct image; `KHR_texture_transform`
+    is baked into UVs; `extensionsRequired` is validated and unsupported entries refused rather
+    than silently rendering wrong geometry.
+  - **API:** `mbl_map_add_model` / `mbl_map_set_model_transform` / `mbl_map_remove_model` →
+    `MapLibreModelHost` + `MapLibreModel` (optional platform-interface capability,
+    feature-detected with `is` exactly like `MapLibreMapProjector`) → `@experimental`
+    `controller.addModel/updateModel/removeModel`. **Parsing is synchronous on the CALLING
+    thread** (pure file/CPU work, no mbgl access), which is what lets a bad file report an error
+    instead of vanishing into a render-thread log. **Moving a model mutates a shared
+    `MblModelPlacement` the tweaker re-reads per frame** — re-adding to move would re-parse the
+    whole .glb every frame. The eventual API is a declarative `MapLibreMap(models:)` prop per the
+    §3 three-bucket rule; the imperative trio is scaffolding.
+  - **THREE METAL-ONLY mbgl BUGS.** Each is patched via the existing `patches/` + build-hook
+    mechanism, and each affects **only Metal** — GL (Linux/Android) and Vulkan (Windows) handle
+    all three correctly, though that is reasoned from source and **not yet measured on those
+    tiers**:
+    1. **No depth testing at all** (`patches/metal-custom-drawable-3d-depth.patch`, marker
+       `MBL_CUSTOM_3D_DEPTH`). `mtl::Drawable` skips its own depth state when `is3D` ("handled by
+       the layer group", `drawable.cpp:244`), but `mtl::TileLayerGroup` only computed `features3d`
+       INSIDE `if (stencilTiles && !empty())` — and every `CustomDrawableLayer` has no stencil
+       tiles, so nothing set a depth state and 3D fell back to painter's order. Measured: an 18 m
+       model at the centre of the Empire State Building's footprint went 844 px → **0 px**, fully
+       hidden. **Note: upstream `main` still has this** — PR #4364 does NOT fix it (it only adds
+       `nearClippedProjectionMatrix` to `MLNCustomStyleLayer`), so a submodule bump would not have
+       helped. Worth filing upstream.
+    2. **Texture wrap ignored** (`patches/metal-custom-geometry-sampler-repeat.patch`, marker
+       `MBL_CUSTOM_GEOMETRY_REPEAT`). The Metal `CustomGeometryShader` declares `constexpr
+       sampler` INSIDE the shader, and a Metal `constexpr sampler` defaults to
+       `address::clamp_to_edge`, ignoring the wrap state mbgl sets on the Texture2D. glTF defaults
+       to REPEAT and models tile deliberately (Khronos BoxTextured spans u=[0,6]; the car spans
+       u=[-34.98, 3.91]), so clamping collapsed them to one edge colour that reads as "the texture
+       never bound".
+    3. **Heading rotated backwards** (in our tweaker, not a patch). Map model space is X east, Y
+       south, Z up — **east × south = down, so the frame is LEFT-handed** and the standard
+       `rotate_z` is already clockwise from above. Negating it, which looks right if you assume a
+       right-handed frame, made heading run backwards. Invisible for a static model and for
+       heading 180 (symmetric), and only exposed once heading swept: a model driving a circle
+       counter-rotated against its path.
+  - **OUR OWN BUG, found by the spike: the projector's Y axis was inverted.**
+    `TransformState::latLngToScreenCoordinate` returns a **bottom-left-origin** y
+    (`transform_state.cpp:775` does `size.height - y`), but mbgl's **gesture anchors are
+    top-left** — confirmed independently by zooming about (0,0) and watching the camera move
+    north-west. The shim passed `sc.y` straight through while its header claimed both spaces
+    matched, so **every widget marker would have been mirrored vertically about the map centre**.
+    Fixed in all three projection entry points; `src/proj_probe.cpp` guards the signs. It survived
+    because the marker/projector work (`532d3c3`) was written but never run — same class as the
+    2026-06-21 Windows anchor-flip.
+  - **Other gotchas worth keeping:** mbgl's model matrix takes **X/Y in world pixels but Z in
+    METRES** (`camera.cpp:104`), so scaling all three axes uniformly — as upstream's flat-geometry
+    example does — squashes a model into a decal; upstream's `itemScale * 2^zoom *
+    pixelsToGLUnits[0]` is not physically meaningful (~300x too large at z15) and
+    `metres / metresPerPixel` is the correct form. Continuous mode is **update-driven, not
+    vsync-driven**, so a placement change (which never touches mbgl) needs an explicit
+    `Map::triggerRepaint()` or a moving model only advances when something else redraws.
+    A **style reload drops every custom layer**, so the shim retains each model's parsed mesh +
+    placement and re-adds from `onDidFinishLoadingStyle` (free — the mesh is shared and
+    immutable). mbgl clamps pitch to **`DEFAULT_PITCH_MAX` = 60°**. Under the **macOS sandbox** an
+    app can only read its own container, so a model path in `~/Downloads` fails with "cannot
+    open" without an entitlement — **this applies to iOS too and argues for taking bytes rather
+    than a path** before the API stabilises.
+  - **Verification is pixel-based throughout**, per the §7 lesson from the Windows blank-map bug:
+    `model_harness` asserts the model renders, is anchored where `mbl_map_pixel_for_lat_lng`
+    projects, animates, survives a style change, and moves on `set_model_transform`;
+    `gltf_probe` covers parse-level invariants and negative cases (text .gltf, a synthesized
+    70002-vertex GLB); `proj_probe` covers projection signs; `drive_probe` renders a model at four
+    quarters of a circular path to check facing against travel. All behind
+    `MAPLIBRE_FLUTTER_BUILD_HARNESS=ON`, not shipped.
+  - **Remaining:** the unlit ceiling stands — **no normals, no lighting, one texture per part, no
+    skeletal animation** (bake lighting in; animate by moving, not deforming). Lighting would need
+    `NORMAL` plumbed through plus a patched shader, and is the single biggest visual win left.
+    GL/Vulkan/Android/iOS tiers need HW verification (expected to need no patches). The declarative
+    `MapLibreMap(models:)` prop is still to come. A per-frame `triggerRepaint` while animating
+    costs power on CPU-present tiers.
+  - **LESSON, repeated four times this session:** every one of these bugs was a
+    coordinate-or-graphics-state assumption that looked right and rendered *something* — a
+    bottom-left y read as top-left, a uniform XYZ scale, `Clamp` because "UVs are in [0,1]", a
+    right-handed rotation in a left-handed frame. Each hid behind a symmetry (a static model, a
+    heading of 180, UVs that happened to fit) and only surfaced when a case broke it. Take the
+    convention from the source data or the spec and **verify it with an asymmetric fixture**;
+    do not infer it from what usually works.
 
 _Append new decisions here with date and rationale._

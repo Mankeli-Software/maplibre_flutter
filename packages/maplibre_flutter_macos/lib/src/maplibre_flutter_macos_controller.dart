@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -31,7 +32,8 @@ class MapLibreFlutterMacosController
         MapLibreMapPlatformController,
         MapLibreGestureHandler,
         MapLibreMapProjector,
-        MapLibreStyleLayers {
+        MapLibreStyleLayers,
+        MapLibreModelHost {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -51,6 +53,15 @@ class MapLibreFlutterMacosController
   static const int _initialHeight = 512;
   int _renderWidth = _initialWidth;
   int _renderHeight = _initialHeight;
+
+  // Models currently on the map, and the repaint pump that animates them.
+  //
+  // Continuous mode is UPDATE-driven, not vsync-driven: with nothing invalidating
+  // the map, a spinning model renders exactly once and stops. So while any model
+  // has a non-zero spin we tick triggerRepaint from a Ticker. Static models need
+  // no pump, which keeps the common case free of a permanent render loop.
+  final Map<String, MapLibreModel> _models = <String, MapLibreModel>{};
+  Ticker? _modelTicker;
 
   /// Creates the core map, registers an engine texture bound to it, and returns
   /// a controller. [onReady] completes once the first frame has rendered.
@@ -362,6 +373,72 @@ class MapLibreFlutterMacosController
   }
 
   @override
+  void addModel(MapLibreModel model) {
+    if (_disposed) return;
+    // Throws ArgumentError with the native reason if the .glb cannot be loaded;
+    // let it propagate so a bad path is loud rather than a silently absent model.
+    _coreMap.addModel(
+      layerId: model.id,
+      path: model.assetPath,
+      latitude: model.point.latitude,
+      longitude: model.point.longitude,
+      scale: model.scale,
+      headingDegrees: model.headingDegrees,
+      spinDegreesPerSecond: model.spinDegreesPerSecond,
+      elevationMetres: model.elevationMetres,
+    );
+    _models[model.id] = model;
+    _syncModelPump();
+  }
+
+  @override
+  void updateModel(MapLibreModel model) {
+    if (_disposed || !_models.containsKey(model.id)) return;
+    // Mutates the native placement only — the mesh is never re-uploaded, which is
+    // what makes per-frame movement affordable.
+    _coreMap.setModelTransform(
+      layerId: model.id,
+      latitude: model.point.latitude,
+      longitude: model.point.longitude,
+      scale: model.scale,
+      headingDegrees: model.headingDegrees,
+      elevationMetres: model.elevationMetres,
+    );
+    _models[model.id] = model;
+  }
+
+  @override
+  int? get renderedFrameCount => _disposed ? null : _coreMap.renderedFrameCount;
+
+  @override
+  int? modelPartCount(String assetPath) =>
+      core.MapLibreCoreMap.modelPartCount(assetPath);
+
+  @override
+  void removeModel(String id) {
+    if (_disposed) return;
+    if (_models.remove(id) == null) return;
+    _coreMap.removeModel(id);
+    _syncModelPump();
+  }
+
+  /// Starts or stops the repaint pump depending on whether anything animates.
+  void _syncModelPump() {
+    final needsPump = _models.values.any((m) => m.spinDegreesPerSecond != 0);
+    if (needsPump && _modelTicker == null) {
+      _modelTicker = Ticker((_) {
+        if (_disposed) return;
+        _coreMap.triggerRepaint();
+      })..start();
+    } else if (!needsPump && _modelTicker != null) {
+      _modelTicker!
+        ..stop()
+        ..dispose();
+      _modelTicker = null;
+    }
+  }
+
+  @override
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -369,6 +446,9 @@ class MapLibreFlutterMacosController
     // Unregister first (clears the native frame callback and stops the engine
     // pulling frames), then destroy the core map (joins its render thread).
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);
+    _modelTicker?.stop();
+    _modelTicker?.dispose();
+    _modelTicker = null;
     _coreMap.dispose();
   }
 }

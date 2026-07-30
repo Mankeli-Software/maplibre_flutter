@@ -12,6 +12,8 @@
 // the latest frame for the present path.
 #include "maplibre_flutter_core.h"
 
+#include "maplibre_flutter_core_model.hpp"
+
 #include <mbgl/gfx/backend_scope.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
 #include <mbgl/map/camera.hpp>
@@ -63,6 +65,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // Metal zero-copy present (macOS only). On other platforms the present path is
 // the backend-agnostic CPU readback (mbl_map_copy_frame); the Metal symbols below
@@ -221,6 +224,21 @@ struct MblMap {
   void *androidWindow = nullptr;
   bool androidZeroCopy = false;
 #endif
+
+  // Live models by layer id (render thread only).
+  //
+  // Holds the parsed mesh AND the placement, both shared with the host. The
+  // placement lets mbl_map_set_model_transform move a model without re-uploading
+  // geometry; keeping the mesh lets a model be re-added after a style reload
+  // (which destroys every custom layer) WITHOUT re-reading and re-parsing the
+  // .glb — tens of megabytes for a real asset. The mesh is immutable, so sharing
+  // costs nothing.
+  struct ModelEntry {
+    std::shared_ptr<const MblMeshData> mesh;
+    std::shared_ptr<MblMeshGpu> gpu;
+    std::shared_ptr<MblModelPlacement> placement;
+  };
+  std::unordered_map<std::string, ModelEntry> models;
 
   // Current render-target size in device pixels (render thread only), used to size
   // the GL presenter's ring to match each frame.
@@ -812,6 +830,14 @@ void applyTransitionOptions(MblMap *m) {
       duration, delay, m->placementTransitions));
 }
 
+// Defined further down with the model C API; declared here because the style
+// observer below re-adds models.
+void addModelLayerNow(MblMap *m, const std::string &layerId,
+                      std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblMeshGpu> gpu,
+                      std::shared_ptr<MblModelPlacement> placement);
+void requestModelRender(MblMap *m);
+
 // Observes the Continuous-mode map; each rendered frame (partial or full) is
 // published, so the texture refines progressively as tiles stream in.
 class FrameObserver final : public mbgl::MapObserver {
@@ -821,11 +847,27 @@ public:
     publishCurrentFrame(m);
   }
 
-  // A freshly loaded style has just overwritten its transition options with the
-  // document's, so re-assert ours. Continuous mode only, which is also the only
-  // mode where mbgl honours them at all (render_orchestrator.cpp forces default
-  // TransitionOptions in Static).
-  void onDidFinishLoadingStyle() override { applyTransitionOptions(m); }
+  // A freshly loaded style throws away two things we have to put back.
+  //
+  // Its transition options have just been overwritten with the document's, so
+  // re-assert ours. Continuous mode only, which is also the only mode where mbgl
+  // honours them at all (render_orchestrator.cpp forces default TransitionOptions
+  // in Static).
+  //
+  // And the whole layer list is REPLACED, so every custom layer — therefore every
+  // model — is dropped. Re-add them here rather than making callers notice and
+  // re-add by hand. Free: the parsed mesh is retained and shared, so nothing is
+  // re-read or re-parsed.
+  void onDidFinishLoadingStyle() override {
+    applyTransitionOptions(m);
+    for (const auto &entry : m->models) {
+      addModelLayerNow(m, entry.first, entry.second.mesh, entry.second.gpu,
+                       entry.second.placement);
+    }
+    if (!m->models.empty()) {
+      requestModelRender(m);
+    }
+  }
 
 private:
   MblMap *m;
@@ -946,6 +988,223 @@ void mbl_map_set_style(MblMap *m, const char *style_uri) {
   const std::string style(style_uri);
   m->post([m, style] {
     m->map->getStyle().loadURL(style);
+    m->renderRequested = true;
+  });
+}
+
+namespace {
+
+// Post a model host onto the render thread as a CustomDrawableLayer. Re-adding
+// under the same id must not throw there (an escaping exception would take the
+// render loop down), so any previous instance is removed first.
+// Adds (or replaces) a model layer on the render thread. Assumes the caller is
+// already on it.
+void addModelLayerNow(MblMap *m, const std::string &layerId,
+                      std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblMeshGpu> gpu,
+                      std::shared_ptr<MblModelPlacement> placement) {
+  if (m->map == nullptr) {
+    return;
+  }
+  if (m->map->getStyle().getLayer(layerId) != nullptr) {
+    m->map->getStyle().removeLayer(layerId);
+  }
+  m->map->getStyle().addLayer(std::make_unique<mbgl::style::CustomDrawableLayer>(
+      layerId, mblMakeModelHost(std::move(mesh), std::move(gpu),
+                                std::move(placement))));
+}
+
+// A model's placement lives outside mbgl, so changing it does not invalidate the
+// map. In Continuous mode nothing consumes `renderRequested` — rendering is
+// driven by mbgl invalidation — so without an explicit triggerRepaint a moved
+// model only appears to move when something ELSE redraws the map (a pan, a tile
+// load). That is exactly the "it only drives while the map is moving" symptom.
+void requestModelRender(MblMap *m) {
+  m->renderRequested = true;
+  if (m->map != nullptr) {
+    m->map->triggerRepaint();
+  }
+}
+
+void addModelLayer(MblMap *m, std::string layerId,
+                   std::shared_ptr<const MblMeshData> mesh,
+                   std::shared_ptr<MblMeshGpu> gpu,
+                   MblModelPlacement placement) {
+  // The mesh goes through a shared_ptr because post() takes a std::function,
+  // which requires a COPYABLE callable — and MblMeshData holds a
+  // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
+  // by move would make the lambda move-only and fail to convert.
+  auto placementPtr = std::make_shared<MblModelPlacement>(placement);
+  m->post([m, layerId = std::move(layerId), meshPtr = std::move(mesh),
+           gpuPtr = std::move(gpu), placementPtr] {
+    addModelLayerNow(m, layerId, meshPtr, gpuPtr, placementPtr);
+    // Retained so transform updates can find this model and so it can be re-added
+    // after a style reload.
+    m->models[layerId] = MblMap::ModelEntry{meshPtr, gpuPtr, placementPtr};
+    requestModelRender(m);
+  });
+}
+
+// Parsed meshes, shared between every model loaded from the same path. See
+// mbl_map_add_model for why this exists.
+struct MeshCacheEntry {
+  std::shared_ptr<const MblMeshData> mesh;
+  std::shared_ptr<MblMeshGpu> gpu;
+};
+std::mutex meshCacheMutex;
+std::unordered_map<std::string, MeshCacheEntry> meshCache;
+
+void writeError(char *out, size_t capacity, const std::string &message) {
+  if (out == nullptr || capacity == 0) {
+    return;
+  }
+  const size_t n = std::min(message.size(), capacity - 1);
+  std::memcpy(out, message.data(), n);
+  out[n] = '\0';
+}
+
+} // namespace
+
+int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
+                      double lat, double lng, double scale, double heading_deg,
+                      double spin_dps, double elevation_m, char *out_error,
+                      size_t error_capacity) {
+  if (out_error != nullptr && error_capacity > 0) {
+    out_error[0] = '\0';
+  }
+  if (m == nullptr || layer_id == nullptr || glb_path == nullptr) {
+    writeError(out_error, error_capacity, "null argument");
+    return 0;
+  }
+
+  // Parsed on the CALLING thread: pure file/CPU work with no mbgl Map access, so
+  // failures can be reported synchronously instead of being swallowed on the
+  // render thread.
+  // Parsed meshes are cached by path and SHARED between models. Without this, a
+  // stress test spawning N copies of one vehicle re-reads and re-parses the whole
+  // .glb N times — tens of megabytes each — which would dominate any measurement
+  // and makes spawning many models impractical. The mesh is immutable, so sharing
+  // is free; only the placement differs per instance.
+  const std::string path(glb_path);
+  std::shared_ptr<const MblMeshData> meshPtr;
+  std::shared_ptr<MblMeshGpu> gpuPtr;
+  {
+    std::lock_guard<std::mutex> lk(meshCacheMutex);
+    const auto it = meshCache.find(path);
+    if (it != meshCache.end()) {
+      meshPtr = it->second.mesh;
+      gpuPtr = it->second.gpu;
+    }
+  }
+  if (!meshPtr) {
+    MblMeshData mesh;
+    std::string error;
+    if (!mblLoadGlb(path, mesh, error)) {
+      writeError(out_error, error_capacity, error);
+      return 0;
+    }
+    meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
+    gpuPtr = std::make_shared<MblMeshGpu>();
+    std::lock_guard<std::mutex> lk(meshCacheMutex);
+    meshCache.emplace(path, MeshCacheEntry{meshPtr, gpuPtr});
+  }
+
+  addModelLayer(m, std::string(layer_id), meshPtr, gpuPtr,
+                MblModelPlacement{.lat = lat,
+                                  .lng = lng,
+                                  .scale = scale,
+                                  .headingDegrees = heading_deg,
+                                  .spinDegreesPerSecond = spin_dps,
+                                  .elevationMetres = elevation_m});
+  return 1;
+}
+
+void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
+                                 double lng, double scale, double heading_deg,
+                                 double elevation_m) {
+  if (m == nullptr || layer_id == nullptr) {
+    return;
+  }
+  m->post([m, layerId = std::string(layer_id), lat, lng, scale, heading_deg,
+           elevation_m] {
+    const auto it = m->models.find(layerId);
+    if (it == m->models.end() || !it->second.placement) {
+      return;
+    }
+    // Mutating the shared placement is enough — the host re-reads it every frame,
+    // so the geometry is never re-uploaded.
+    auto &p = *it->second.placement;
+    p.lat = lat;
+    p.lng = lng;
+    p.scale = scale;
+    p.headingDegrees = heading_deg;
+    p.elevationMetres = elevation_m;
+    requestModelRender(m);
+  });
+}
+
+uint64_t mbl_map_frame_count(MblMap *m) {
+  if (m == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  return m->frameCount;
+}
+
+uint32_t mbl_model_part_count(const char *glb_path) {
+  if (glb_path == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(meshCacheMutex);
+  const auto it = meshCache.find(std::string(glb_path));
+  if (it == meshCache.end() || !it->second.mesh) {
+    return 0;
+  }
+  return static_cast<uint32_t>(it->second.mesh->parts.size());
+}
+
+void mbl_map_remove_model(MblMap *m, const char *layer_id) {
+  if (m == nullptr || layer_id == nullptr) {
+    return;
+  }
+  m->post([m, layerId = std::string(layer_id)] {
+    if (m->map == nullptr) {
+      return;
+    }
+    if (m->map->getStyle().getLayer(layerId) != nullptr) {
+      m->map->getStyle().removeLayer(layerId);
+      requestModelRender(m);
+    }
+    m->models.erase(layerId);
+  });
+}
+
+void mbl_map_add_test_model(MblMap *m, double lat, double lng,
+                            double metres_per_unit, double spin_dps,
+                            double elevation_m) {
+  if (m == nullptr) {
+    return;
+  }
+  addModelLayer(m, "mbl-test-model",
+                std::make_shared<const MblMeshData>(mblMakeTestPyramid()),
+                std::make_shared<MblMeshGpu>(),
+                MblModelPlacement{.lat = lat,
+                                  .lng = lng,
+                                  .scale = metres_per_unit,
+                                  .headingDegrees = 0.0,
+                                  .spinDegreesPerSecond = spin_dps,
+                                  .elevationMetres = elevation_m});
+}
+
+void mbl_map_trigger_repaint(MblMap *m) {
+  if (m == nullptr) {
+    return;
+  }
+  m->post([m] {
+    if (m->map == nullptr) {
+      return;
+    }
+    m->map->triggerRepaint();
     m->renderRequested = true;
   });
 }
@@ -1093,6 +1352,13 @@ int mbl_map_pixel_for_lat_lng(MblMap *m, double lat, double lng, double *out_x,
   const auto sc =
       state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
   if (out_x) *out_x = sc.x;
+  // mbgl::TransformState::latLngToScreenCoordinate returns a BOTTOM-LEFT-origin
+  // y (transform_state.cpp:775 does `size.height - y`), which is NOT the space
+  // mbgl's own gesture anchors use — scaleBy/moveBy take a TOP-LEFT-origin
+  // ScreenCoordinate, hardware-verified on Linux and Windows. Flutter's widget
+  // box is top-left too, so flip back here to make the two spaces agree and
+  // match this header's contract. Without it every marker is mirrored
+  // vertically about the map centre.
   if (out_y) *out_y = static_cast<double>(state.getSize().height) - sc.y;
   if (out_visible) *out_visible = clip[3] > 0.0 ? 1 : 0;
   return 1;
@@ -1120,6 +1386,7 @@ uint64_t mbl_map_pixels_for_lat_lngs(MblMap *m, const double *in_lat_lng,
     mbgl::vec4 clip;
     const auto sc = state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
     out_xy[2 * i] = sc.x;
+    // Bottom-left -> top-left, as in mbl_map_pixel_for_lat_lng above.
     out_xy[2 * i + 1] = height - sc.y;
     if (out_visible) out_visible[i] = clip[3] > 0.0 ? 1 : 0;
   }
@@ -1133,6 +1400,9 @@ int mbl_map_lat_lng_for_pixel(MblMap *m, double x, double y, double *out_lat,
   }
   mbgl::TransformState state;
   if (takeProjState(m, generation, state) == 0) return 0;
+  // Inverse of the flip above: callers pass top-left-origin screen coordinates
+  // (Flutter widget space), and screenCoordinateToLatLng expects mbgl's
+  // bottom-left-origin ScreenCoordinate.
   const auto ll = state.screenCoordinateToLatLng(
       mbgl::ScreenCoordinate{x, static_cast<double>(state.getSize().height) - y});
   if (out_lat) *out_lat = ll.latitude();

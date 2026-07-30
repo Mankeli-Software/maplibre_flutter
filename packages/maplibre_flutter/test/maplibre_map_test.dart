@@ -24,6 +24,28 @@ class _FakeController implements MapLibreMapPlatformController {
   Future<void> dispose() async => disposed = true;
 }
 
+/// A controller that also draws 3D models, recording what the declarative
+/// `models:` diff asked for.
+class _FakeModelController extends _FakeController
+    implements MapLibreModelHost {
+  _FakeModelController(super.renderHandle);
+
+  final List<MapLibreModel> added = <MapLibreModel>[];
+  final List<MapLibreModel> updated = <MapLibreModel>[];
+  final List<String> removed = <String>[];
+
+  @override
+  void addModel(MapLibreModel model) => added.add(model);
+  @override
+  void updateModel(MapLibreModel model) => updated.add(model);
+  @override
+  void removeModel(String id) => removed.add(id);
+  @override
+  int? modelPartCount(String assetPath) => 7;
+  @override
+  int? get renderedFrameCount => 0;
+}
+
 /// A desktop-style controller that also drives gestures in Dart. Records the
 /// gesture calls so tests can assert what the widget gesture layer forwarded.
 class _FakeGestureController extends _FakeController
@@ -43,6 +65,10 @@ class _FakePlatform extends MapLibreFlutterPlatform {
   _FakePlatform(this.handle, {this.gestures = false});
   final MapLibreRenderHandle handle;
   final bool gestures;
+
+  /// Overrides which fake controller `createMap` returns, so a test can supply
+  /// one with an extra capability (models, say).
+  _FakeController Function(MapLibreRenderHandle)? controllerFactory;
   _FakeController? lastController;
   String? lastInitialStyle;
   int createCount = 0;
@@ -54,7 +80,10 @@ class _FakePlatform extends MapLibreFlutterPlatform {
   }) async {
     createCount++;
     lastInitialStyle = style;
-    return lastController = gestures
+    final factory = controllerFactory;
+    return lastController = factory != null
+        ? factory(handle)
+        : gestures
         ? _FakeGestureController(handle)
         : _FakeController(handle);
   }
@@ -221,6 +250,90 @@ void main() {
 
     expect(platform.lastController!.lastStyle, newStyle);
     expect(platform.createCount, 1); // declarative style change, no recreate
+  });
+
+  testWidgets('declarative models add, move in place, and remove', (
+    tester,
+  ) async {
+    final platform = _FakePlatform(const TextureHandle(textureId: 9));
+    platform.controllerFactory = _FakeModelController.new;
+    MapLibreFlutterPlatform.instance = platform;
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+
+    Widget map(List<MapLibreModel> models) => Directionality(
+      textDirection: TextDirection.ltr,
+      child: MapLibreMap(
+        controller: controller,
+        style: _style,
+        options: _options,
+        models: models,
+      ),
+    );
+
+    const a = MapLibreModel(
+      id: 'a',
+      assetPath: '/tmp/a.glb',
+      point: LatLng(1, 2),
+    );
+    const b = MapLibreModel(
+      id: 'b',
+      assetPath: '/tmp/b.glb',
+      point: LatLng(3, 4),
+    );
+
+    await tester.pumpWidget(map(const <MapLibreModel>[a]));
+    await tester.pumpAndSettle();
+    final host = platform.lastController! as _FakeModelController;
+    expect(host.added.map((m) => m.id), <String>['a']);
+
+    // Same mesh, moved: must go through updateModel, NOT a reload — re-adding
+    // would re-parse the whole .glb.
+    await tester.pumpWidget(
+      map(const <MapLibreModel>[
+        MapLibreModel(id: 'a', assetPath: '/tmp/a.glb', point: LatLng(5, 6)),
+        b,
+      ]),
+    );
+    await tester.pumpAndSettle();
+    expect(host.updated.map((m) => m.id), <String>['a']);
+    expect(host.added.map((m) => m.id), <String>['a', 'b']);
+
+    // Dropping one removes exactly that one.
+    await tester.pumpWidget(map(const <MapLibreModel>[b]));
+    await tester.pumpAndSettle();
+    expect(host.removed, <String>['a']);
+  });
+
+  testWidgets('changing a model asset reloads instead of moving', (
+    tester,
+  ) async {
+    final platform = _FakePlatform(const TextureHandle(textureId: 10));
+    platform.controllerFactory = _FakeModelController.new;
+    MapLibreFlutterPlatform.instance = platform;
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+
+    Widget map(String asset) => Directionality(
+      textDirection: TextDirection.ltr,
+      child: MapLibreMap(
+        controller: controller,
+        style: _style,
+        options: _options,
+        models: <MapLibreModel>[
+          MapLibreModel(id: 'a', assetPath: asset, point: const LatLng(1, 2)),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(map('/tmp/a.glb'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(map('/tmp/other.glb'));
+    await tester.pumpAndSettle();
+
+    final host = platform.lastController! as _FakeModelController;
+    expect(host.added.length, 2, reason: 'a different mesh must be re-read');
+    expect(host.updated, isEmpty);
   });
 
   testWidgets('a gesture-capable controller gets the Dart gesture layer', (

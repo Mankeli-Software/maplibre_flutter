@@ -1,0 +1,37 @@
+diff --git a/src/mbgl/mtl/tile_layer_group.cpp b/src/mbgl/mtl/tile_layer_group.cpp
+index 0dd7748bd563..ff3749620431 100644
+--- a/src/mbgl/mtl/tile_layer_group.cpp
++++ b/src/mbgl/mtl/tile_layer_group.cpp
+@@ -54,17 +54,22 @@ void TileLayerGroup::render(RenderOrchestrator&, PaintParameters& parameters) {
+     bool stencil3d = false;
+     gfx::StencilMode stencilMode3d;
+ 
+-    // If we're using stencil clipping, we need to handle 3D features separately
+-    if (stencilTiles && !stencilTiles->empty()) {
+-        visitDrawables([&](const gfx::Drawable& drawable) {
+-            if (drawable.getEnabled() && drawable.getIs3D() && drawable.hasRenderPass(parameters.pass)) {
+-                features3d = true;
+-                if (drawable.getEnableStencil()) {
+-                    stencil3d = true;
+-                }
++    // MBL_CUSTOM_3D_DEPTH: scan for 3D drawables ALWAYS, not only when stencil
++    // clipping is in play. Layer groups without stencil tiles (notably
++    // CustomDrawableLayer) otherwise leave features3d false, and since
++    // mtl::Drawable::draw only sets its own depth state when !is3D, such a
++    // drawable ends up with NO depth state at all -> painter's order instead of
++    // depth testing. stencil3d stays gated on stencil tiles so behaviour for
++    // existing tiled layers is unchanged.
++    const bool hasStencilTiles = stencilTiles && !stencilTiles->empty();
++    visitDrawables([&](const gfx::Drawable& drawable) {
++        if (drawable.getEnabled() && drawable.getIs3D() && drawable.hasRenderPass(parameters.pass)) {
++            features3d = true;
++            if (hasStencilTiles && drawable.getEnableStencil()) {
++                stencil3d = true;
+             }
+-        });
+-    }
++        }
++    });
+ 
+ #if !defined(NDEBUG)
+     const auto debugGroupRender = parameters.encoder->createDebugGroup(getName() + "-render");

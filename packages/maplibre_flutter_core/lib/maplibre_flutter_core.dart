@@ -225,6 +225,169 @@ class MapLibreCoreMap {
     );
   }
 
+  /// Loads a binary glTF (`.glb`) from [path] and draws it anchored at
+  /// [latitude]/[longitude] as a layer named [layerId] (re-using an id replaces
+  /// the previous model).
+  ///
+  /// [scale] multiplies the model's own units, so 1.0 renders a glTF authored in
+  /// metres at life size and the model keeps its ground footprint across zooms.
+  /// [headingDegrees] yaws it clockwise from north (a glTF's -Z "forward" faces
+  /// north at 0); [spinDegreesPerSecond] adds a continuous yaw on top.
+  ///
+  /// Throws [ArgumentError] if the file cannot be loaded, with the native
+  /// reason. The file is parsed synchronously on the calling isolate — only the
+  /// GPU upload is deferred — so expect this to block for a file read.
+  ///
+  /// Supported subset, bounded by what mbgl's built-in geometry shader can draw:
+  /// triangles, POSITION + TEXCOORD_0, node transforms baked in, all primitives
+  /// merged, the first base-colour texture and factor used. No skins or
+  /// animations, no Draco/meshopt, no external buffers or images, and at most
+  /// 65535 vertices (mbgl's indices are uint16). There is no lighting, so bake
+  /// it into the texture and animate by moving rather than deforming.
+  ///
+  /// Call after the style has loaded — changing the style drops the layer.
+  void addModel({
+    required String layerId,
+    required String path,
+    required double latitude,
+    required double longitude,
+    double scale = 1,
+    double headingDegrees = 0,
+    double spinDegreesPerSecond = 0,
+    double elevationMetres = 0,
+  }) {
+    _checkAlive();
+    const errorCapacity = 512;
+    final layerPtr = layerId.toNativeUtf8();
+    final pathPtr = path.toNativeUtf8();
+    final errPtr = malloc<ffi.Char>(errorCapacity);
+    try {
+      final ok = bindings.mbl_map_add_model(
+        _handle,
+        layerPtr.cast(),
+        pathPtr.cast(),
+        latitude,
+        longitude,
+        scale,
+        headingDegrees,
+        spinDegreesPerSecond,
+        elevationMetres,
+        errPtr,
+        errorCapacity,
+      );
+      if (ok == 0) {
+        throw ArgumentError(
+          'failed to load model "$path": ${errPtr.cast<Utf8>().toDartString()}',
+        );
+      }
+    } finally {
+      malloc.free(layerPtr);
+      malloc.free(pathPtr);
+      malloc.free(errPtr);
+    }
+  }
+
+  /// Moves or re-orients an existing model WITHOUT touching its uploaded
+  /// geometry — the only sane way to animate one along a path, since re-adding
+  /// would re-parse the whole `.glb` every frame.
+  ///
+  /// A no-op if [layerId] names no model.
+  void setModelTransform({
+    required String layerId,
+    required double latitude,
+    required double longitude,
+    double scale = 1,
+    double headingDegrees = 0,
+    double elevationMetres = 0,
+  }) {
+    _checkAlive();
+    final p = layerId.toNativeUtf8();
+    try {
+      bindings.mbl_map_set_model_transform(
+        _handle,
+        p.cast(),
+        latitude,
+        longitude,
+        scale,
+        headingDegrees,
+        elevationMetres,
+      );
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// Frames the render thread has published since creation.
+  ///
+  /// Difference it over time for the MAP's frame rate. A Flutter `Ticker`
+  /// measures Flutter's vsync, which stays pinned at the display rate however far
+  /// behind the map falls, because the map is composited as a texture.
+  int get renderedFrameCount {
+    _checkAlive();
+    return bindings.mbl_map_frame_count(_handle);
+  }
+
+  /// How many drawables (draw calls) one instance of the model at [path] costs,
+  /// or null if it has not been loaded yet.
+  static int? modelPartCount(String path) {
+    final p = path.toNativeUtf8();
+    try {
+      final n = bindings.mbl_model_part_count(p.cast());
+      return n == 0 ? null : n;
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// Removes a model layer added by [addModel]. A no-op if [layerId] names no
+  /// layer.
+  void removeModel(String layerId) {
+    _checkAlive();
+    final p = layerId.toNativeUtf8();
+    try {
+      bindings.mbl_map_remove_model(_handle, p.cast());
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// Adds the 3D-model spike's test mesh — a spinning, per-face-coloured
+  /// pyramid — anchored at [latitude]/[longitude].
+  ///
+  /// EXPERIMENTAL, and not a stable API: this exists to answer whether an mbgl
+  /// [CustomDrawableLayer] renders and depth-occludes on each tier. Expect it to
+  /// be replaced by a real model API (caller-supplied mesh + texture).
+  ///
+  /// Asynchronous — the layer is added on the render thread. Call after the
+  /// style has loaded; changing the style drops the layer.
+  void addTestModel({
+    required double latitude,
+    required double longitude,
+    double metresPerUnit = 50,
+    double spinDegreesPerSecond = 90,
+    double elevationMetres = 0,
+  }) {
+    _checkAlive();
+    bindings.mbl_map_add_test_model(
+      _handle,
+      latitude,
+      longitude,
+      metresPerUnit,
+      spinDegreesPerSecond,
+      elevationMetres,
+    );
+  }
+
+  /// Asks mbgl for one more frame.
+  ///
+  /// Continuous mode is update-driven, not vsync-driven: with nothing
+  /// invalidating the map an animated layer renders once and stops. Anything
+  /// driving an animation must pump this (e.g. from a [Ticker]).
+  void triggerRepaint() {
+    _checkAlive();
+    bindings.mbl_map_trigger_repaint(_handle);
+  }
+
   /// Reads the last-set camera.
   CoreCamera getCamera() {
     _checkAlive();

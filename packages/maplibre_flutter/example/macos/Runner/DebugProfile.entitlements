@@ -10,5 +10,12 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- The 3D-model API takes a FILESYSTEM PATH, which the engine opens
+	     natively. Under the macOS sandbox an app can only read its own container
+	     unless entitled, so reading a .glb from ~/Downloads needs this. Debug
+	     profile only — a real app should ship models inside its bundle/container
+	     or obtain a user-selected file, not entitle Downloads. -->
+	<key>com.apple.security.files.downloads.read-only</key>
+	<true/>
 </dict>
 </plist>

@@ -1,0 +1,23 @@
+diff --git a/include/mbgl/shaders/mtl/custom_geometry.hpp b/include/mbgl/shaders/mtl/custom_geometry.hpp
+index b4bc2666ca66..907a82c410b8 100644
+--- a/include/mbgl/shaders/mtl/custom_geometry.hpp
++++ b/include/mbgl/shaders/mtl/custom_geometry.hpp
+@@ -58,7 +58,17 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
+                             device const CustomGeometryDrawableUBO& drawable [[buffer(idCustomGeometryDrawableUBO)]],
+                             texture2d<float, access::sample> colorTexture [[texture(0)]]) {
+-    constexpr sampler sampler2d(coord::normalized, filter::linear);
++    // MBL_CUSTOM_GEOMETRY_REPEAT: a Metal `constexpr sampler` defaults to
++    // address::clamp_to_edge, and because it is declared INSIDE the shader it
++    // ignores the sampler state mbgl configures on the Texture2D via
++    // setSamplerConfiguration. The GL and Vulkan variants of this shader sample
++    // through a sampler2D whose wrap state mbgl does control, so only Metal was
++    // affected. glTF's DEFAULT wrap is REPEAT and real models tile deliberately
++    // (the Khronos BoxTextured sample spans u=[0,6], one unit per cube face), so
++    // clamping collapsed them to a single edge colour and read as "untextured".
++    // Repeat is a safe default here: UVs inside [0,1] never sample outside the
++    // texture, so clamp and repeat are indistinguishable for them.
++    constexpr sampler sampler2d(coord::normalized, filter::linear, address::repeat);
+     const float4 color = colorTexture.sample(sampler2d, in.uv) * drawable.color;
+ 
+     return half4(color);

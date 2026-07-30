@@ -183,6 +183,70 @@ class MapLibreMapController {
         : null;
   }
 
+  /// Draws a 3D model inside the map engine, anchored to a geographic point.
+  ///
+  /// EXPERIMENTAL and imperative for now. The eventual API is a declarative
+  /// `MapLibreMap(models: ...)` widget prop, mirroring `markers` under the
+  /// three-bucket rule (mutable + declarative -> widget property); this exists so
+  /// the renderer can be exercised before that lands. Expect it to change.
+  ///
+  /// Because the model is drawn by the engine it depth-occludes against 3D
+  /// buildings, unlike a widget overlay. Silently does nothing on tiers whose
+  /// renderer has no model support (feature-detected like [projector]).
+  ///
+  /// Throws [ArgumentError] if the `.glb` cannot be loaded, with the native
+  /// reason.
+  @experimental
+  void addModel(MapLibreModel model) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).addModel(model);
+    }
+  }
+
+  /// Moves or re-orients a model added by [addModel], without re-uploading its
+  /// geometry. Use this to animate a model along a path — re-adding it each
+  /// frame would re-parse the whole `.glb` every time.
+  @experimental
+  void updateModel(MapLibreModel model) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).updateModel(model);
+    }
+  }
+
+  /// Frames the RENDERER has published, or null on tiers that cannot report it.
+  ///
+  /// Difference it over time for the map's true frame rate. A Flutter `Ticker`
+  /// measures Flutter's vsync, which stays at the display rate however far behind
+  /// the map falls, because the map is composited as a texture.
+  @experimental
+  int? get renderedFrameCount {
+    final platform = _platform;
+    return platform is MapLibreModelHost
+        ? (platform as MapLibreModelHost).renderedFrameCount
+        : null;
+  }
+
+  /// How many drawables one instance of the model at [assetPath] costs, or null
+  /// if it is not loaded. For reporting real draw-call counts.
+  @experimental
+  int? modelPartCount(String assetPath) {
+    final platform = _platform;
+    return platform is MapLibreModelHost
+        ? (platform as MapLibreModelHost).modelPartCount(assetPath)
+        : null;
+  }
+
+  /// Removes a model added by [addModel]. See its caveats.
+  @experimental
+  void removeModel(String id) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).removeModel(id);
+    }
+  }
+
   /// Applies a new style. The public source of truth for style is the
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.

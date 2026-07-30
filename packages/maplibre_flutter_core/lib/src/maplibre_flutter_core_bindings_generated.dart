@@ -348,6 +348,90 @@ external int mbl_map_current_d3d_handle(
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
 external int mbl_map_d3d_active(ffi.Pointer<MblMap> map);
 
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Pointer<ffi.Char>,
+    ffi.Size,
+  )
+>()
+external int mbl_map_add_model(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  ffi.Pointer<ffi.Char> glb_path,
+  double lat,
+  double lng,
+  double scale,
+  double heading_deg,
+  double spin_dps,
+  double elevation_m,
+  ffi.Pointer<ffi.Char> out_error,
+  int error_capacity,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+  )
+>()
+external void mbl_map_set_model_transform(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  double lat,
+  double lng,
+  double scale,
+  double heading_deg,
+  double elevation_m,
+);
+
+@ffi.Native<ffi.Uint64 Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_frame_count(ffi.Pointer<MblMap> map);
+
+@ffi.Native<ffi.Uint32 Function(ffi.Pointer<ffi.Char>)>()
+external int mbl_model_part_count(ffi.Pointer<ffi.Char> glb_path);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_remove_model(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+  )
+>()
+external void mbl_map_add_test_model(
+  ffi.Pointer<MblMap> map,
+  double lat,
+  double lng,
+  double metres_per_unit,
+  double spin_dps,
+  double elevation_m,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>)>()
+external void mbl_map_trigger_repaint(ffi.Pointer<MblMap> map);
+
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
 external int mbl_map_write_png(
   ffi.Pointer<MblMap> map,
