@@ -296,6 +296,10 @@ class MapLibreFlutterMacosController
   }
 
   @override
+  int? modelPartCount(String assetPath) =>
+      core.MapLibreCoreMap.modelPartCount(assetPath);
+
+  @override
   void removeModel(String id) {
     if (_disposed) return;
     if (_models.remove(id) == null) return;

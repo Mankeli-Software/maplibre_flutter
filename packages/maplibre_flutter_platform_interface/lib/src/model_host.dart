@@ -109,6 +109,10 @@ abstract interface class MapLibreModelHost {
   /// [MapLibreModel.assetPath] is ignored here; only the placement is applied.
   void updateModel(MapLibreModel model);
 
+  /// How many drawables one instance of the model at [assetPath] costs, or null
+  /// if it is not loaded. Lets callers report real draw-call counts.
+  int? modelPartCount(String assetPath);
+
   /// Removes the model with [id]. A no-op if there is none.
   void removeModel(String id);
 }

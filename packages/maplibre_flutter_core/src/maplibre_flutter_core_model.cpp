@@ -24,8 +24,10 @@ using TriangleIndexVector = mbgl::gfx::IndexVector<mbgl::gfx::Triangles>;
 class ModelHost final : public mbgl::style::CustomDrawableLayerHost {
 public:
   ModelHost(std::shared_ptr<const MblMeshData> meshData,
+            std::shared_ptr<MblMeshGpu> gpuData,
             std::shared_ptr<MblModelPlacement> placement)
-      : mesh(std::move(meshData)), placement(std::move(placement)) {}
+      : mesh(std::move(meshData)), gpu(std::move(gpuData)),
+        placement(std::move(placement)) {}
 
   void initialize() override {}
   void deinitialize() override {}
@@ -44,10 +46,14 @@ public:
     // multi-material mesh — a real car model arrives as ~149 primitives across
     // 64 materials and 20 images.
     //
-    // Textures are uploaded once per distinct image and shared by every part that
-    // references it (Texture2DPtr is shared), so 149 parts over 20 images cost 20
-    // uploads, not 149.
-    std::vector<mbgl::gfx::Texture2DPtr> textures(mesh->images.size());
+    // Textures are uploaded once per distinct image and shared by every part
+    // that references it AND by every model drawn from the same mesh — the cache
+    // lives on the shared MblMeshGpu, not here. Making it a local meant N copies
+    // of a vehicle each uploaded the whole texture set.
+    if (gpu->textures.size() < mesh->images.size()) {
+      gpu->textures.resize(mesh->images.size());
+    }
+    auto &textures = gpu->textures;
 
     // The animation clock is shared by every part, so they move as one rigid
     // body rather than drifting apart.
@@ -182,6 +188,8 @@ public:
 
 private:
   std::shared_ptr<const MblMeshData> mesh;
+  // GPU textures shared with every other model drawn from the same mesh.
+  std::shared_ptr<MblMeshGpu> gpu;
   // Shared with the shim's registry and re-read every frame, so the model can be
   // moved (driven along a path) without touching its uploaded geometry.
   std::shared_ptr<MblModelPlacement> placement;
@@ -212,8 +220,10 @@ void pushTriangle(MblMeshData::Part &part, const std::array<float, 3> &a,
 
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
 mblMakeModelHost(std::shared_ptr<const MblMeshData> mesh,
+                 std::shared_ptr<MblMeshGpu> gpu,
                  std::shared_ptr<MblModelPlacement> placement) {
-  return std::make_unique<ModelHost>(std::move(mesh), std::move(placement));
+  return std::make_unique<ModelHost>(std::move(mesh), std::move(gpu),
+                                     std::move(placement));
 }
 
 MblMeshData mblMakeTestPyramid() {

@@ -184,6 +184,16 @@ class MapLibreMapController {
     }
   }
 
+  /// How many drawables one instance of the model at [assetPath] costs, or null
+  /// if it is not loaded. For reporting real draw-call counts.
+  @experimental
+  int? modelPartCount(String assetPath) {
+    final platform = _platform;
+    return platform is MapLibreModelHost
+        ? (platform as MapLibreModelHost).modelPartCount(assetPath)
+        : null;
+  }
+
   /// Removes a model added by [addModel]. See its caveats.
   @experimental
   void removeModel(String id) {

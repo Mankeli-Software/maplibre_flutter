@@ -39,6 +39,8 @@ class _FakeModelController extends _FakeController implements MapLibreModelHost 
   void updateModel(MapLibreModel model) => updated.add(model);
   @override
   void removeModel(String id) => removed.add(id);
+  @override
+  int? modelPartCount(String assetPath) => 7;
 }
 
 /// A desktop-style controller that also drives gestures in Dart. Records the

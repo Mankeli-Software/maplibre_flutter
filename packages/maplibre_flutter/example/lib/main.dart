@@ -209,7 +209,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // draw calls (this vehicle is 149 per instance), per-frame updateModel traffic,
   // and whether the repaint pump keeps up. Reports measured frames per second
   // rather than just looking busy — "it seems smooth" is not a measurement.
-  static const int _stressCount = 24;
+  int _stressCount = 24; // adjustable, so the knee can be found
   static const double _stressFieldMetres = 120;
   Ticker? _stressTicker;
   bool _stressing = false;
@@ -217,6 +217,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
   int _stressFrames = 0;
   Duration _stressLastReport = Duration.zero;
   double _stressFps = 0;
+  double _stressWorstMs = 0; // worst frame in the last window, not the average
+  int _partsPerModel = 0;
   LatLng _modelAnchor = _modelSite;
   // Following a circle rotates the model 360 degrees per lap — that is simply
   // what driving a roundabout is, and it is correct. But how it READS depends
@@ -475,11 +477,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
     _stressFrames = 0;
     _stressLastReport = Duration.zero;
+    _stressWorstMs = 0;
+    var worst = 0.0;
     var last = Duration.zero;
     _stressTicker = Ticker((elapsed) {
       final dt = last == Duration.zero
           ? 0.0
           : (elapsed - last).inMicroseconds / 1e6;
+      // Track the WORST frame as well as the mean: an average hides the stalls
+      // that actually read as jank.
+      if (dt > 0) worst = math.max(worst, dt * 1000);
       last = elapsed;
 
       for (final w in _wanderers) {
@@ -500,7 +507,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
       if (elapsed - _stressLastReport > const Duration(seconds: 1)) {
         final secs =
             (elapsed - _stressLastReport).inMicroseconds / 1e6;
-        setState(() => _stressFps = _stressFrames / secs);
+        setState(() {
+          _stressFps = _stressFrames / secs;
+          _stressWorstMs = worst;
+        });
+        worst = 0;
         _stressFrames = 0;
         _stressLastReport = elapsed;
       }
@@ -509,8 +520,30 @@ class _MapDemoPageState extends State<MapDemoPage> {
     setState(() {
       _stressing = true;
       _modelError = null;
+      // Parts per model comes from the core's own count, so the draw-call figure
+      // reflects what is actually submitted rather than a guess.
+      // ignore: experimental_member_use
+      _partsPerModel = _controller.modelPartCount(assetPath) ?? 0;
     });
   }
+
+  Widget _stressStep(String label, int delta) => GestureDetector(
+        onTap: () async {
+          final next = (_stressCount + delta).clamp(8, 200);
+          if (next == _stressCount) return;
+          await _toggleStress(); // tear down
+          setState(() => _stressCount = next);
+          await _toggleStress(); // respawn at the new count
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.white24,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(label),
+        ),
+      );
 
   void _stopDriving() {
     _driveTicker?.stop();
@@ -571,6 +604,45 @@ class _MapDemoPageState extends State<MapDemoPage> {
               onTap: (point) => setState(() => _dropped.add(point)),
             ),
           ),
+          if (_stressing)
+            Positioned(
+              left: 16,
+              top: 16,
+              child: PointerInterceptor(
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: DefaultTextStyle(
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('${_stressFps.toStringAsFixed(1)} fps   '
+                            'worst ${_stressWorstMs.toStringAsFixed(1)} ms'),
+                        const SizedBox(height: 4),
+                        Text('$_stressCount models x $_partsPerModel parts'),
+                        Text('= ${_stressCount * _partsPerModel} draw calls'),
+                        Text('$_stressCount updateModel/frame'),
+                        const SizedBox(height: 6),
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          _stressStep('-8', -8),
+                          const SizedBox(width: 6),
+                          _stressStep('+8', 8),
+                        ]),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             right: 16,
             bottom: 16,

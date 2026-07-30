@@ -26,6 +26,7 @@
 #include <mbgl/style/layers/custom_drawable_layer.hpp>
 
 #include <memory>
+#include <vector>
 
 // Where and how a model sits on the map. Held by shared_ptr so it can be MUTATED
 // to move the model without re-uploading its mesh — driving a vehicle along a
@@ -54,6 +55,19 @@ struct MblModelPlacement {
   double elevationMetres = 0;
 };
 
+// GPU resources derived from a mesh and SHARED by every model drawn from it.
+//
+// Textures used to be created per host, so N copies of one vehicle uploaded the
+// same images N times: 24 instances x 10 images x 1024^2 RGBA is about a gigabyte
+// of texture memory for what should be ten uploads. Sharing makes instance count
+// cost draw calls and matrices, not VRAM.
+//
+// Render-thread only — Texture2D is created against the map's context inside
+// update().
+struct MblMeshGpu {
+  std::vector<mbgl::gfx::Texture2DPtr> textures;
+};
+
 // Build a host that draws `mesh` at `placement`, which it keeps a reference to
 // and re-reads every frame (so later mutations move the model).
 //
@@ -67,6 +81,7 @@ struct MblModelPlacement {
 // re-added, which must not re-read the .glb.
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
 mblMakeModelHost(std::shared_ptr<const MblMeshData> mesh,
+                 std::shared_ptr<MblMeshGpu> gpu,
                  std::shared_ptr<MblModelPlacement> placement);
 
 // The procedural test mesh: a rectangular-base pyramid, 2 units across X, 1

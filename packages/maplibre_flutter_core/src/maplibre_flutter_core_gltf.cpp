@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <tuple>
 #include <unordered_map>
 
 namespace {
@@ -869,5 +870,59 @@ bool mblLoadGlb(const std::string &path, MblMeshData &out,
   // authoring order is otherwise preserved.
   std::stable_partition(out.parts.begin(), out.parts.end(),
                         [](const MblMeshData::Part &p) { return !p.blended; });
+
+  // MERGE parts that draw identically. Each part is one draw call, and exports
+  // split geometry by mesh/node rather than by material — the car arrives as 149
+  // primitives over 10 textures, so most of those draw calls differ in nothing
+  // the GPU cares about. Merging is bounded by the uint16 vertex ceiling, and
+  // only ever joins ADJACENT parts so the opaque-before-blended order above
+  // survives.
+  const auto sameMaterial = [](const MblMeshData::Part &a,
+                               const MblMeshData::Part &b) {
+    return a.imageIndex == b.imageIndex && a.blended == b.blended &&
+           a.wrapRepeatU == b.wrapRepeatU && a.wrapRepeatV == b.wrapRepeatV &&
+           a.filterLinear == b.filterLinear &&
+           a.baseColorFactor == b.baseColorFactor;
+  };
+
+  // Sorting by material before merging is what makes merging worth anything:
+  // adjacent-only merging collapsed 149 parts to 138, because exports interleave
+  // materials. Sorting first groups every part that draws identically.
+  //
+  // Only the OPAQUE run is sorted. Opaque draw order is free because depth
+  // resolves it, but blended parts are order-dependent, so their relative order
+  // is left exactly as authored.
+  const auto materialKey = [](const MblMeshData::Part &p) {
+    return std::make_tuple(p.imageIndex, p.baseColorFactor[0],
+                           p.baseColorFactor[1], p.baseColorFactor[2],
+                           p.baseColorFactor[3], p.wrapRepeatU, p.wrapRepeatV,
+                           p.filterLinear);
+  };
+  const auto firstBlended =
+      std::find_if(out.parts.begin(), out.parts.end(),
+                   [](const MblMeshData::Part &p) { return p.blended; });
+  std::stable_sort(out.parts.begin(), firstBlended,
+                   [&](const MblMeshData::Part &a, const MblMeshData::Part &b) {
+                     return materialKey(a) < materialKey(b);
+                   });
+
+  std::vector<MblMeshData::Part> merged;
+  merged.reserve(out.parts.size());
+  for (auto &part : out.parts) {
+    if (!merged.empty() && sameMaterial(merged.back(), part) &&
+        merged.back().vertices.size() + part.vertices.size() <= kMaxVertices) {
+      auto &dst = merged.back();
+      const auto base = static_cast<uint16_t>(dst.vertices.size());
+      dst.vertices.insert(dst.vertices.end(), part.vertices.begin(),
+                          part.vertices.end());
+      dst.indices.reserve(dst.indices.size() + part.indices.size());
+      for (const auto idx : part.indices) {
+        dst.indices.push_back(static_cast<uint16_t>(base + idx));
+      }
+    } else {
+      merged.push_back(std::move(part));
+    }
+  }
+  out.parts = std::move(merged);
   return true;
 }

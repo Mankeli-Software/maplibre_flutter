@@ -317,6 +317,18 @@ class MapLibreCoreMap {
     }
   }
 
+  /// How many drawables (draw calls) one instance of the model at [path] costs,
+  /// or null if it has not been loaded yet.
+  static int? modelPartCount(String path) {
+    final p = path.toNativeUtf8();
+    try {
+      final n = bindings.mbl_model_part_count(p.cast());
+      return n == 0 ? null : n;
+    } finally {
+      malloc.free(p);
+    }
+  }
+
   /// Removes a model layer added by [addModel]. A no-op if [layerId] names no
   /// layer.
   void removeModel(String layerId) {

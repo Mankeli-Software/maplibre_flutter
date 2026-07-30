@@ -282,6 +282,12 @@ FFI_PLUGIN_EXPORT void mbl_map_set_model_transform(MblMap *map,
                                                    double heading_deg,
                                                    double elevation_m);
 
+// How many drawables (draw calls) one instance of the model at `glb_path` costs,
+// or 0 if it has not been loaded. Reads the parsed-mesh cache, so it is only
+// meaningful after a successful mbl_map_add_model. Exists so a caller can report
+// real draw-call counts instead of guessing from primitive counts.
+FFI_PLUGIN_EXPORT uint32_t mbl_model_part_count(const char *glb_path);
+
 // Remove a model layer added by mbl_map_add_model. A no-op if `layer_id` names
 // no layer. Asynchronous (applied on the render thread).
 FFI_PLUGIN_EXPORT void mbl_map_remove_model(MblMap *map, const char *layer_id);

@@ -186,6 +186,7 @@ struct MblMap {
   // costs nothing.
   struct ModelEntry {
     std::shared_ptr<const MblMeshData> mesh;
+    std::shared_ptr<MblMeshGpu> gpu;
     std::shared_ptr<MblModelPlacement> placement;
   };
   std::unordered_map<std::string, ModelEntry> models;
@@ -707,6 +708,7 @@ void publishCurrentFrame(MblMap *m) {
 // observer below re-adds models.
 void addModelLayerNow(MblMap *m, const std::string &layerId,
                       std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblMeshGpu> gpu,
                       std::shared_ptr<MblModelPlacement> placement);
 void requestModelRender(MblMap *m);
 
@@ -725,7 +727,7 @@ public:
   // shared, so nothing is re-read or re-parsed.
   void onDidFinishLoadingStyle() override {
     for (const auto &entry : m->models) {
-      addModelLayerNow(m, entry.first, entry.second.mesh,
+      addModelLayerNow(m, entry.first, entry.second.mesh, entry.second.gpu,
                        entry.second.placement);
     }
     if (!m->models.empty()) {
@@ -865,6 +867,7 @@ namespace {
 // already on it.
 void addModelLayerNow(MblMap *m, const std::string &layerId,
                       std::shared_ptr<const MblMeshData> mesh,
+                      std::shared_ptr<MblMeshGpu> gpu,
                       std::shared_ptr<MblModelPlacement> placement) {
   if (m->map == nullptr) {
     return;
@@ -873,7 +876,8 @@ void addModelLayerNow(MblMap *m, const std::string &layerId,
     m->map->getStyle().removeLayer(layerId);
   }
   m->map->getStyle().addLayer(std::make_unique<mbgl::style::CustomDrawableLayer>(
-      layerId, mblMakeModelHost(std::move(mesh), std::move(placement))));
+      layerId, mblMakeModelHost(std::move(mesh), std::move(gpu),
+                                std::move(placement))));
 }
 
 // A model's placement lives outside mbgl, so changing it does not invalidate the
@@ -890,6 +894,7 @@ void requestModelRender(MblMap *m) {
 
 void addModelLayer(MblMap *m, std::string layerId,
                    std::shared_ptr<const MblMeshData> mesh,
+                   std::shared_ptr<MblMeshGpu> gpu,
                    MblModelPlacement placement) {
   // The mesh goes through a shared_ptr because post() takes a std::function,
   // which requires a COPYABLE callable — and MblMeshData holds a
@@ -897,14 +902,23 @@ void addModelLayer(MblMap *m, std::string layerId,
   // by move would make the lambda move-only and fail to convert.
   auto placementPtr = std::make_shared<MblModelPlacement>(placement);
   m->post([m, layerId = std::move(layerId), meshPtr = std::move(mesh),
-           placementPtr] {
-    addModelLayerNow(m, layerId, meshPtr, placementPtr);
+           gpuPtr = std::move(gpu), placementPtr] {
+    addModelLayerNow(m, layerId, meshPtr, gpuPtr, placementPtr);
     // Retained so transform updates can find this model and so it can be re-added
     // after a style reload.
-    m->models[layerId] = MblMap::ModelEntry{meshPtr, placementPtr};
+    m->models[layerId] = MblMap::ModelEntry{meshPtr, gpuPtr, placementPtr};
     requestModelRender(m);
   });
 }
+
+// Parsed meshes, shared between every model loaded from the same path. See
+// mbl_map_add_model for why this exists.
+struct MeshCacheEntry {
+  std::shared_ptr<const MblMeshData> mesh;
+  std::shared_ptr<MblMeshGpu> gpu;
+};
+std::mutex meshCacheMutex;
+std::unordered_map<std::string, MeshCacheEntry> meshCache;
 
 void writeError(char *out, size_t capacity, const std::string &message) {
   if (out == nullptr || capacity == 0) {
@@ -937,17 +951,15 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
   // .glb N times — tens of megabytes each — which would dominate any measurement
   // and makes spawning many models impractical. The mesh is immutable, so sharing
   // is free; only the placement differs per instance.
-  static std::mutex meshCacheMutex;
-  static std::unordered_map<std::string, std::shared_ptr<const MblMeshData>>
-      meshCache;
-
   const std::string path(glb_path);
   std::shared_ptr<const MblMeshData> meshPtr;
+  std::shared_ptr<MblMeshGpu> gpuPtr;
   {
     std::lock_guard<std::mutex> lk(meshCacheMutex);
     const auto it = meshCache.find(path);
     if (it != meshCache.end()) {
-      meshPtr = it->second;
+      meshPtr = it->second.mesh;
+      gpuPtr = it->second.gpu;
     }
   }
   if (!meshPtr) {
@@ -958,11 +970,12 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
       return 0;
     }
     meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
+    gpuPtr = std::make_shared<MblMeshGpu>();
     std::lock_guard<std::mutex> lk(meshCacheMutex);
-    meshCache.emplace(path, meshPtr);
+    meshCache.emplace(path, MeshCacheEntry{meshPtr, gpuPtr});
   }
 
-  addModelLayer(m, std::string(layer_id), meshPtr,
+  addModelLayer(m, std::string(layer_id), meshPtr, gpuPtr,
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = scale,
@@ -996,6 +1009,18 @@ void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
   });
 }
 
+uint32_t mbl_model_part_count(const char *glb_path) {
+  if (glb_path == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(meshCacheMutex);
+  const auto it = meshCache.find(std::string(glb_path));
+  if (it == meshCache.end() || !it->second.mesh) {
+    return 0;
+  }
+  return static_cast<uint32_t>(it->second.mesh->parts.size());
+}
+
 void mbl_map_remove_model(MblMap *m, const char *layer_id) {
   if (m == nullptr || layer_id == nullptr) {
     return;
@@ -1020,6 +1045,7 @@ void mbl_map_add_test_model(MblMap *m, double lat, double lng,
   }
   addModelLayer(m, "mbl-test-model",
                 std::make_shared<const MblMeshData>(mblMakeTestPyramid()),
+                std::make_shared<MblMeshGpu>(),
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = metres_per_unit,
