@@ -23,10 +23,8 @@ using TriangleIndexVector = mbgl::gfx::IndexVector<mbgl::gfx::Triangles>;
 
 class ModelHost final : public mbgl::style::CustomDrawableLayerHost {
 public:
-  ModelHost(MblMeshData meshData, double lat, double lng, double scale,
-            double headingDegrees, double spinDegreesPerSecond)
-      : mesh(std::move(meshData)), latLng(lat, lng), modelScale(scale),
-        heading(headingDegrees), spinDps(spinDegreesPerSecond) {}
+  ModelHost(MblMeshData meshData, std::shared_ptr<MblModelPlacement> placement)
+      : mesh(std::move(meshData)), placement(std::move(placement)) {}
 
   void initialize() override {}
   void deinitialize() override {}
@@ -97,10 +95,15 @@ public:
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - start)
                     .count();
+            // Re-read every frame: the placement is mutable so the model can be
+            // driven along a path without re-uploading its mesh.
+            const MblModelPlacement p = *placement;
+            const mbgl::LatLng latLng{p.lat, p.lng};
+
             // Map bearing is clockwise-from-north; model space is right-handed
             // about +Z (up), so a clockwise yaw is a negative rotate_z.
-            const double angle =
-                -mbgl::util::deg2rad(heading + spinDps * seconds);
+            const double angle = -mbgl::util::deg2rad(
+                p.headingDegrees + p.spinDegreesPerSecond * seconds);
 
             // Anchor in mercator world coordinates at the current scale — the
             // space nearClippedProjMatrix consumes (upstream's own recipe, see
@@ -121,11 +124,14 @@ public:
             // meters. Scale z coordinate by pixelsPerMeter"). Scaling all three
             // axes uniformly, as upstream's flat-geometry example does, silently
             // squashes the model's height by metresPerPixel — it becomes a decal.
-            const auto sxy = static_cast<float>(modelScale / metresPerPixel);
-            const auto sz = static_cast<float>(modelScale);
+            const auto sxy = static_cast<float>(p.scale / metresPerPixel);
+            const auto sz = static_cast<float>(p.scale);
 
+            // The translate is applied AFTER the scale (M = T * R * S), so its z
+            // is already in mbgl's metre units — elevation goes straight in.
             mbgl::mat4 model = mbgl::matrix::identity4();
-            mbgl::matrix::translate(model, model, center.x, center.y, 0.0);
+            mbgl::matrix::translate(model, model, center.x, center.y,
+                                    p.elevationMetres);
             mbgl::matrix::rotate_z(model, model, angle);
             mbgl::matrix::scale(model, model, sxy, sxy, sz);
             mbgl::matrix::multiply(current.matrix,
@@ -157,10 +163,9 @@ public:
 
 private:
   MblMeshData mesh;
-  mbgl::LatLng latLng;
-  double modelScale;
-  double heading;
-  double spinDps;
+  // Shared with the shim's registry and re-read every frame, so the model can be
+  // moved (driven along a path) without touching its uploaded geometry.
+  std::shared_ptr<MblModelPlacement> placement;
 };
 
 // --- The procedural test pyramid --------------------------------------------
@@ -187,10 +192,9 @@ void pushTriangle(MblMeshData::Part &part, const std::array<float, 3> &a,
 } // namespace
 
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
-mblMakeModelHost(MblMeshData mesh, double lat, double lng, double scale,
-                 double headingDegrees, double spinDegreesPerSecond) {
-  return std::make_unique<ModelHost>(std::move(mesh), lat, lng, scale,
-                                     headingDegrees, spinDegreesPerSecond);
+mblMakeModelHost(MblMeshData mesh,
+                 std::shared_ptr<MblModelPlacement> placement) {
+  return std::make_unique<ModelHost>(std::move(mesh), std::move(placement));
 }
 
 MblMeshData mblMakeTestPyramid() {

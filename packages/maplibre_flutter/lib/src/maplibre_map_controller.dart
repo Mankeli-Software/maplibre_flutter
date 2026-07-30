@@ -173,6 +173,17 @@ class MapLibreMapController {
     }
   }
 
+  /// Moves or re-orients a model added by [addModel], without re-uploading its
+  /// geometry. Use this to animate a model along a path — re-adding it each
+  /// frame would re-parse the whole `.glb` every time.
+  @experimental
+  void updateModel(MapLibreModel model) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).updateModel(model);
+    }
+  }
+
   /// Removes a model added by [addModel]. See its caveats.
   @experimental
   void removeModel(String id) {

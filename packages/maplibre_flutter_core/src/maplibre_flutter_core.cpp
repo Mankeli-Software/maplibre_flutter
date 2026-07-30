@@ -46,6 +46,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // Metal zero-copy present (macOS only). On other platforms the present path is
 // the backend-agnostic CPU readback (mbl_map_copy_frame); the Metal symbols below
@@ -174,6 +175,13 @@ struct MblMap {
   void *androidWindow = nullptr;
   bool androidZeroCopy = false;
 #endif
+
+  // Live models by layer id (render thread only). Holds a reference to each
+  // model's placement so mbl_map_set_model_transform can move it without
+  // re-uploading geometry; sharing with the host keeps it valid across a style
+  // reload that destroys the layer.
+  std::unordered_map<std::string, std::shared_ptr<MblModelPlacement>>
+      modelPlacements;
 
   // Current render-target size in device pixels (render thread only), used to size
   // the GL presenter's ring to match each frame.
@@ -825,15 +833,15 @@ namespace {
 // Post a model host onto the render thread as a CustomDrawableLayer. Re-adding
 // under the same id must not throw there (an escaping exception would take the
 // render loop down), so any previous instance is removed first.
-void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh, double lat,
-                   double lng, double scale, double heading, double spinDps) {
+void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh,
+                   MblModelPlacement placement) {
   // The mesh goes through a shared_ptr because post() takes a std::function,
   // which requires a COPYABLE callable — and MblMeshData holds a
   // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
   // by move would make the lambda move-only and fail to convert.
   auto meshPtr = std::make_shared<MblMeshData>(std::move(mesh));
-  m->post([m, layerId = std::move(layerId), meshPtr, lat, lng, scale, heading,
-           spinDps] {
+  auto placementPtr = std::make_shared<MblModelPlacement>(placement);
+  m->post([m, layerId = std::move(layerId), meshPtr, placementPtr] {
     if (m->map == nullptr) {
       return;
     }
@@ -842,8 +850,11 @@ void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh, double lat,
     }
     m->map->getStyle().addLayer(
         std::make_unique<mbgl::style::CustomDrawableLayer>(
-            layerId, mblMakeModelHost(std::move(*meshPtr), lat, lng, scale,
-                                      heading, spinDps)));
+            layerId, mblMakeModelHost(std::move(*meshPtr), placementPtr)));
+    // Keep a reference so later transform updates can find this model. The
+    // placement is shared with the host, so it stays valid even if a style
+    // reload destroys the layer.
+    m->modelPlacements[layerId] = placementPtr;
     m->renderRequested = true;
   });
 }
@@ -861,7 +872,8 @@ void writeError(char *out, size_t capacity, const std::string &message) {
 
 int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
                       double lat, double lng, double scale, double heading_deg,
-                      double spin_dps, char *out_error, size_t error_capacity) {
+                      double spin_dps, double elevation_m, char *out_error,
+                      size_t error_capacity) {
   if (out_error != nullptr && error_capacity > 0) {
     out_error[0] = '\0';
   }
@@ -880,9 +892,37 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
     return 0;
   }
 
-  addModelLayer(m, std::string(layer_id), std::move(mesh), lat, lng, scale,
-                heading_deg, spin_dps);
+  addModelLayer(m, std::string(layer_id), std::move(mesh),
+                MblModelPlacement{.lat = lat,
+                                  .lng = lng,
+                                  .scale = scale,
+                                  .headingDegrees = heading_deg,
+                                  .spinDegreesPerSecond = spin_dps,
+                                  .elevationMetres = elevation_m});
   return 1;
+}
+
+void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
+                                 double lng, double scale, double heading_deg,
+                                 double elevation_m) {
+  if (m == nullptr || layer_id == nullptr) {
+    return;
+  }
+  m->post([m, layerId = std::string(layer_id), lat, lng, scale, heading_deg,
+           elevation_m] {
+    const auto it = m->modelPlacements.find(layerId);
+    if (it == m->modelPlacements.end() || !it->second) {
+      return;
+    }
+    // Mutating the shared placement is enough — the host re-reads it every frame,
+    // so the geometry is never re-uploaded.
+    it->second->lat = lat;
+    it->second->lng = lng;
+    it->second->scale = scale;
+    it->second->headingDegrees = heading_deg;
+    it->second->elevationMetres = elevation_m;
+    m->renderRequested = true;
+  });
 }
 
 void mbl_map_remove_model(MblMap *m, const char *layer_id) {
@@ -897,16 +937,23 @@ void mbl_map_remove_model(MblMap *m, const char *layer_id) {
       m->map->getStyle().removeLayer(layerId);
       m->renderRequested = true;
     }
+    m->modelPlacements.erase(layerId);
   });
 }
 
 void mbl_map_add_test_model(MblMap *m, double lat, double lng,
-                            double metres_per_unit, double spin_dps) {
+                            double metres_per_unit, double spin_dps,
+                            double elevation_m) {
   if (m == nullptr) {
     return;
   }
-  addModelLayer(m, "mbl-test-model", mblMakeTestPyramid(), lat, lng,
-                metres_per_unit, /*heading=*/0.0, spin_dps);
+  addModelLayer(m, "mbl-test-model", mblMakeTestPyramid(),
+                MblModelPlacement{.lat = lat,
+                                  .lng = lng,
+                                  .scale = metres_per_unit,
+                                  .headingDegrees = 0.0,
+                                  .spinDegreesPerSecond = spin_dps,
+                                  .elevationMetres = elevation_m});
 }
 
 void mbl_map_trigger_repaint(MblMap *m) {

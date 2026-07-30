@@ -273,9 +273,26 @@ class MapLibreFlutterMacosController
       scale: model.scale,
       headingDegrees: model.headingDegrees,
       spinDegreesPerSecond: model.spinDegreesPerSecond,
+      elevationMetres: model.elevationMetres,
     );
     _models[model.id] = model;
     _syncModelPump();
+  }
+
+  @override
+  void updateModel(MapLibreModel model) {
+    if (_disposed || !_models.containsKey(model.id)) return;
+    // Mutates the native placement only — the mesh is never re-uploaded, which is
+    // what makes per-frame movement affordable.
+    _coreMap.setModelTransform(
+      layerId: model.id,
+      latitude: model.point.latitude,
+      longitude: model.point.longitude,
+      scale: model.scale,
+      headingDegrees: model.headingDegrees,
+      elevationMetres: model.elevationMetres,
+    );
+    _models[model.id] = model;
   }
 
   @override

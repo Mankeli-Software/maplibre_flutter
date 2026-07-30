@@ -254,6 +254,7 @@ class MapLibreCoreMap {
     double scale = 1,
     double headingDegrees = 0,
     double spinDegreesPerSecond = 0,
+    double elevationMetres = 0,
   }) {
     _checkAlive();
     const errorCapacity = 512;
@@ -270,6 +271,7 @@ class MapLibreCoreMap {
         scale,
         headingDegrees,
         spinDegreesPerSecond,
+        elevationMetres,
         errPtr,
         errorCapacity,
       );
@@ -282,6 +284,36 @@ class MapLibreCoreMap {
       malloc.free(layerPtr);
       malloc.free(pathPtr);
       malloc.free(errPtr);
+    }
+  }
+
+  /// Moves or re-orients an existing model WITHOUT touching its uploaded
+  /// geometry — the only sane way to animate one along a path, since re-adding
+  /// would re-parse the whole `.glb` every frame.
+  ///
+  /// A no-op if [layerId] names no model.
+  void setModelTransform({
+    required String layerId,
+    required double latitude,
+    required double longitude,
+    double scale = 1,
+    double headingDegrees = 0,
+    double elevationMetres = 0,
+  }) {
+    _checkAlive();
+    final p = layerId.toNativeUtf8();
+    try {
+      bindings.mbl_map_set_model_transform(
+        _handle,
+        p.cast(),
+        latitude,
+        longitude,
+        scale,
+        headingDegrees,
+        elevationMetres,
+      );
+    } finally {
+      malloc.free(p);
     }
   }
 
@@ -311,6 +343,7 @@ class MapLibreCoreMap {
     required double longitude,
     double metresPerUnit = 50,
     double spinDegreesPerSecond = 90,
+    double elevationMetres = 0,
   }) {
     _checkAlive();
     bindings.mbl_map_add_test_model(
@@ -319,6 +352,7 @@ class MapLibreCoreMap {
       longitude,
       metresPerUnit,
       spinDegreesPerSecond,
+      elevationMetres,
     );
   }
 

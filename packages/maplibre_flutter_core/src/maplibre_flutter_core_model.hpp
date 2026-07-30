@@ -27,18 +27,44 @@
 
 #include <memory>
 
-// Build a host that draws `mesh` at `lat`/`lng`.
+// Where and how a model sits on the map. Held by shared_ptr so it can be MUTATED
+// to move the model without re-uploading its mesh — driving a vehicle along a
+// path by re-adding the model each frame would re-parse and re-upload the whole
+// .glb every frame, which for a real model is tens of megabytes.
+//
+// Render-thread confined: the C API mutates it from a posted command and the
+// per-frame tweaker reads it, both on the render thread, so no lock is needed.
+// The host and the shim's registry each hold a reference, so the struct outlives
+// a host destroyed by a style reload.
+struct MblModelPlacement {
+  double lat = 0;
+  double lng = 0;
+  // Multiplies the mesh's own units; 1.0 renders a glTF authored in metres at
+  // life size.
+  double scale = 1;
+  // Clockwise from north.
+  double headingDegrees = 0;
+  // Continuous yaw added on top, degrees per second (0 = static).
+  double spinDegreesPerSecond = 0;
+  // Lifts the model off the ground, in metres.
+  //
+  // A model whose base sits exactly at z=0 is coplanar with the basemap's ground
+  // geometry, which z-fights — the map bleeds through the bodywork. A few
+  // centimetres of lift resolves it.
+  double elevationMetres = 0;
+};
+
+// Build a host that draws `mesh` at `placement`, which it keeps a reference to
+// and re-reads every frame (so later mutations move the model).
 //
 // `mesh` is in map model space (X east, Y south, Z up, one unit = one metre as
-// produced by mblLoadGlb). `scale` multiplies those units, so 1.0 renders a glTF
-// authored in metres at life size. `headingDegrees` yaws the model clockwise from
-// north; `spinDegreesPerSecond` adds a continuous yaw on top (0 = static).
+// produced by mblLoadGlb).
 //
 // Must be called on the render thread — the host is handed straight to
 // mbgl::style::CustomDrawableLayer, whose lifecycle mbgl drives.
 std::unique_ptr<mbgl::style::CustomDrawableLayerHost>
-mblMakeModelHost(MblMeshData mesh, double lat, double lng, double scale,
-                 double headingDegrees, double spinDegreesPerSecond);
+mblMakeModelHost(MblMeshData mesh,
+                 std::shared_ptr<MblModelPlacement> placement);
 
 // The procedural test mesh: a rectangular-base pyramid, 2 units across X, 1
 // across Y, apex 1.5 up +Z, with each face a flat distinct colour.

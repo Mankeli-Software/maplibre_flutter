@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 import 'package:pointer_interceptor/pointer_interceptor.dart';
 
@@ -64,6 +67,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   @override
   void dispose() {
+    _driveTicker?.stop();
+    _driveTicker?.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -107,10 +112,27 @@ class _MapDemoPageState extends State<MapDemoPage> {
     'MODEL_HEADING',
     defaultValue: '0',
   );
+  // Lift off the ground. A model sitting exactly at ground level is coplanar
+  // with the basemap and z-fights, so the map bleeds through the bodywork.
+  static const String _modelElevationRaw = String.fromEnvironment(
+    'MODEL_ELEVATION',
+    defaultValue: '0.15',
+  );
   static double get _modelScale => double.tryParse(_modelScaleRaw) ?? 1;
   static double get _modelHeading => double.tryParse(_modelHeadingRaw) ?? 0;
+  static double get _modelElevation =>
+      double.tryParse(_modelElevationRaw) ?? 0.15;
   bool _modelAdded = false;
   String? _modelError;
+
+  // Driving: the model is walked around a circle by mutating its placement each
+  // frame. Re-adding it would re-parse the whole .glb every frame, so this uses
+  // updateModel, which only touches the native placement.
+  Ticker? _driveTicker;
+  bool _driving = false;
+  LatLng _modelAnchor = _modelSite;
+  static const double _driveRadiusMetres = 30;
+  static const double _drivePeriodSeconds = 12;
 
   // Where to put the model when the map is still zoomed out. A few-metre object
   // is sub-pixel below roughly z18, and the example opens at world view, so
@@ -125,6 +147,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
         _modelAdded = false;
         _modelError = null;
       });
+      _stopDriving();
       return;
     }
     if (_modelPath.isEmpty) {
@@ -159,8 +182,10 @@ class _MapDemoPageState extends State<MapDemoPage> {
           point: site,
           scale: _modelScale,
           headingDegrees: _modelHeading,
+          elevationMetres: _modelElevation,
         ),
       );
+      _modelAnchor = site;
       debugPrint('[model] added $_modelPath at $site '
           'scale=$_modelScale heading=$_modelHeading');
       setState(() {
@@ -171,6 +196,74 @@ class _MapDemoPageState extends State<MapDemoPage> {
       debugPrint('[model] FAILED: ${e.message}');
       setState(() => _modelError = '${e.message}');
     }
+  }
+
+  // Rotates the camera. Trackpad/mouse rotate gestures are not wired on the
+  // desktop tier yet, so this is the way to check a model from other angles.
+  Future<void> _rotateBy(double degrees) async {
+    final camera = await _controller.camera.getPosition();
+    var bearing = (camera.bearing + degrees) % 360;
+    if (bearing < 0) bearing += 360;
+    await _controller.camera.move(
+      camera.copyWith(bearing: bearing),
+      duration: const Duration(milliseconds: 400),
+    );
+  }
+
+  Future<void> _tiltBy(double degrees) async {
+    final camera = await _controller.camera.getPosition();
+    final pitch = (camera.pitch + degrees).clamp(0.0, 85.0);
+    await _controller.camera.move(
+      camera.copyWith(pitch: pitch),
+      duration: const Duration(milliseconds: 400),
+    );
+  }
+
+  void _toggleDriving() {
+    if (_driving) {
+      _stopDriving();
+      return;
+    }
+    if (!_modelAdded) return;
+
+    final startedAt = DateTime.now();
+    // Metres -> degrees. Longitude degrees shrink with latitude, so scale by
+    // cos(lat) or the circle comes out as an ellipse.
+    final latPerMetre = 1 / 111320.0;
+    final lngPerMetre =
+        1 / (111320.0 * math.cos(_modelAnchor.latitude * math.pi / 180));
+
+    _driveTicker = Ticker((_) {
+      final t =
+          DateTime.now().difference(startedAt).inMilliseconds / 1000.0;
+      final theta = 2 * math.pi * (t / _drivePeriodSeconds);
+      final point = LatLng(
+        _modelAnchor.latitude + _driveRadiusMetres * latPerMetre * math.cos(theta),
+        _modelAnchor.longitude + _driveRadiusMetres * lngPerMetre * math.sin(theta),
+      );
+      // Face along the tangent of travel. Bearing is clockwise from north, and
+      // the model's own forward offset (_modelHeading) still applies.
+      final tangentBearing = (theta * 180 / math.pi + 90) % 360;
+      // ignore: experimental_member_use
+      _controller.updateModel(
+        MapLibreModel(
+          id: 'demo-model',
+          assetPath: _modelPath,
+          point: point,
+          scale: _modelScale,
+          headingDegrees: _modelHeading + tangentBearing,
+          elevationMetres: _modelElevation,
+        ),
+      );
+    })..start();
+    setState(() => _driving = true);
+  }
+
+  void _stopDriving() {
+    _driveTicker?.stop();
+    _driveTicker?.dispose();
+    _driveTicker = null;
+    if (_driving && mounted) setState(() => _driving = false);
   }
 
   void _toggleStyle() {
@@ -253,6 +346,39 @@ class _MapDemoPageState extends State<MapDemoPage> {
                     onPressed: _ready ? _flyToNextPlace : null,
                     icon: const Icon(Icons.flight),
                     label: Text('Fly to ${_places[_placeIndex].$1}'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton(
+                        heroTag: 'rotL',
+                        tooltip: 'Rotate map left',
+                        onPressed: _ready ? () => _rotateBy(-45) : null,
+                        child: const Icon(Icons.rotate_left),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton(
+                        heroTag: 'rotR',
+                        tooltip: 'Rotate map right',
+                        onPressed: _ready ? () => _rotateBy(45) : null,
+                        child: const Icon(Icons.rotate_right),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton(
+                        heroTag: 'tilt',
+                        tooltip: 'Tilt map',
+                        onPressed: _ready ? () => _tiltBy(15) : null,
+                        child: const Icon(Icons.threed_rotation),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'drive',
+                    onPressed: _ready && _modelAdded ? _toggleDriving : null,
+                    icon: Icon(_driving ? Icons.stop : Icons.play_arrow),
+                    label: Text(_driving ? 'Stop driving' : 'Drive model'),
                   ),
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(

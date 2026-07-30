@@ -263,8 +263,24 @@ FFI_PLUGIN_EXPORT int mbl_map_add_model(MblMap *map, const char *layer_id,
                                         const char *glb_path, double lat,
                                         double lng, double scale,
                                         double heading_deg, double spin_dps,
-                                        char *out_error,
+                                        double elevation_m, char *out_error,
                                         size_t error_capacity);
+
+// Move/re-orient an existing model WITHOUT touching its uploaded geometry.
+//
+// This is the only sane way to animate a model along a path: re-adding it would
+// re-read and re-parse the whole .glb every frame (tens of megabytes for a real
+// model). Asynchronous, and a no-op if `layer_id` names no model.
+//
+// `elevation_m` lifts the model off the ground. A model whose base sits exactly
+// at z=0 is coplanar with the basemap's ground geometry and z-fights, so the map
+// bleeds through the bodywork; a few centimetres resolves it.
+FFI_PLUGIN_EXPORT void mbl_map_set_model_transform(MblMap *map,
+                                                   const char *layer_id,
+                                                   double lat, double lng,
+                                                   double scale,
+                                                   double heading_deg,
+                                                   double elevation_m);
 
 // Remove a model layer added by mbl_map_add_model. A no-op if `layer_id` names
 // no layer. Asynchronous (applied on the render thread).
@@ -284,7 +300,8 @@ FFI_PLUGIN_EXPORT void mbl_map_remove_model(MblMap *map, const char *layer_id);
 FFI_PLUGIN_EXPORT void mbl_map_add_test_model(MblMap *map, double lat,
                                               double lng,
                                               double metres_per_unit,
-                                              double spin_dps);
+                                              double spin_dps,
+                                              double elevation_m);
 
 // Ask mbgl for one more frame. Continuous mode is update-driven, not
 // vsync-driven: with nothing invalidating the map, an animated layer renders

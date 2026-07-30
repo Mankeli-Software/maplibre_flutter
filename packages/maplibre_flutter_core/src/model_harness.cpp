@@ -23,7 +23,7 @@
 //
 // Usage: model_harness [outDir] [lat] [lng] [zoom] [pitch] [bearing]
 //                      [metresPerUnit] [styleUri] [spinDps] [camOffsetDeg]
-//                      [glbPath] [headingDeg]
+//                      [glbPath] [headingDeg] [elevationM]
 //
 // With a glbPath, mbl_map_add_model loads that .glb instead of the built-in test
 // pyramid, and metresPerUnit becomes the model's scale multiplier (1.0 = a glTF
@@ -148,6 +148,7 @@ int main(int argc, char **argv) {
   const double camOffset = argc > 10 ? std::atof(argv[10]) : 0.00255;
   const std::string glb = argc > 11 ? argv[11] : "";
   const double headingDeg = argc > 12 ? std::atof(argv[12]) : 0.0;
+  const double elevationM = argc > 13 ? std::atof(argv[13]) : 0.0;
 
   // Offset the camera from the model so the model projects well away from screen
   // centre (a centred model would satisfy the anchor check trivially) while still
@@ -196,11 +197,12 @@ int main(int argc, char **argv) {
 
   // --- 1. does the model render at all? ---
   if (glb.empty()) {
-    mbl_map_add_test_model(map, lat, lng, metresPerUnit, spinDps);
+    mbl_map_add_test_model(map, lat, lng, metresPerUnit, spinDps, elevationM);
   } else {
     char err[512] = {0};
     if (mbl_map_add_model(map, "mbl-model", glb.c_str(), lat, lng, metresPerUnit,
-                          headingDeg, spinDps, err, sizeof(err)) == 0) {
+                          headingDeg, spinDps, elevationM, err,
+                          sizeof(err)) == 0) {
       fprintf(stderr, "model_harness: mbl_map_add_model failed: %s\n", err);
       mbl_map_destroy(map);
       return 5;
@@ -242,6 +244,35 @@ int main(int argc, char **argv) {
   const Diff spun = diffFrames(withModel, later);
   printf("after spin:     %zu px changed, centroid=(%.1f, %.1f)\n", spun.changed,
          spun.centroidX, spun.centroidY);
+
+  // --- 4. does set_model_transform MOVE the model without re-uploading it? ---
+  //
+  // This is the path an app uses to drive a model along a route; re-adding it
+  // each frame would re-parse the whole .glb, so moving must work through the
+  // shared placement alone.
+  Diff moved;
+  bool testedMove = false;
+  if (!glb.empty()) {
+    // Shift east by ~100 SCREEN pixels, not a fixed distance: a fixed metre
+    // offset is invisible when zoomed out and lands off-screen when zoomed in.
+    constexpr double kPi = 3.14159265358979323846;
+    const double metresPerPixel = 40075017.0 * std::cos(lat * kPi / 180.0) /
+                                  (512.0 * std::pow(2.0, zoom));
+    const double shiftMetres = 100.0 * metresPerPixel;
+    const double eastDeg =
+        shiftMetres / (111320.0 * std::cos(lat * kPi / 180.0));
+    mbl_map_set_model_transform(map, "mbl-model", lat, lng + eastDeg,
+                                metresPerUnit, headingDeg, elevationM);
+    pump(map, 800);
+    Frame movedFrame;
+    if (capture(map, movedFrame)) {
+      mbl_map_write_png(map, (outDir + "/model_3_moved.png").c_str());
+      moved = diffFrames(later, movedFrame);
+      testedMove = true;
+      printf("after move:     %zu px changed, centroid=(%.1f, %.1f)\n",
+             moved.changed, moved.centroidX, moved.centroidY);
+    }
+  }
 
   mbl_map_destroy(map);
 
@@ -291,6 +322,21 @@ int main(int argc, char **argv) {
     ++failures;
   } else {
     printf("PASS: animation advances across repaints (%zu px)\n", spun.changed);
+  }
+
+  if (testedMove) {
+    if (moved.changed < kMinModelPixels) {
+      printf("FAIL: set_model_transform did not move the model (%zu px)\n",
+             moved.changed);
+      ++failures;
+    } else if (moved.centroidX <= added.centroidX) {
+      printf("FAIL: model moved to centroid x=%.1f, expected east of %.1f\n",
+             moved.centroidX, added.centroidX);
+      ++failures;
+    } else {
+      printf("PASS: set_model_transform moves the model east (%.1f -> %.1f)\n",
+             added.centroidX, moved.centroidX);
+    }
   }
 
   printf("%s\n", failures == 0 ? "ALL CHECKS PASSED" : "SOME CHECKS FAILED");

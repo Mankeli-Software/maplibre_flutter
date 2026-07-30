@@ -18,6 +18,7 @@ class MapLibreModel {
     this.scale = 1,
     this.headingDegrees = 0,
     this.spinDegreesPerSecond = 0,
+    this.elevationMetres = 0,
   });
 
   /// Identifies this model; re-using an id replaces the previous model.
@@ -46,6 +47,13 @@ class MapLibreModel {
   /// per asset.
   final double headingDegrees;
 
+  /// Lifts the model off the ground, in metres.
+  ///
+  /// A model whose base sits exactly at ground level is coplanar with the
+  /// basemap's own geometry and z-fights — the map visibly bleeds through the
+  /// model. A few centimetres resolves it.
+  final double elevationMetres;
+
   /// Adds a continuous yaw, in degrees per second. 0 leaves the model static.
   ///
   /// A non-zero value makes the map render continuously while the model is alive,
@@ -67,6 +75,12 @@ abstract interface class MapLibreModelHost {
   /// The `.glb` is parsed synchronously, so this blocks for a file read; call it
   /// off the first frame for large models.
   void addModel(MapLibreModel model);
+
+  /// Moves or re-orients an existing model WITHOUT re-uploading its geometry —
+  /// the way to animate one along a path. A no-op if [model]'s id is unknown.
+  ///
+  /// [MapLibreModel.assetPath] is ignored here; only the placement is applied.
+  void updateModel(MapLibreModel model);
 
   /// Removes the model with [id]. A no-op if there is none.
   void removeModel(String id);

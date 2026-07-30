@@ -225,6 +225,7 @@ external int mbl_map_d3d_active(ffi.Pointer<MblMap> map);
     ffi.Double,
     ffi.Double,
     ffi.Double,
+    ffi.Double,
     ffi.Pointer<ffi.Char>,
     ffi.Size,
   )
@@ -238,8 +239,30 @@ external int mbl_map_add_model(
   double scale,
   double heading_deg,
   double spin_dps,
+  double elevation_m,
   ffi.Pointer<ffi.Char> out_error,
   int error_capacity,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+  )
+>()
+external void mbl_map_set_model_transform(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  double lat,
+  double lng,
+  double scale,
+  double heading_deg,
+  double elevation_m,
 );
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
@@ -255,6 +278,7 @@ external void mbl_map_remove_model(
     ffi.Double,
     ffi.Double,
     ffi.Double,
+    ffi.Double,
   )
 >()
 external void mbl_map_add_test_model(
@@ -263,6 +287,7 @@ external void mbl_map_add_test_model(
   double lng,
   double metres_per_unit,
   double spin_dps,
+  double elevation_m,
 );
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>)>()
