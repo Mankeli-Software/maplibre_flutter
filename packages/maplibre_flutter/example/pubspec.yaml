@@ -35,4 +35,5 @@ flutter:
     # runs with no setup. Deliberately not a vendored sample: real models are tens
     # of megabytes of permanent repo weight, and the obvious small ones carry
     # their own licences.
+    - assets/models/alto_k10.glb
     - assets/models/demo_vehicle.glb

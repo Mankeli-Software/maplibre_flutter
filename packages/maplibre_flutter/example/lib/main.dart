@@ -104,7 +104,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // app can only read its own container, so a path in ~/Downloads additionally
   // needs an entitlement (this example's DebugProfile has one) — which is exactly
   // why the default ships as an asset instead.
-  static const String _demoAsset = 'assets/models/demo_vehicle.glb';
+  // Pre-slimmed and pre-normalised by tool/slim_glb.py: unused attributes
+  // stripped, and scale + heading baked into a wrapper node so it is life size
+  // and nose-north at scale 1 / heading 0. See assets/models/README.md for
+  // attribution — it is CC BY 4.0 and redistributed here.
+  static const String _demoAsset = 'assets/models/alto_k10.glb';
   static const String _modelPath = String.fromEnvironment(
     'MODEL_GLB',
     defaultValue: '',
