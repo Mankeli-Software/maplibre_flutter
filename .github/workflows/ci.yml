@@ -58,6 +58,19 @@ jobs:
           dart run tool/ffigen.dart
           git diff --exit-code lib/src/maplibre_flutter_core_bindings_generated.dart
 
+      # The typed style API is generated from the style spec vendored in the
+      # mbgl-core submodule, so a core bump that changes the spec must show up
+      # here as a diff rather than drifting silently (CLAUDE.md §7 layer 6).
+      - name: Generated typed style API is up to date
+        working-directory: packages/maplibre_flutter
+        run: |
+          dart run tool/generate_style_api.dart
+          # --intent-to-add so a NEWLY generated file (a layer type added to the
+          # allowlist but not committed) shows up in the diff instead of being
+          # ignored as untracked.
+          git add --intent-to-add lib/src/style/generated
+          git diff --exit-code lib/src/style/generated
+
   # Web tier: pure Dart + maplibre-gl-js (no native toolchain, no submodule),
   # so it runs on the cheapest runner. Builds the example for the web and runs
   # the browser tests + the real-browser integration test.

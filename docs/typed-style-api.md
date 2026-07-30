@@ -1,16 +1,58 @@
 # A typed Dart style API — design notes
 
-**Status: not implemented.** Today `controller.layers` takes MapLibre Style Spec
-JSON strings. This records why, what a typed API should look like, and how to
-build it — so the decision is reversible with context rather than re-derived.
+**Status: built, covering the whole spec.** All 10 layer types, all 6 source
+types, all 84 expression operators and every enum are generated from the vendored
+spec — discovered from it, not allowlisted, so a layer type added by a future
+spec generates itself and CI's regen diff makes that visible. The generator, its
+committed output, the CI check, `addPoints`-on-the-typed-API and an example
+scenario that uses it directly all landed together. What follows is the design as
+built, with the original reasoning kept intact.
 
-Tracked in code as `TODO(typed-style-api)` in
-`maplibre_flutter/lib/src/map_layers_controller.dart` and
-`maplibre_flutter_core/lib/maplibre_flutter_core.dart`.
+- Generator: `packages/maplibre_flutter/tool/generate_style_api.dart`
+- Output (committed, never hand-edited):
+  `packages/maplibre_flutter/lib/src/style/generated/*.g.dart` (~5.6k lines:
+  10 layers, 6 sources, 33 enums, 84 expression builders)
+- Worked example: the **Typed style API** scenario in
+  `packages/maplibre_flutter/example/lib/main.dart` — a `GeoJsonSource` with
+  per-point properties, a `CircleLayer` coloured by `Expr.match` and sized by
+  `Expr.interpolate`, a `SymbolLayer`, and a dashed `LineLayer`, with no JSON
+- Hand-written runtime it sits on: `lib/src/style/style_value.dart`
+  (`StyleValue`, `Expression`), `style_layer.dart`, `geojson_data.dart`,
+  `style_encoding.dart`
+- CI: `.github/workflows/ci.yml` regenerates and `git diff --exit-code`s the
+  output, exactly like ffigen
+
+What it looks like:
+
+```dart
+controller.layers
+  ..addSource(
+    'pts',
+    GeoJsonSource(
+      data: GeoJsonData.points(points),
+      cluster: true,
+      clusterRadius: 50,
+    ),
+  )
+  ..addLayer(
+    CircleLayer(
+      id: 'pts-clusters',
+      source: 'pts',
+      filter: Expr.has('point_count'),
+      circleRadius: Expr.step(Expr.get('point_count'), 18, 100, 24, 750, 32),
+      circleColor: const StyleValue(Color(0xFFF57C00)),
+      circleStrokeWidth: const StyleValue(2),
+    ),
+  );
+```
+
+One `TODO(typed-style-api)` remains, in
+`maplibre_flutter_core/lib/maplibre_flutter_core.dart`, pointing at this file
+from the raw JSON C-ABI wrappers.
 
 ---
 
-## Where we are
+## Where we were (the original context, kept for the reasoning)
 
 Typed already:
 
@@ -152,17 +194,64 @@ visible failure instead of silent drift.
   generator must not miss.
 - **Spec drift.** Pinned to the submodule's spec, so a core bump can change
   generated output. The CI diff check turns that into a visible failure.
-- **Scope creep.** 10 layer types is a lot to land at once. Suggested order:
-  `circle`, `symbol`, `line`, `fill` (which covers essentially all annotation
-  work), then the rest.
+- **Scope creep.** Landed `circle` first, then widened to all 10 in one step
+  once the mechanism was proven — the remaining types needed only new spec-type
+  mappings (`padding`, `colorArray`, `numberArray`,
+  `variableAnchorOffsetCollection`, arrays-of-enum, nested array schemas), not
+  new per-property work. An allowlist was dropped deliberately: it would
+  reintroduce exactly the drift this design exists to prevent.
 
 ## Definition of done
 
-1. Generator reads the vendored spec and emits sources, layers, enums.
-2. Generated output committed; CI regen-diff check wired in.
-3. `addLayer(StyleLayer)` / `addSource(String, StyleSource)` alongside the
+1. ✅ Generator reads the vendored spec and emits sources, layers, enums.
+2. ✅ Generated output committed; CI regen-diff check wired in.
+3. ✅ `addLayer(StyleLayer)` / `addSource(String, StyleSource)` alongside the
    existing JSON methods, which remain public.
-4. `addPoints` reimplemented on top of the typed API — proof it can express what
-   we already hand-roll.
-5. Tests: generated JSON matches hand-written equivalents byte-for-byte, plus a
-   native test that a generated layer actually renders.
+4. ✅ `addPoints` reimplemented on top of the typed API — proof it can express
+   what we already hand-roll.
+5. ✅ Tests: generated JSON matches hand-written equivalents byte-for-byte
+   (`test/style_api_test.dart`). The "native test that a generated layer
+   renders" is **as close as the dependency graph allows**: the engine tests
+   live in `maplibre_flutter_core`, which must not depend on the app-facing
+   package, so instead a test pins the typed output equal to the exact documents
+   `maplibre_flutter_core_test.dart` already adds to a real map and verifies by
+   counting painted pixels.
+
+---
+
+## How it came out — decisions the build forced
+
+- **Expressions are assignable to every property, with no wrapping.**
+  `Expression extends StyleValue<Never>`, and Dart generics are covariant, so
+  `StyleValue<Never> <: StyleValue<T>` for every `T`. That is what makes
+  `circleRadius: Expr.step(...)` and `circleRadius: const StyleValue(6)` both
+  type-check against one `StyleValue<double>?` parameter, without falling back
+  to `Object?`. Recommendation (c) from §3, as planned: builders for all 84
+  operators plus `Expr.raw`.
+- **Constant-only properties get their plain type.** `property-type: constant`
+  in the spec (e.g. `visibility`) generates `StyleVisibility?`, not a
+  `StyleValue`, so an expression the engine would reject is not expressible.
+- **The spec has no arity information for expressions**, so every generated
+  builder is uniformly variadic to 10 arguments and drops the ones you omit
+  (`identical`-checked sentinel, so an explicit `null` — meaningful in
+  `["literal", null]` — survives). Longer arrays go through `Expr.raw`;
+  overflowing is a compile error, not a silent truncation.
+- **Name mapping needed a small curated table**, all of it in the generator:
+  symbolic operators (`!` → `not`, `<=` → `lessThanOrEqual`), Dart reserved
+  words (`case` → `caseOf`, `var` → `variable`, `in` → `isIn`), `to-string` →
+  `toStringOp` (a static `toString` collides with `Object.toString`), and
+  `visibility` → `StyleVisibility` (the bare name collides with the Flutter
+  widget). Everything else is mechanical camelCase, and the generator *throws*
+  on a collision or reserved word rather than emitting something broken.
+- **Numbers serialise as ints when whole** (`6`, not `6.0`) and **opaque colours
+  as `#rrggbb`**, so generated documents are byte-identical to hand-written
+  style JSON. GeoJSON coordinates deliberately skip that rewriting and stay
+  doubles.
+- **Only the imports a file needs are emitted** — an unused import is an
+  analyzer warning and `melos run analyze` runs `--fatal-infos`.
+- **The generator runs `dart format` on its output**, so the committed files are
+  byte-stable and the repo's format gate needs no manual step.
+- **`promoteId` is the one spec type with no narrower Dart form** (`{"*":
+  {"type": "string"}}` — a property name *or* a per-source-layer map), so it is
+  `Object?`. Unknown spec types make the generator throw, by design: silent
+  `Object` fallbacks are how a generated API rots.

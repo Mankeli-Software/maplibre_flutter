@@ -7,6 +7,8 @@ import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
+import 'style/style.dart';
+
 /// One feature the engine drew, as returned by
 /// [MapLibreLayersController.queryRenderedFeatures].
 @immutable
@@ -66,15 +68,39 @@ class MapLibreLayersController {
     _layers = platform is MapLibreStyleLayers ? platform : null;
   }
 
+  // --- Typed style-spec access ------------------------------------------------
+  // Generated from the MapLibre Style Spec vendored in the mbgl-core submodule
+  // (`tool/generate_style_api.dart`), so it tracks the pinned core version.
+  // Serialises to the JSON methods below — there is no separate transport.
+  //
+  // Coverage is the whole spec: every layer type, every source type, every
+  // expression operator, all discovered from the spec rather than listed by
+  // hand. The JSON methods stay public as the hatch for anything the spec does
+  // not describe.
+
+  /// Adds a typed style [layer]; [beforeId] inserts beneath an existing layer.
+  ///
+  /// ```dart
+  /// controller.layers.addLayer(
+  ///   CircleLayer(
+  ///     id: 'pts',
+  ///     source: 'pts',
+  ///     circleRadius: const StyleValue(6),
+  ///     circleColor: Expr.get('color'),
+  ///   ),
+  /// );
+  /// ```
+  void addLayer(StyleLayer layer, {String? beforeId}) =>
+      addLayerJson(jsonEncode(layer.toJson()), beforeId: beforeId);
+
+  /// Adds a typed style [source] under [id].
+  void addSource(String id, StyleSource source) =>
+      addSourceJson(id, jsonEncode(source.toJson()));
+
   // --- Raw style-spec access --------------------------------------------------
   // MapLibre Style Spec JSON, the same documents maplibre-gl-js takes. This is
-  // the full-power escape hatch: expressions, filters, data-driven styling, any
-  // layer type.
-  //
-  // TODO(typed-style-api): a typed, GENERATED layer/source API over this is the
-  // intended end state — see docs/typed-style-api.md. JSON stays the primitive
-  // underneath (a typed layer just serialises to it, so no C ABI change), but it
-  // is stringly-typed for callers today.
+  // the full-power escape hatch, and stays public: every layer type, every
+  // expression, anything the typed API above does not cover yet.
 
   /// Adds a style source under [id]. Throws [ArgumentError] on invalid JSON.
   void addSourceJson(String id, String json) =>
@@ -202,30 +228,20 @@ class MapLibreLayersController {
     String? beforeId,
   }) {
     if (_layers == null) return;
-    final source = <String, Object?>{
-      'type': 'geojson',
-      'data': _featureCollection(points),
-      if (cluster) ...{
-        'cluster': true,
-        'clusterRadius': clusterRadius,
-        'clusterMaxZoom': clusterMaxZoom,
-      },
-    };
-    addSourceJson(id, jsonEncode(source));
+    addSource(
+      id,
+      GeoJsonSource(
+        data: GeoJsonData.points(points),
+        cluster: cluster ? true : null,
+        clusterRadius: cluster ? clusterRadius.toDouble() : null,
+        clusterMaxZoom: cluster ? clusterMaxZoom.toDouble() : null,
+      ),
+    );
 
+    // A single circle layer over the whole source when there is no clustering.
     if (!cluster) {
-      addLayerJson(
-        jsonEncode({
-          'id': id,
-          'type': 'circle',
-          'source': id,
-          'paint': {
-            'circle-radius': radius,
-            'circle-color': _cssColor(color),
-            'circle-stroke-width': 1,
-            'circle-stroke-color': '#ffffff',
-          },
-        }),
+      addLayer(
+        _circles(id: id, source: id, radius: radius, color: color),
         beforeId: beforeId,
       );
       return;
@@ -233,75 +249,80 @@ class MapLibreLayersController {
 
     // `point_count` exists only on features supercluster created, so these two
     // filters partition the source into clusters and leftover single points.
-    addLayerJson(
-      jsonEncode({
-        'id': '$id-clusters',
-        'type': 'circle',
-        'source': id,
-        'filter': ['has', 'point_count'],
-        'paint': {
-          // Bubble grows with the number of points it stands for.
-          'circle-radius': [
-            'step',
-            ['get', 'point_count'],
-            clusterRadiusPx,
-            100,
-            clusterRadiusPx * 1.35,
-            750,
-            clusterRadiusPx * 1.75,
-          ],
-          'circle-color': _cssColor(clusterColor),
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
-        },
-      }),
+    addLayer(
+      CircleLayer(
+        id: '$id-clusters',
+        source: id,
+        filter: Expr.has('point_count'),
+        // Bubble grows with the number of points it stands for.
+        circleRadius: Expr.step(
+          Expr.get('point_count'),
+          clusterRadiusPx,
+          100,
+          clusterRadiusPx * 1.35,
+          750,
+          clusterRadiusPx * 1.75,
+        ),
+        circleColor: StyleValue(clusterColor),
+        circleStrokeWidth: const StyleValue(2),
+        circleStrokeColor: const StyleValue(_white),
+      ),
       beforeId: beforeId,
     );
     // Only when the caller has told us a font the style actually serves —
     // otherwise mbgl falls back to "Open Sans Regular,Arial Unicode MS Regular"
     // and 404s the glyph range on every tile.
     if (clusterTextFont != null) {
-      addLayerJson(
-        jsonEncode({
-          'id': '$id-count',
-          'type': 'symbol',
-          'source': id,
-          'filter': ['has', 'point_count'],
-          'layout': {
-            'text-field': ['get', 'point_count_abbreviated'],
-            'text-font': clusterTextFont,
-            'text-size': 12,
-            'text-allow-overlap': true,
-          },
-          'paint': {'text-color': '#ffffff'},
-        }),
+      addLayer(
+        SymbolLayer(
+          id: '$id-count',
+          source: id,
+          filter: Expr.has('point_count'),
+          textField: Expr.get('point_count_abbreviated'),
+          textFont: StyleValue(clusterTextFont),
+          textSize: const StyleValue(12),
+          textAllowOverlap: const StyleValue(true),
+          textColor: const StyleValue(_white),
+        ),
         beforeId: beforeId,
       );
     }
-    addLayerJson(
-      jsonEncode({
-        'id': '$id-points',
-        'type': 'circle',
-        'source': id,
-        'filter': [
-          '!',
-          ['has', 'point_count'],
-        ],
-        'paint': {
-          'circle-radius': radius,
-          'circle-color': _cssColor(color),
-          'circle-stroke-width': 1,
-          'circle-stroke-color': '#ffffff',
-        },
-      }),
+    addLayer(
+      _circles(
+        id: '$id-points',
+        source: id,
+        radius: radius,
+        color: color,
+        filter: Expr.not(Expr.has('point_count')),
+      ),
       beforeId: beforeId,
     );
   }
 
+  /// The plain-points circle layer, shared by the clustered and unclustered
+  /// paths so they cannot drift apart.
+  static CircleLayer _circles({
+    required String id,
+    required String source,
+    required double radius,
+    required Color color,
+    Expression? filter,
+  }) => CircleLayer(
+    id: id,
+    source: source,
+    filter: filter,
+    circleRadius: StyleValue(radius),
+    circleColor: StyleValue(color),
+    circleStrokeWidth: const StyleValue(1),
+    circleStrokeColor: const StyleValue(_white),
+  );
+
+  static const _white = Color(0xFFFFFFFF);
+
   /// Replaces the points of a layer added with [addPoints], without rebuilding
   /// it — the engine re-tiles and re-clusters.
   void setPoints(String id, List<LatLng> points) =>
-      setGeoJsonData(id, jsonEncode(_featureCollection(points)));
+      setGeoJsonData(id, jsonEncode(GeoJsonData.points(points).toJson()));
 
   /// Removes everything [addPoints] created for [id].
   void removePoints(String id) {
@@ -441,26 +462,4 @@ class MapLibreLayersController {
     pipelineOwner.rootNode = null;
     return image;
   }
-
-  static Map<String, Object?> _featureCollection(List<LatLng> points) => {
-    'type': 'FeatureCollection',
-    'features': [
-      for (final p in points)
-        {
-          'type': 'Feature',
-          // GeoJSON is [lng, lat] — the opposite order to LatLng. Flipped here,
-          // once, so callers never have to think about it.
-          'geometry': {
-            'type': 'Point',
-            'coordinates': [p.longitude, p.latitude],
-          },
-          'properties': const <String, Object?>{},
-        },
-    ],
-  };
-
-  /// The style spec wants CSS colours, not ARGB ints.
-  static String _cssColor(Color c) =>
-      'rgba(${(c.r * 255).round()},${(c.g * 255).round()},'
-      '${(c.b * 255).round()},${c.a})';
 }

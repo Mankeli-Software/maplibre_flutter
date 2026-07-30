@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -90,6 +89,14 @@ enum Scenario {
     'The same widget-derived icon at EVERY point, unclustered: raw symbol '
         'throughput with nothing hidden. At 50k zoomed out this is a solid '
         'mass by design — zoom in to read it, and watch frame times.',
+  ),
+  typedStyle(
+    'Typed style API',
+    'The generated style API, used directly — no addPoints. One GeoJsonSource '
+        'with per-point properties feeds a CircleLayer whose colour comes from '
+        'Expr.match and radius from Expr.interpolate, a SymbolLayer labelling '
+        'each city, and a dashed LineLayer route. Data-driven styling with no '
+        'JSON in sight.',
   ),
   hybrid(
     'Hybrid: animated + 50k',
@@ -203,7 +210,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
     layers
       ..removeLayer('bulk-icons')
       ..removePoints('bulk')
-      ..removeSource('bulk');
+      ..removeSource('bulk')
+      // The typed-API scenario's own ids.
+      ..removeLayer('typed-labels')
+      ..removeLayer('typed-circles')
+      ..removeLayer('typed-route')
+      ..removeSource('typed')
+      ..removeSource('typed-route');
     setState(() {
       _liveFeatures = const [];
       _widgetPoints = const [];
@@ -235,6 +248,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
           clusterTextFont: _safeFont,
         );
 
+      case Scenario.typedStyle:
+        _applyTypedStyle();
+
       case Scenario.engineIcons:
         await _applyEngineIcons();
 
@@ -256,6 +272,132 @@ class _MapDemoPageState extends State<MapDemoPage> {
         _refreshLiveWidgets();
     }
   }
+
+  /// The typed style API, used the way an app would use it.
+  ///
+  /// Nothing here is a JSON string and nothing goes through `addPoints`: the
+  /// source, all three layers, the enums and every expression are the classes
+  /// generated from the MapLibre Style Spec vendored in this repo
+  /// (`maplibre_flutter/tool/generate_style_api.dart`). Compare with
+  /// [_applyEngineIconsFlat] before this existed — the same document was a
+  /// nested pile of maps.
+  void _applyTypedStyle() {
+    final layers = _controller.layers;
+
+    // Per-point properties are what make data-driven styling possible: the
+    // expressions below read `kind` and `pop` off each feature.
+    layers.addSource(
+      'typed',
+      GeoJsonSource(
+        data: GeoJsonData.points(
+          [for (final c in _showcase) c.$2],
+          properties: [
+            for (final c in _showcase)
+              {'name': c.$1, 'kind': c.$3, 'pop': c.$4},
+          ],
+        ),
+      ),
+    );
+
+    // A dashed route through the same cities, from an inline LineString.
+    layers.addSource(
+      'typed-route',
+      GeoJsonSource(
+        data: GeoJsonData.lineThrough([for (final c in _showcase) c.$2]),
+      ),
+    );
+    layers.addLayer(
+      LineLayer(
+        id: 'typed-route',
+        source: 'typed-route',
+        // Enums, not strings: the spec's `line-cap` / `line-join` values.
+        lineCap: const StyleValue(LineCap.round),
+        lineJoin: const StyleValue(LineJoin.round),
+        lineColor: const StyleValue(Color(0xFF5E35B1)),
+        lineOpacity: const StyleValue(0.8),
+        // Thickens as you zoom in: interpolate over ["zoom"].
+        lineWidth: Expr.interpolate(
+          Expr.raw(['linear']),
+          Expr.zoom(),
+          4,
+          1.5,
+          10,
+          5,
+        ),
+        lineDasharray: const StyleValue([2, 1.5]),
+      ),
+    );
+
+    layers.addLayer(
+      CircleLayer(
+        id: 'typed-circles',
+        source: 'typed',
+        // Colour BY CATEGORY, evaluated in the engine per feature. Colours are
+        // real dart:ui Colors even inside the expression.
+        circleColor: Expr.match(
+          Expr.get('kind'),
+          'capital',
+          const Color(0xFFD81B60),
+          'coastal',
+          const Color(0xFF1E88E5),
+          const Color(0xFF43A047), // fallback: inland
+        ),
+        // Radius BY POPULATION, interpolated between two stops.
+        circleRadius: Expr.interpolate(
+          Expr.raw(['linear']),
+          Expr.get('pop'),
+          60,
+          6,
+          650,
+          26,
+        ),
+        circleOpacity: const StyleValue(0.85),
+        circleStrokeWidth: const StyleValue(2),
+        circleStrokeColor: const StyleValue(Color(0xFFFFFFFF)),
+      ),
+    );
+
+    layers.addLayer(
+      SymbolLayer(
+        id: 'typed-labels',
+        source: 'typed',
+        // `text-field` is a data expression too, so the label is per feature.
+        textField: Expr.get('name'),
+        textFont: const StyleValue(_safeFont),
+        textSize: Expr.interpolate(
+          Expr.raw(['linear']),
+          Expr.zoom(),
+          4,
+          11,
+          9,
+          15,
+        ),
+        textAnchor: const StyleValue(TextAnchor.top),
+        textOffset: const StyleValue([0, 1.1]),
+        textAllowOverlap: const StyleValue(true),
+        textColor: const StyleValue(Color(0xFF12232E)),
+        // A halo keeps labels readable over both styles' basemaps.
+        textHaloColor: const StyleValue(Color(0xFFFFFFFF)),
+        textHaloWidth: const StyleValue(1.5),
+      ),
+    );
+  }
+
+  /// Cities for the typed-API scenario: (name, point, category, population/1000).
+  ///
+  /// Categories and magnitudes exist so the layer can be styled FROM THE DATA
+  /// rather than hard-coded per point.
+  static const _showcase = <(String, LatLng, String, int)>[
+    ('Helsinki', LatLng(60.1699, 24.9384), 'capital', 632),
+    ('Espoo', LatLng(60.2055, 24.6559), 'coastal', 300),
+    ('Turku', _turku, 'coastal', 195),
+    ('Tampere', LatLng(61.4978, 23.7610), 'inland', 244),
+    ('Jyväskylä', LatLng(62.2426, 25.7473), 'inland', 144),
+    ('Vaasa', LatLng(63.0951, 21.6165), 'coastal', 67),
+    ('Kuopio', LatLng(62.8924, 27.6770), 'inland', 121),
+    ('Oulu', LatLng(65.0121, 25.4651), 'coastal', 209),
+    ('Rovaniemi', LatLng(66.5039, 25.7294), 'inland', 64),
+  ];
 
   /// Registers the widget-derived icon used by both icon scenarios.
   ///
@@ -283,40 +425,22 @@ class _MapDemoPageState extends State<MapDemoPage> {
     if (!await _registerWidgetIcon()) return;
     final layers = _controller.layers;
     layers
-      ..addSourceJson(
+      ..addSource(
         'bulk',
-        jsonEncode({
-          'type': 'geojson',
-          'data': {
-            'type': 'FeatureCollection',
-            'features': [
-              for (final p in _dataset(_engineCounts[_engineCountIndex]))
-                {
-                  'type': 'Feature',
-                  'geometry': {
-                    'type': 'Point',
-                    // GeoJSON is [lng, lat].
-                    'coordinates': [p.longitude, p.latitude],
-                  },
-                  'properties': const <String, Object?>{},
-                },
-            ],
-          },
-        }),
+        GeoJsonSource(
+          data: GeoJsonData.points(_dataset(_engineCounts[_engineCountIndex])),
+        ),
       )
-      ..addLayerJson(
-        jsonEncode({
-          'id': 'bulk-icons',
-          'type': 'symbol',
-          'source': 'bulk',
-          'layout': {
-            'icon-image': 'bulk-pin',
-            // Without this the engine hides colliding labels, which would look
-            // like the icons "not all rendering" rather than the intended
-            // every-point picture.
-            'icon-allow-overlap': true,
-          },
-        }),
+      ..addLayer(
+        const SymbolLayer(
+          id: 'bulk-icons',
+          source: 'bulk',
+          iconImage: StyleValue('bulk-pin'),
+          // Without this the engine hides colliding labels, which would look
+          // like the icons "not all rendering" rather than the intended
+          // every-point picture.
+          iconAllowOverlap: StyleValue(true),
+        ),
       );
   }
 
@@ -337,17 +461,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
     );
     // Leaves (non-cluster features) drawn with the widget-derived icon, on top
     // of the plain circles addPoints made for them.
-    layers.addLayerJson(
-      jsonEncode({
-        'id': 'bulk-icons',
-        'type': 'symbol',
-        'source': 'bulk',
-        'filter': [
-          '!',
-          ['has', 'point_count'],
-        ],
-        'layout': {'icon-image': 'bulk-pin', 'icon-allow-overlap': true},
-      }),
+    layers.addLayer(
+      SymbolLayer(
+        id: 'bulk-icons',
+        source: 'bulk',
+        filter: Expr.not(Expr.has('point_count')),
+        iconImage: const StyleValue('bulk-pin'),
+        iconAllowOverlap: const StyleValue(true),
+      ),
     );
   }
 
@@ -480,6 +601,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.engineClusters:
       case Scenario.engineIcons:
       case Scenario.engineIconsFlat:
+      // Everything in this one is drawn by the engine from the typed style.
+      case Scenario.typedStyle:
         return const [];
     }
   }

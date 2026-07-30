@@ -1868,4 +1868,102 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     plus a raw hatch (84 operators is too many to model perfectly up front). CI regen-diff check
     like ffigen so spec drift fails visibly. Suggested order: circle, symbol, line, fill, rest.
 
+- **2026-07-30 — Typed style API BUILT, generated from the vendored spec: `circle` layer +
+  `geojson` source, end to end (on `feat/typed-style-api`).** Executes the design recorded the
+  same day (entry above) rather than re-deriving it. Generator
+  `packages/maplibre_flutter/tool/generate_style_api.dart` reads
+  `third_party/maplibre-native/scripts/style-spec-reference/v8.json` and emits
+  `lib/src/style/generated/*.g.dart` (committed, `dart format`ed by the generator so the files are
+  byte-stable); `.github/workflows/ci.yml` regenerates + `git diff --exit-code`s it beside the
+  ffigen check, so an mbgl bump that moves the spec fails visibly. **No C ABI change** — a typed
+  layer serialises to the existing `addLayerJson`, as designed. New public surface:
+  `layers.addLayer(StyleLayer, beforeId:)` / `layers.addSource(String, StyleSource)` alongside the
+  raw JSON methods, which stay public as the escape hatch. `addPoints`/`setPoints` are
+  **reimplemented on the typed API** (the cluster-count layer is `symbol`, so it stays raw JSON
+  until the generator covers that type). Nothing was hand-written per-property: the allowlists
+  `_layerTypes`/`_sourceTypes` are the entire cost of widening coverage.
+  - **The ergonomics trick that made typed properties viable: `Expression extends
+    StyleValue<Never>`.** Dart generics are covariant, so `StyleValue<Never> <: StyleValue<T>` for
+    every `T` — which is what lets ONE `StyleValue<double>?` parameter accept both
+    `const StyleValue(6)` and `Expr.step(...)` without degrading to `Object?` (which the design
+    doc explicitly rejected). Properties the spec marks `property-type: constant` (e.g.
+    `visibility`) are generated as their plain type instead, so an expression the engine would
+    reject is *not expressible*.
+  - **The spec carries NO arity information for expressions**, so all 84 operator builders are
+    uniformly variadic to 10 args with an `identical`-checked `_unset` sentinel (an explicit
+    `null` survives — `["literal", null]` is real). Overflow is a compile error, not silent
+    truncation; `Expr.raw` is the hatch. Curated name mapping only where Dart forces it: symbolic
+    ops, reserved words (`case`/`var`/`in`), `to-string` → `toStringOp` (a static `toString`
+    collides with `Object.toString`), and **`visibility` → `StyleVisibility`** (bare `Visibility`
+    collides with the Flutter widget). The generator **throws** on a collision, a reserved word or
+    an unmapped spec type — a silent `Object` fallback is how a generated API rots.
+  - **Serialisation is byte-compatible with hand-written style JSON**: whole numbers emit as ints
+    (`6`, not `6.0`), opaque colours as `#rrggbb` (translucent as `rgba(...)`), keys in spec order
+    (`id, type, metadata, source, source-layer, minzoom, maxzoom, filter, layout, paint`). GeoJSON
+    coordinates deliberately skip the int rewriting and stay doubles (`GeoJsonData.toJson()`
+    returns its data as given) — the one path whose bytes previously went to mbgl's GeoJSON parser,
+    left unchanged on purpose.
+  - **Generated files emit only the imports they use** — an unused import is a warning and
+    `melos run analyze` is `--fatal-infos`.
+  - **Verified on this Mac:** generator is idempotent (re-run is byte-identical); `melos analyze`
+    green across all 13 packages; `melos format` green; 22 new tests in
+    `maplibre_flutter/test/style_api_test.dart` pass, full `melos test` is 58 passing with only
+    the **pre-existing** `"pinch zoom freezes its anchor"` failure (re-confirmed failing with this
+    branch's changes stashed). §7-layer-5 note: the typed API cannot be checked against the GPU
+    from `maplibre_flutter` (the engine tests live in `maplibre_flutter_core`, which must not
+    depend on the app-facing package), so a test pins the typed output **equal to the exact
+    documents `maplibre_flutter_core_test.dart` already renders and verifies by counting painted
+    pixels** — the closest the dependency graph allows.
+
+- **2026-07-30 (same session, second pass) — Typed style API widened from `circle` to the WHOLE
+  spec; the allowlist was deleted rather than extended; the example now demonstrates it.** Driven
+  by a concrete need: the example's icon scenarios and `addPoints`' cluster-count label are
+  `symbol` layers, so a circle-only API left raw JSON in both the library and the example. Rather
+  than add `symbol` to the allowlist, the generator now **discovers** coverage from the spec —
+  every type in `layer.type.values`, every `source_*` schema — so a layer type added by a future
+  spec generates itself and CI's regen diff surfaces it. Keeping a hand-picked list would
+  reintroduce exactly the drift this design exists to prevent. Output went 2.3k → **5.6k lines:
+  10 layer classes, 6 source classes, 33 enums, 84 expression builders.**
+  - **What the remaining nine layer types actually cost:** only new *spec-type* mappings, no
+    per-property work — `padding` and `numberArray` → `List<double>`, `colorArray` →
+    `List<Color>`, `variableAnchorOffsetCollection` → `List<Object>` (its elements genuinely
+    alternate anchor-name/offset-pair), arrays **of enum** (`text-variable-anchor` carries its
+    `values` on the property itself, so the whole def is handed down), and arrays whose `value` is
+    a nested *schema* rather than a type name (a source's `coordinates` → `List<List<double>>`).
+  - **Three traps the widening exposed**, all now handled in the generator: (1) **a source's
+    `type` string is NOT its schema key** — `source_raster_dem` describes `"type": "raster-dem"`
+    — so the discriminator is read from the schema's own single-valued `type` enum, not derived
+    from the key; (2) source schemas contain a **`"*"` wildcard property key** (extra TileJSON
+    fields on raster/vector) which cannot be a Dart field and is skipped, with `addSourceJson`
+    as the hatch; (3) **enum names collide across sources** — `scheme` exists on both `raster` and
+    `vector`, and `encoding` means different things on `vector` (mvt/mlt) vs `raster-dem`
+    (terrarium/mapbox/custom) — so **source** enums are prefixed with their source type
+    (`VectorScheme`, `RasterDemEncoding`) while layer enums keep the property name (already unique,
+    since property names carry the layer). Identical values under one name still share an enum
+    (every layer has `visibility`); genuinely different values under one name throws.
+  - **`background` is generated without `source`, `source-layer` or `filter`** (it draws no
+    features), so an invalid document is not expressible.
+  - **Import emission is name-driven, not file-driven** — layers and sources both reference
+    generated enums, and a file must not import itself (the first cut had `style_enums.g.dart`
+    importing `style_enums.g.dart`, which `--fatal-infos` caught).
+  - **The library now contains ZERO raw style JSON**: `addPoints`' cluster-count layer is a typed
+    `SymbolLayer`. Added `GeoJsonData.lineThrough(points)` as the LineString counterpart to
+    `GeoJsonData.points`.
+  - **New example scenario "Typed style API"** (`_applyTypedStyle`), which uses `addSource` /
+    `addLayer` directly with no `addPoints` and no JSON: a `GeoJsonSource` carrying **per-point
+    properties**, a `CircleLayer` coloured by `Expr.match(Expr.get('kind'), …)` on real
+    `dart:ui` Colors *inside the expression* and sized by `Expr.interpolate` over
+    `Expr.get('pop')`, a `SymbolLayer` labelled from `Expr.get('name')` with `TextAnchor.top` +
+    halo, and a dashed `LineLayer` (`LineCap.round`, `lineDasharray`, width interpolated over
+    `Expr.zoom()`). The example's two remaining hand-rolled JSON documents (the icon scenarios)
+    are now typed as well.
+  - **Verified:** `melos analyze` (`--fatal-infos`) green across all 13 packages **and the
+    example**; generator idempotent; `maplibre_flutter` 62 passing with only the pre-existing
+    `"pinch zoom freezes its anchor"` failure. Earlier the same session the **clustered engine
+    path was confirmed on macOS with real pixels** (50k points → engine clusters, labelled, orange
+    `#f57c00`, `ui 0.3ms raster 0.3ms`), which proves mbgl accepts the generated documents
+    including the new hex-colour and int-number encodings. The new typed scenario itself is
+    **written and analysing but not yet eyeballed on device** — that run is the outstanding check.
+
+
 _Append new decisions here with date and rationale._

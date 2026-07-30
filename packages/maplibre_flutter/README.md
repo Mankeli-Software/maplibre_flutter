@@ -177,9 +177,16 @@ style, …) is identical everywhere. Each per-package README goes deep on how th
 What works on every platform today: **map creation, camera (`getCamera` / `moveCamera` /
 jump / fly), style switching (`setStyle`), gestures, `resize`, `onReady`, and `dispose`.**
 
-Not yet wired: layers, sources, runtime styling/expressions, annotations & controls, events &
-queries, images/sprites/glyphs, 3D/terrain, and offline. These are binding work, not engine
-limitations — the underlying engines support them. The
+On the `mbgl-core` tiers there is also a two-tier annotation story: **widget markers**
+(`MapLibreMap(markers: …)`) glue real Flutter widgets to a `LatLng`, and **engine layers**
+(`controller.layers`) put points in the style for the engine to draw — clustered, and scaling far
+past what widgets can carry. Sources and layers are added through a **typed API generated from the
+MapLibre Style Spec** vendored in this repo — all 10 layer types, all 6 source types, every enum
+and all 84 expression operators (`CircleLayer`, `SymbolLayer`, `GeoJsonSource`, `Expr.match`, …) —
+with raw Style Spec JSON still accepted as an escape hatch.
+
+Not yet wired: controls, events, 3D/terrain, and offline. These
+are binding work, not engine limitations — the underlying engines support them. The
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)
 tracks the full parity backlog, feature by feature, per platform.
 
