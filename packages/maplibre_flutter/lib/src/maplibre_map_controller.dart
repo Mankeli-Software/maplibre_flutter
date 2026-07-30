@@ -184,6 +184,19 @@ class MapLibreMapController {
     }
   }
 
+  /// Frames the RENDERER has published, or null on tiers that cannot report it.
+  ///
+  /// Difference it over time for the map's true frame rate. A Flutter `Ticker`
+  /// measures Flutter's vsync, which stays at the display rate however far behind
+  /// the map falls, because the map is composited as a texture.
+  @experimental
+  int? get renderedFrameCount {
+    final platform = _platform;
+    return platform is MapLibreModelHost
+        ? (platform as MapLibreModelHost).renderedFrameCount
+        : null;
+  }
+
   /// How many drawables one instance of the model at [assetPath] costs, or null
   /// if it is not loaded. For reporting real draw-call counts.
   @experimental

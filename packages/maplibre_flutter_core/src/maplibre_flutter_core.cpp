@@ -1009,6 +1009,14 @@ void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
   });
 }
 
+uint64_t mbl_map_frame_count(MblMap *m) {
+  if (m == nullptr) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  return m->frameCount;
+}
+
 uint32_t mbl_model_part_count(const char *glb_path) {
   if (glb_path == nullptr) {
     return 0;

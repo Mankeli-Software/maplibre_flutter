@@ -282,6 +282,18 @@ FFI_PLUGIN_EXPORT void mbl_map_set_model_transform(MblMap *map,
                                                    double heading_deg,
                                                    double elevation_m);
 
+// Total frames the RENDER THREAD has published since creation.
+//
+// This is mbgl's actual frame production rate, which is the number that matters
+// for "is the map keeping up". A Flutter Ticker measures FLUTTER's vsync instead,
+// and because the map is composited as a Texture, Flutter's UI thread stays
+// pinned at the display rate no matter how far behind the map falls — so a
+// Ticker-based counter reads a flat 60 while the map visibly stutters.
+//
+// Sample it once a second and difference it to get map fps. Cheap and lock-free
+// enough to poll; safe from any thread.
+FFI_PLUGIN_EXPORT uint64_t mbl_map_frame_count(MblMap *map);
+
 // How many drawables (draw calls) one instance of the model at `glb_path` costs,
 // or 0 if it has not been loaded. Reads the parsed-mesh cache, so it is only
 // meaningful after a successful mbl_map_add_model. Exists so a caller can report

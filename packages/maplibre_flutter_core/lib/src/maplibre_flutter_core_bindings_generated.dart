@@ -265,6 +265,9 @@ external void mbl_map_set_model_transform(
   double elevation_m,
 );
 
+@ffi.Native<ffi.Uint64 Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_frame_count(ffi.Pointer<MblMap> map);
+
 @ffi.Native<ffi.Uint32 Function(ffi.Pointer<ffi.Char>)>()
 external int mbl_model_part_count(ffi.Pointer<ffi.Char> glb_path);
 

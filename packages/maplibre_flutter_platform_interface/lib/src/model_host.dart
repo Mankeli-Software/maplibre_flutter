@@ -113,6 +113,15 @@ abstract interface class MapLibreModelHost {
   /// if it is not loaded. Lets callers report real draw-call counts.
   int? modelPartCount(String assetPath);
 
+  /// Frames the renderer has actually published since creation, or null if the
+  /// tier cannot report it.
+  ///
+  /// Difference it over time for the MAP's frame rate. Measuring with a Flutter
+  /// `Ticker` instead reports Flutter's vsync, which stays pinned at the display
+  /// rate however far behind the map falls — the map is a texture, so Flutter has
+  /// nothing to wait for.
+  int? get renderedFrameCount;
+
   /// Removes the model with [id]. A no-op if there is none.
   void removeModel(String id);
 }

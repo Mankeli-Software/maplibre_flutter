@@ -225,6 +225,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
   double _stressFps = 0;
   double _stressWorstMs = 0; // worst frame in the last window, not the average
   int _partsPerModel = 0;
+  // The MAP's own frame rate, from the renderer's published-frame counter. The
+  // Ticker figure above it is FLUTTER's vsync, which stays pinned at the display
+  // rate however far behind the map falls — the map is a texture, so Flutter has
+  // nothing to wait for. Two separate numbers because they answer two questions.
+  double _mapFps = 0;
+  int _lastRenderedFrames = 0;
   LatLng _modelAnchor = _modelSite;
   // Following a circle rotates the model 360 degrees per lap — that is simply
   // what driving a roundabout is, and it is correct. But how it READS depends
@@ -459,6 +465,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
     _stressFrames = 0;
     _stressLastReport = Duration.zero;
     _stressWorstMs = 0;
+    // ignore: experimental_member_use
+    _lastRenderedFrames = _controller.renderedFrameCount ?? 0;
     var worst = 0.0;
     var last = Duration.zero;
     _stressTicker = Ticker((elapsed) {
@@ -489,9 +497,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
       if (elapsed - _stressLastReport > const Duration(seconds: 1)) {
         final secs =
             (elapsed - _stressLastReport).inMicroseconds / 1e6;
+        // ignore: experimental_member_use
+        final rendered = _controller.renderedFrameCount ?? 0;
+        final mapFrames = rendered - _lastRenderedFrames;
+        _lastRenderedFrames = rendered;
         setState(() {
           _stressFps = _stressFrames / secs;
           _stressWorstMs = worst;
+          _mapFps = mapFrames / secs;
         });
         worst = 0;
         _stressFrames = 0;
@@ -663,8 +676,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('${_stressFps.toStringAsFixed(1)} fps   '
-                            'worst ${_stressWorstMs.toStringAsFixed(1)} ms'),
+                        Text('map   ${_mapFps.toStringAsFixed(1)} fps',
+                            style: TextStyle(
+                              color: _mapFps < 30
+                                  ? Colors.orangeAccent
+                                  : Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            )),
+                        Text('flutter ${_stressFps.toStringAsFixed(1)} fps  '
+                            '(vsync, not the map)'),
+                        Text('worst UI frame ${_stressWorstMs.toStringAsFixed(1)} ms'),
                         const SizedBox(height: 4),
                         Text('$_stressCount models x $_partsPerModel parts'),
                         Text('= ${_stressCount * _partsPerModel} draw calls'),

@@ -296,6 +296,10 @@ class MapLibreFlutterMacosController
   }
 
   @override
+  int? get renderedFrameCount =>
+      _disposed ? null : _coreMap.renderedFrameCount;
+
+  @override
   int? modelPartCount(String assetPath) =>
       core.MapLibreCoreMap.modelPartCount(assetPath);
 

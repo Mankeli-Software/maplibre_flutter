@@ -317,6 +317,16 @@ class MapLibreCoreMap {
     }
   }
 
+  /// Frames the render thread has published since creation.
+  ///
+  /// Difference it over time for the MAP's frame rate. A Flutter `Ticker`
+  /// measures Flutter's vsync, which stays pinned at the display rate however far
+  /// behind the map falls, because the map is composited as a texture.
+  int get renderedFrameCount {
+    _checkAlive();
+    return bindings.mbl_map_frame_count(_handle);
+  }
+
   /// How many drawables (draw calls) one instance of the model at [path] costs,
   /// or null if it has not been loaded yet.
   static int? modelPartCount(String path) {
