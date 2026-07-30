@@ -885,6 +885,21 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
   return 1;
 }
 
+void mbl_map_remove_model(MblMap *m, const char *layer_id) {
+  if (m == nullptr || layer_id == nullptr) {
+    return;
+  }
+  m->post([m, layerId = std::string(layer_id)] {
+    if (m->map == nullptr) {
+      return;
+    }
+    if (m->map->getStyle().getLayer(layerId) != nullptr) {
+      m->map->getStyle().removeLayer(layerId);
+      m->renderRequested = true;
+    }
+  });
+}
+
 void mbl_map_add_test_model(MblMap *m, double lat, double lng,
                             double metres_per_unit, double spin_dps) {
   if (m == nullptr) {

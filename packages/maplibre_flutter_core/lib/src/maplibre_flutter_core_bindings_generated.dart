@@ -242,6 +242,12 @@ external int mbl_map_add_model(
   int error_capacity,
 );
 
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
+external void mbl_map_remove_model(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+);
+
 @ffi.Native<
   ffi.Void Function(
     ffi.Pointer<MblMap>,

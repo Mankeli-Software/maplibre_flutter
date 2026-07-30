@@ -152,6 +152,36 @@ class MapLibreMapController {
         : null;
   }
 
+  /// Draws a 3D model inside the map engine, anchored to a geographic point.
+  ///
+  /// EXPERIMENTAL and imperative for now. The eventual API is a declarative
+  /// `MapLibreMap(models: ...)` widget prop, mirroring `markers` under the
+  /// three-bucket rule (mutable + declarative -> widget property); this exists so
+  /// the renderer can be exercised before that lands. Expect it to change.
+  ///
+  /// Because the model is drawn by the engine it depth-occludes against 3D
+  /// buildings, unlike a widget overlay. Silently does nothing on tiers whose
+  /// renderer has no model support (feature-detected like [projector]).
+  ///
+  /// Throws [ArgumentError] if the `.glb` cannot be loaded, with the native
+  /// reason.
+  @experimental
+  void addModel(MapLibreModel model) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).addModel(model);
+    }
+  }
+
+  /// Removes a model added by [addModel]. See its caveats.
+  @experimental
+  void removeModel(String id) {
+    final platform = _platform;
+    if (platform is MapLibreModelHost) {
+      (platform as MapLibreModelHost).removeModel(id);
+    }
+  }
+
   /// Applies a new style. The public source of truth for style is the
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.

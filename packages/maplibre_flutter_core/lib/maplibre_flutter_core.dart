@@ -285,6 +285,18 @@ class MapLibreCoreMap {
     }
   }
 
+  /// Removes a model layer added by [addModel]. A no-op if [layerId] names no
+  /// layer.
+  void removeModel(String layerId) {
+    _checkAlive();
+    final p = layerId.toNativeUtf8();
+    try {
+      bindings.mbl_map_remove_model(_handle, p.cast());
+    } finally {
+      malloc.free(p);
+    }
+  }
+
   /// Adds the 3D-model spike's test mesh — a spinning, per-face-coloured
   /// pyramid — anchored at [latitude]/[longitude].
   ///

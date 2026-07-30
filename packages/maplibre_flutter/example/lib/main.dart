@@ -54,7 +54,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
     // The controller exists immediately; the native map is ready a bit later.
     // Wait for it, then enable the camera/style controls.
     _controller.onReady.then((_) {
-      if (mounted) setState(() => _ready = true);
+      if (!mounted) return;
+      setState(() => _ready = true);
+      // If a model was supplied on the command line, place it straight away so
+      // `flutter run --dart-define=MODEL_GLB=...` is all it takes to see one.
+      if (_modelPath.isNotEmpty) _toggleModel();
     });
   }
 
@@ -83,6 +87,92 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   // Style is declarative: change the widget's `style` prop and rebuild. The
   // widget pushes the new style to the native map (CLAUDE.md §3).
+  // --- 3D model (EXPERIMENTAL) ----------------------------------------------
+  //
+  // The path is read natively, so it must be a real file on disk — not a Flutter
+  // asset key. Override with:
+  //   flutter run -d macos --dart-define=MODEL_GLB=/abs/path/to/model.glb
+  static const String _modelPath = String.fromEnvironment(
+    'MODEL_GLB',
+    defaultValue: '',
+  );
+  // Many models are not authored in metres (Sketchfab exports especially), and
+  // glTF's -Z-forward convention is widely ignored, so both are overridable.
+  // Dart only has bool/int/String fromEnvironment, so these come in as strings.
+  static const String _modelScaleRaw = String.fromEnvironment(
+    'MODEL_SCALE',
+    defaultValue: '1',
+  );
+  static const String _modelHeadingRaw = String.fromEnvironment(
+    'MODEL_HEADING',
+    defaultValue: '0',
+  );
+  static double get _modelScale => double.tryParse(_modelScaleRaw) ?? 1;
+  static double get _modelHeading => double.tryParse(_modelHeadingRaw) ?? 0;
+  bool _modelAdded = false;
+  String? _modelError;
+
+  // Where to put the model when the map is still zoomed out. A few-metre object
+  // is sub-pixel below roughly z18, and the example opens at world view, so
+  // "place it at the current centre" would drop it at null island invisibly.
+  static const LatLng _modelSite = LatLng(51.50735, -0.12776); // Westminster
+
+  Future<void> _toggleModel() async {
+    if (_modelAdded) {
+      // ignore: experimental_member_use
+      _controller.removeModel('demo-model');
+      setState(() {
+        _modelAdded = false;
+        _modelError = null;
+      });
+      return;
+    }
+    if (_modelPath.isEmpty) {
+      setState(() {
+        _modelError = 'Pass --dart-define=MODEL_GLB=/abs/path/model.glb';
+      });
+      return;
+    }
+
+    // Use wherever the user is already looking if it is close enough to see a
+    // car-sized object; otherwise go to a known street-level site.
+    final current = await _controller.camera.getPosition();
+    final zoomedIn = current.zoom >= 15;
+    final site = zoomedIn ? current.center : _modelSite;
+    await _controller.camera.move(
+      MapCamera(
+        center: site,
+        zoom: zoomedIn && current.zoom >= 19 ? current.zoom : 20,
+        bearing: current.bearing,
+        pitch: current.pitch < 30 ? 60 : current.pitch,
+      ),
+      duration: const Duration(milliseconds: 800),
+    );
+    try {
+      // Deliberately exercising the 3D-model API before the declarative
+      // `models:` widget prop lands.
+      // ignore: experimental_member_use
+      _controller.addModel(
+        MapLibreModel(
+          id: 'demo-model',
+          assetPath: _modelPath,
+          point: site,
+          scale: _modelScale,
+          headingDegrees: _modelHeading,
+        ),
+      );
+      debugPrint('[model] added $_modelPath at $site '
+          'scale=$_modelScale heading=$_modelHeading');
+      setState(() {
+        _modelAdded = true;
+        _modelError = null;
+      });
+    } on ArgumentError catch (e) {
+      debugPrint('[model] FAILED: ${e.message}');
+      setState(() => _modelError = '${e.message}');
+    }
+  }
+
   void _toggleStyle() {
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
   }
@@ -164,6 +254,24 @@ class _MapDemoPageState extends State<MapDemoPage> {
                     icon: const Icon(Icons.flight),
                     label: Text('Fly to ${_places[_placeIndex].$1}'),
                   ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'model',
+                    onPressed: _ready ? _toggleModel : null,
+                    icon: const Icon(Icons.view_in_ar),
+                    label: Text(_modelAdded ? 'Remove model' : 'Add 3D model'),
+                  ),
+                  if (_modelError != null)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.all(8),
+                      constraints: const BoxConstraints(maxWidth: 320),
+                      color: Colors.red.shade700,
+                      child: Text(
+                        _modelError!,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(
                     heroTag: 'style',

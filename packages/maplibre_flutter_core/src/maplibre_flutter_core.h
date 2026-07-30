@@ -266,6 +266,10 @@ FFI_PLUGIN_EXPORT int mbl_map_add_model(MblMap *map, const char *layer_id,
                                         char *out_error,
                                         size_t error_capacity);
 
+// Remove a model layer added by mbl_map_add_model. A no-op if `layer_id` names
+// no layer. Asynchronous (applied on the render thread).
+FFI_PLUGIN_EXPORT void mbl_map_remove_model(MblMap *map, const char *layer_id);
+
 // Add the built-in test model — a spinning, per-face-coloured pyramid — at
 // `lat`/`lng`. `metres_per_unit` sizes it in real-world metres (the mesh spans 2
 // units in X, 1 in Y, 1.5 in Z, so 50 gives a 100m x 50m footprint 75m tall).
