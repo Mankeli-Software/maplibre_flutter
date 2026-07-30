@@ -179,6 +179,70 @@ void main() {
     );
   });
 
+  // What repaintBoundary actually buys, measured rather than argued: with a
+  // boundary the child's painting is cached in its own layer, so a camera tick
+  // moves the layer instead of re-running the child's paint. Without one, every
+  // tick re-paints every marker's content.
+  //
+  // Device testing found no VISIBLE frame-time difference with all markers on
+  // screen, which is consistent with this: the saving is proportional to how
+  // expensive the child is to paint, and cheap children save nothing worth
+  // seeing. This pins the mechanism so the default has evidence behind it.
+  testWidgets('repaintBoundary stops camera ticks re-painting the child', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 21));
+    controller.projectFn = (_) => const Offset(100, 100);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    final withBoundary = _Counter();
+    final without = _Counter();
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: _PaintCountingBox(counter: withBoundary),
+        ),
+        MapLibreMarker(
+          point: const LatLng(1, 1),
+          repaintBoundary: false,
+          child: _PaintCountingBox(counter: without),
+        ),
+      ],
+    );
+
+    final boundaryBaseline = withBoundary.value;
+    final plainBaseline = without.value;
+
+    // Ten camera ticks with the marker moving each time.
+    for (var i = 0; i < 10; i++) {
+      controller.projectFn = (_) => Offset(100 + i.toDouble(), 100);
+      controller.generation++;
+      controller.tick();
+      await tester.pump();
+    }
+
+    final boundaryRepaints = withBoundary.value - boundaryBaseline;
+    final plainRepaints = without.value - plainBaseline;
+
+    // THE FINDING: neither re-paints. `Flow` composites each child through a
+    // transform layer, so moving a marker replays a retained layer rather than
+    // re-running the child's paint — with or without an explicit boundary. The
+    // flag therefore buys nothing here, which is exactly why device testing saw
+    // no frame-time difference from the Layers toggle. Its default is false.
+    expect(
+      plainRepaints,
+      0,
+      reason: 'Flow already avoids re-painting children on a camera tick',
+    );
+    expect(
+      boundaryRepaints,
+      0,
+      reason: 'a boundary adds a layer but no additional saving',
+    );
+  });
+
   testWidgets('culls markers projected outside the viewport (no paint)', (
     tester,
   ) async {

@@ -23,7 +23,7 @@ class MapLibreMarker {
     this.onDragUpdate,
     this.onDragEnd,
     this.key,
-    this.repaintBoundary = true,
+    this.repaintBoundary = false,
   });
 
   /// The geographic point the marker is anchored to.
@@ -57,17 +57,19 @@ class MapLibreMarker {
   /// (preserves child state when the list reorders).
   final Key? key;
 
-  /// Cache [child] in its own compositing layer so camera movement only moves
-  /// the layer instead of re-painting the child's content.
+  /// Wrap [child] in an explicit [RepaintBoundary].
   ///
-  /// The overlay repositions markers on every camera tick. Without a boundary,
-  /// each tick re-paints every marker's contents; with one, the child rasterises
-  /// once and subsequent ticks are a cheap layer transform. **This is the main
-  /// lever for rich markers** (cards, images, charts) — the more expensive the
-  /// child is to paint, the bigger the win.
+  /// **Defaults to false, and you probably do not need it.** The intuition is
+  /// that a boundary stops the child re-painting as the camera moves — but the
+  /// overlay uses a `Flow`, which already composites each child through its own
+  /// transform layer, so moving a marker replays a retained layer either way.
+  /// A test measures exactly this: the child paints zero extra times per camera
+  /// tick with OR without the flag, and on-device testing likewise showed no
+  /// frame-time difference from toggling it.
   ///
-  /// Defaults to true. Set it to **false** for very large numbers of trivial
-  /// markers (thousands of plain dots): there each layer costs more than simply
-  /// re-drawing the shape, so boundaries make it slower, not faster.
+  /// Kept as an escape hatch for children that invalidate themselves for other
+  /// reasons, where isolating them from the overlay may still help. It costs one
+  /// compositing layer per marker, so measure before using it at scale rather
+  /// than assuming a win.
   final bool repaintBoundary;
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
@@ -27,10 +28,13 @@ const MethodChannel _registrar = MethodChannel(
 ///
 /// NOTE: not yet run on real Windows hardware — see CLAUDE.md §8.
 class MapLibreFlutterWindowsController
+    with MapLibreCameraTickNotifier
     implements
         MapLibreMapPlatformController,
         MapLibreGestureHandler,
-        MapLibreResizeMaskHint {
+        MapLibreResizeMaskHint,
+        MapLibreMapProjector,
+        MapLibreStyleLayers {
   MapLibreFlutterWindowsController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -202,6 +206,7 @@ class MapLibreFlutterWindowsController
       bearing: camera.bearing,
       pitch: camera.pitch,
     );
+    notifyCameraChanged(); // reproject glued widget overlays
   }
 
   @override
@@ -222,6 +227,7 @@ class MapLibreFlutterWindowsController
     _renderWidth = w;
     _renderHeight = h;
     _coreMap.resize(w, h);
+    notifyCameraChanged(); // viewport size feeds the projection
   }
 
   @override
@@ -231,6 +237,7 @@ class MapLibreFlutterWindowsController
     // mbgl's screen coordinates are logical points (Size = logical points),
     // matching the widget's gesture deltas — no DPR scaling.
     _coreMap.moveBy(dx, dy);
+    notifyCameraChanged(); // reproject glued widget overlays
   }
 
   @override
@@ -247,12 +254,151 @@ class MapLibreFlutterWindowsController
     // (briefly shipped) mirrored the anchor vertically — a top-of-widget pinch zoomed
     // about the bottom. Verified on Windows hardware: raw anchor zooms on the cursor.
     _coreMap.scaleBy(scale, anchorX, anchorY);
+    notifyCameraChanged(); // reproject glued widget overlays
+  }
+
+  // --- MapLibreStyleLayers ----------------------------------------------------
+  // Straight pass-through to the core: mbgl owns the style, and the shim already
+  // validates the JSON synchronously and marshals the mutation onto the render
+  // thread. Silently ignored after dispose (matches the rest of this controller,
+  // where late calls from a torn-down widget are a no-op rather than a throw).
+
+  @override
+  void addSourceJson(String id, String json) {
+    if (_disposed) return;
+    _coreMap.addSourceJson(id, json);
+  }
+
+  @override
+  void addLayerJson(String json, {String? beforeId}) {
+    if (_disposed) return;
+    _coreMap.addLayerJson(json, beforeId: beforeId);
+  }
+
+  @override
+  void setGeoJsonData(String sourceId, String geoJson) {
+    if (_disposed) return;
+    _coreMap.setGeoJsonData(sourceId, geoJson);
+  }
+
+  @override
+  void removeLayer(String id) {
+    if (_disposed) return;
+    _coreMap.removeLayer(id);
+  }
+
+  @override
+  void removeSource(String id) {
+    if (_disposed) return;
+    _coreMap.removeSource(id);
+  }
+
+  @override
+  void addImage(
+    String id,
+    Uint8List rgba,
+    int width,
+    int height, {
+    double pixelRatio = 1.0,
+    bool sdf = false,
+  }) {
+    if (_disposed) return;
+    _coreMap.addImage(
+      id,
+      rgba,
+      width,
+      height,
+      pixelRatio: pixelRatio,
+      sdf: sdf,
+    );
+  }
+
+  @override
+  void removeImage(String id) {
+    if (_disposed) return;
+    _coreMap.removeImage(id);
+  }
+
+  @override
+  String? queryRenderedFeaturesJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+  }) {
+    if (_disposed) return null;
+    return _coreMap.queryRenderedFeatures(
+      minX,
+      minY,
+      maxX,
+      maxY,
+      layerIds: layerIds,
+    );
+  }
+
+  // --- MapLibreMapProjector ---------------------------------------------------
+  // Projection runs synchronously over the core's lock-free transform snapshot,
+  // so it is cheap to call from a Flow paint every camera tick. Screen space is
+  // logical points, top-left origin (matching the gesture deltas above).
+
+  // Reused across frames so projecting markers every camera tick allocates
+  // nothing on the Dart side (the core reuses native buffers in turn).
+  Float64List _projIn = Float64List(0);
+  Float64List _projOut = Float64List(0);
+  Int32List _projVis = Int32List(0);
+
+  @override
+  int project(List<LatLng> points, List<ui.Offset> out, {List<bool>? visible}) {
+    if (_disposed || points.isEmpty) return 0;
+    final n = points.length;
+    if (_projIn.length < n * 2) {
+      _projIn = Float64List(n * 2);
+      _projOut = Float64List(n * 2);
+      _projVis = Int32List(n);
+    }
+    for (var i = 0; i < n; i++) {
+      _projIn[i * 2] = points[i].latitude;
+      _projIn[i * 2 + 1] = points[i].longitude;
+    }
+    // Project against the transform of the frame ON SCREEN, not the newest one.
+    // Camera commands apply asynchronously on the render thread, so the newest
+    // transform typically leads the visible frame — projecting against it makes
+    // markers swim/lag during movement. (0 before the first frame, which the
+    // core treats as "newest".)
+    final gen = _coreMap.projectBatch(
+      n,
+      _projIn,
+      _projOut,
+      visible: _projVis,
+      generation: _coreMap.presentedGeneration,
+    );
+    if (gen == 0) return 0;
+    for (var i = 0; i < n; i++) {
+      out[i] = ui.Offset(_projOut[i * 2], _projOut[i * 2 + 1]);
+      if (visible != null) visible[i] = _projVis[i] != 0;
+    }
+    return gen;
+  }
+
+  @override
+  LatLng? unproject(ui.Offset point) {
+    if (_disposed) return null;
+    // Same frame the user is looking at (and the same one project() used), so a
+    // tap maps to the point actually under the cursor mid-movement.
+    final r = _coreMap.unproject(
+      point.dx,
+      point.dy,
+      generation: _coreMap.presentedGeneration,
+    );
+    return r == null ? null : LatLng(r.latitude, r.longitude);
   }
 
   @override
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    disposeCameraTick();
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);
     _coreMap.dispose();
   }

@@ -128,7 +128,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   static const _widgetCounts = <int>[100, 500, 1000, 1500, 2000];
   int _widgetCountIndex = 0;
   List<LatLng> _widgetPoints = const <LatLng>[];
-  bool _repaintBoundaries = true;
+  bool _repaintBoundaries = false; // measured: no effect; see MapLibreMarker
   bool _fancyMarkers = false;
 
   // Engine dataset state.
