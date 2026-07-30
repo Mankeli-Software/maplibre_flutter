@@ -85,6 +85,12 @@ enum Scenario {
         'Clustered, so leaves appear as you zoom in. Static snapshots — no '
         'animation, no gestures.',
   ),
+  engineIconsFlat(
+    'Engine icons — no clustering',
+    'The same widget-derived icon at EVERY point, unclustered: raw symbol '
+        'throughput with nothing hidden. At 50k zoomed out this is a solid '
+        'mass by design — zoom in to read it, and watch frame times.',
+  ),
   hybrid(
     'Hybrid: animated + 50k',
     'All 50k live in the engine, clustered there. queryRenderedFeatures asks '
@@ -119,7 +125,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   final List<LatLng> _dropped = <LatLng>[];
 
   // Widget-marker stress state.
-  static const _widgetCounts = <int>[100, 500, 2000];
+  static const _widgetCounts = <int>[100, 500, 1000, 1500, 2000];
   int _widgetCountIndex = 0;
   List<LatLng> _widgetPoints = const <LatLng>[];
   bool _repaintBoundaries = true;
@@ -232,6 +238,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.engineIcons:
         await _applyEngineIcons();
 
+      case Scenario.engineIconsFlat:
+        await _applyEngineIconsFlat();
+
       case Scenario.hybrid:
         layers.addPoints(
           'bulk',
@@ -248,22 +257,77 @@ class _MapDemoPageState extends State<MapDemoPage> {
     }
   }
 
+  /// Registers the widget-derived icon used by both icon scenarios.
+  ///
+  /// Returns false if the widget went away mid-rasterize (it is async).
+  Future<bool> _registerWidgetIcon() async {
+    await _controller.layers.addWidgetIcon(
+      'bulk-pin',
+      const _IconFrame(child: _FancyMarker()),
+      // A generous CAP, not a demand: the widget lays out loose and the icon
+      // comes out at its natural size. Too small a cap is what cropped the
+      // label before — as did wrapping it in a Center, which expands to fill
+      // whatever it is given.
+      size: const Size(240, 120),
+    );
+    return mounted;
+  }
+
+  /// Engine icons, UNCLUSTERED: the widget-derived icon at every single point.
+  ///
+  /// Raw symbol throughput with nothing hidden by clustering. At 50k and world
+  /// zoom this is deliberately a solid mass — that is the honest picture of
+  /// what "an icon per point" means, and the reason the clustered variant
+  /// exists next to it.
+  Future<void> _applyEngineIconsFlat() async {
+    if (!await _registerWidgetIcon()) return;
+    final layers = _controller.layers;
+    layers
+      ..addSourceJson(
+        'bulk',
+        jsonEncode({
+          'type': 'geojson',
+          'data': {
+            'type': 'FeatureCollection',
+            'features': [
+              for (final p in _dataset(_engineCounts[_engineCountIndex]))
+                {
+                  'type': 'Feature',
+                  'geometry': {
+                    'type': 'Point',
+                    // GeoJSON is [lng, lat].
+                    'coordinates': [p.longitude, p.latitude],
+                  },
+                  'properties': const <String, Object?>{},
+                },
+            ],
+          },
+        }),
+      )
+      ..addLayerJson(
+        jsonEncode({
+          'id': 'bulk-icons',
+          'type': 'symbol',
+          'source': 'bulk',
+          'layout': {
+            'icon-image': 'bulk-pin',
+            // Without this the engine hides colliding labels, which would look
+            // like the icons "not all rendering" rather than the intended
+            // every-point picture.
+            'icon-allow-overlap': true,
+          },
+        }),
+      );
+  }
+
   /// Engine icons: a rasterized Flutter widget as `icon-image`.
   ///
   /// Clustered like the circle scenario — an unclustered 50k icon layer with
   /// allow-overlap paints a solid mass at world view, which is useless to look
   /// at. Cluster bubbles carry the counts; leaves appear as you zoom in.
   Future<void> _applyEngineIcons() async {
+    if (!await _registerWidgetIcon()) return;
     final layers = _controller.layers;
-    // Padded, because rasterizeWidget captures exactly the box it is given and
-    // the marker's shadow paints outside its own bounds.
-    await layers.addWidgetIcon(
-      'bulk-pin',
-      const _IconFrame(child: _FancyMarker()),
-      size: const Size(44, 34),
-    );
-    if (!mounted) return;
-
     layers.addPoints(
       'bulk',
       _dataset(_engineCounts[_engineCountIndex]),
@@ -415,6 +479,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.enginePoints:
       case Scenario.engineClusters:
       case Scenario.engineIcons:
+      case Scenario.engineIconsFlat:
         return const [];
     }
   }
@@ -507,6 +572,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
         _scenario == Scenario.enginePoints ||
         _scenario == Scenario.engineClusters ||
         _scenario == Scenario.engineIcons ||
+        _scenario == Scenario.engineIconsFlat ||
         _scenario == Scenario.hybrid;
 
     return PointerInterceptor(
@@ -606,9 +672,12 @@ class _IconFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(padding: const EdgeInsets.all(8), child: child),
-    );
+    // Padding ONLY — no Center. Align/Center expands to fill whatever
+    // constraints it is given, so wrapping in one turned the rasterizer's
+    // "max size" back into a fixed box and the padding ate into the marker,
+    // clipping its text. Padding shrink-wraps, so the icon comes out at the
+    // marker's natural size plus room for its shadow.
+    return Padding(padding: const EdgeInsets.all(8), child: child);
   }
 }
 
