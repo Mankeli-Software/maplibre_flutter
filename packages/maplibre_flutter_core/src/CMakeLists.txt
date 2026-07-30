@@ -721,6 +721,11 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   add_executable(proj_probe proj_probe.cpp)
   target_link_libraries(proj_probe PRIVATE maplibre_flutter_core)
 
+  # Renders a model at four points around a circular path, to check its facing
+  # against its direction of travel.
+  add_executable(drive_probe drive_probe.cpp)
+  target_link_libraries(drive_probe PRIVATE maplibre_flutter_core)
+
   # Parse-level checks for the .glb reader (no rendering). It links the reader
   # source directly rather than through the shared library, since mblLoadGlb is
   # C++ and therefore not exported on the C ABI.

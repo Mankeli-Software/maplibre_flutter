@@ -131,13 +131,18 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Ticker? _driveTicker;
   bool _driving = false;
   LatLng _modelAnchor = _modelSite;
-  // The loop circles the nearest marker, and has to FIT ON SCREEN: at z20 a metre
-  // is ~21 logical pixels, so a 60 m radius put most of the lap outside the
-  // viewport — the car crossed the view in a near-straight line while yawing,
-  // which reads as spinning rather than driving. 10 m is a ~430 px diameter loop,
-  // visible end to end, at a believable ~11 km/h.
-  static const double _driveRadiusMetres = 10;
-  static const double _drivePeriodSeconds = 20;
+  // Following a circle rotates the model 360 degrees per lap — that is simply
+  // what driving a roundabout is, and it is correct. But how it READS depends
+  // entirely on the loop size relative to the car: at a 10 m radius the loop is
+  // only ~6 car lengths across, so the car visibly pivots and looks like it is
+  // spinning rather than driving. 20 m is ~11 car lengths, which reads as a
+  // vehicle following a curve.
+  //
+  // The loop then needs the camera pulled back to fit: at z19 a metre is ~11
+  // logical pixels, so a 20 m radius is a ~430 px loop inside an 800 px view.
+  static const double _driveRadiusMetres = 20;
+  static const double _drivePeriodSeconds = 26;
+  static const double _driveZoom = 19;
 
   // Where to put the model when the map is still zoomed out. A few-metre object
   // is sub-pixel below roughly z18, and the example opens at world view, so
@@ -237,7 +242,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
     );
   }
 
-  void _toggleDriving() {
+  Future<void> _toggleDriving() async {
     if (_driving) {
       _stopDriving();
       return;
@@ -246,6 +251,17 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
     // Circle the marker nearest the model, so the loop has an obvious subject.
     final centre = _nearestMarkerTo(_modelAnchor) ?? _modelAnchor;
+
+    // Frame the whole loop, else most of it happens off-screen and the car just
+    // crosses the view while yawing.
+    final camera = await _controller.camera.getPosition();
+    if (camera.zoom > _driveZoom) {
+      await _controller.camera.move(
+        camera.copyWith(center: centre, zoom: _driveZoom),
+        duration: const Duration(milliseconds: 700),
+      );
+    }
+
     final startedAt = DateTime.now();
     // Metres -> degrees. Longitude degrees shrink with latitude, so scale by
     // cos(lat) or the circle comes out as an ellipse.
@@ -416,7 +432,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(
                     heroTag: 'drive',
-                    onPressed: _ready && _modelAdded ? _toggleDriving : null,
+                    onPressed: _ready && _modelAdded
+                        ? () => _toggleDriving()
+                        : null,
                     icon: Icon(_driving ? Icons.stop : Icons.play_arrow),
                     label: Text(_driving ? 'Stop driving' : 'Drive model'),
                   ),
