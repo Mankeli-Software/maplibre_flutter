@@ -131,11 +131,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Ticker? _driveTicker;
   bool _driving = false;
   LatLng _modelAnchor = _modelSite;
-  // A tight fast circle reads as "spinning on the spot" rather than driving: a
-  // 30 m loop in 12 s is ~57 km/h with the model yawing 30 deg/s. Wider and
-  // slower is ~45 km/h at 12 deg/s, which looks like a vehicle following a road.
-  static const double _driveRadiusMetres = 60;
-  static const double _drivePeriodSeconds = 30;
+  // The loop circles the nearest marker, and has to FIT ON SCREEN: at z20 a metre
+  // is ~21 logical pixels, so a 60 m radius put most of the lap outside the
+  // viewport — the car crossed the view in a near-straight line while yawing,
+  // which reads as spinning rather than driving. 10 m is a ~430 px diameter loop,
+  // visible end to end, at a believable ~11 km/h.
+  static const double _driveRadiusMetres = 10;
+  static const double _drivePeriodSeconds = 20;
 
   // Where to put the model when the map is still zoomed out. A few-metre object
   // is sub-pixel below roughly z18, and the example opens at world view, so
@@ -242,20 +244,22 @@ class _MapDemoPageState extends State<MapDemoPage> {
     }
     if (!_modelAdded) return;
 
+    // Circle the marker nearest the model, so the loop has an obvious subject.
+    final centre = _nearestMarkerTo(_modelAnchor) ?? _modelAnchor;
     final startedAt = DateTime.now();
     // Metres -> degrees. Longitude degrees shrink with latitude, so scale by
     // cos(lat) or the circle comes out as an ellipse.
     final latPerMetre = 1 / 111320.0;
     final lngPerMetre =
-        1 / (111320.0 * math.cos(_modelAnchor.latitude * math.pi / 180));
+        1 / (111320.0 * math.cos(centre.latitude * math.pi / 180));
 
     _driveTicker = Ticker((_) {
       final t =
           DateTime.now().difference(startedAt).inMilliseconds / 1000.0;
       final theta = 2 * math.pi * (t / _drivePeriodSeconds);
       final point = LatLng(
-        _modelAnchor.latitude + _driveRadiusMetres * latPerMetre * math.cos(theta),
-        _modelAnchor.longitude + _driveRadiusMetres * lngPerMetre * math.sin(theta),
+        centre.latitude + _driveRadiusMetres * latPerMetre * math.cos(theta),
+        centre.longitude + _driveRadiusMetres * lngPerMetre * math.sin(theta),
       );
       // Face along the tangent of travel. Bearing is clockwise from north, and
       // the model's own forward offset (_modelHeading) still applies.
@@ -273,6 +277,26 @@ class _MapDemoPageState extends State<MapDemoPage> {
       );
     })..start();
     setState(() => _driving = true);
+  }
+
+  /// The marker closest to [to], or null if there are none. Plain equirectangular
+  /// distance — fine over the tens of metres this is used across.
+  LatLng? _nearestMarkerTo(LatLng to) {
+    final candidates = <LatLng>[_places[0].$2, _draggable, ..._dropped];
+    if (candidates.isEmpty) return null;
+    final cosLat = math.cos(to.latitude * math.pi / 180);
+    LatLng? best;
+    var bestSq = double.infinity;
+    for (final c in candidates) {
+      final dy = c.latitude - to.latitude;
+      final dx = (c.longitude - to.longitude) * cosLat;
+      final sq = dy * dy + dx * dx;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = c;
+      }
+    }
+    return best;
   }
 
   void _stopDriving() {

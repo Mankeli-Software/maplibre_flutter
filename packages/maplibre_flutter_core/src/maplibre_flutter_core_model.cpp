@@ -101,9 +101,16 @@ public:
             const MblModelPlacement p = *placement;
             const mbgl::LatLng latLng{p.lat, p.lng};
 
-            // Map bearing is clockwise-from-north; model space is right-handed
-            // about +Z (up), so a clockwise yaw is a negative rotate_z.
-            const double angle = -mbgl::util::deg2rad(
+            // Map bearing is clockwise from north, and rotate_z here is ALREADY
+            // clockwise seen from above: model space is X east, Y south, Z up,
+            // which is LEFT-handed (east x south = down, not up), so the standard
+            // right-handed rotation formula turns east -> south, i.e. clockwise.
+            // Negating it — which looks right if you assume a right-handed frame
+            // — makes heading run backwards. That is invisible for a static model
+            // (and for heading 180, which is symmetric) and only shows up once
+            // heading sweeps: a model driving a circle then counter-rotates and
+            // reads as spinning on its own axis instead of facing its travel.
+            const double angle = mbgl::util::deg2rad(
                 p.headingDegrees + p.spinDegreesPerSecond * seconds);
 
             // Anchor in mercator world coordinates at the current scale — the

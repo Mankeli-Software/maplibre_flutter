@@ -252,7 +252,8 @@ int main(int argc, char **argv) {
   // shared placement alone.
   Diff moved;
   bool testedMove = false;
-  if (!glb.empty()) {
+  const char *modelLayer = glb.empty() ? "mbl-test-model" : "mbl-model";
+  if (true) {
     // Shift east by ~100 SCREEN pixels, not a fixed distance: a fixed metre
     // offset is invisible when zoomed out and lands off-screen when zoomed in.
     constexpr double kPi = 3.14159265358979323846;
@@ -261,7 +262,7 @@ int main(int argc, char **argv) {
     const double shiftMetres = 100.0 * metresPerPixel;
     const double eastDeg =
         shiftMetres / (111320.0 * std::cos(lat * kPi / 180.0));
-    mbl_map_set_model_transform(map, "mbl-model", lat, lng + eastDeg,
+    mbl_map_set_model_transform(map, modelLayer, lat, lng + eastDeg,
                                 metresPerUnit, headingDeg, elevationM);
     pump(map, 800);
     Frame movedFrame;
