@@ -272,6 +272,24 @@ class MapLibreFlutterMacosController
     _coreMap.removeImage(id);
   }
 
+  @override
+  String? queryRenderedFeaturesJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+  }) {
+    if (_disposed) return null;
+    return _coreMap.queryRenderedFeatures(
+      minX,
+      minY,
+      maxX,
+      maxY,
+      layerIds: layerIds,
+    );
+  }
+
   // --- MapLibreMapProjector ---------------------------------------------------
   // Projection runs synchronously over the core's lock-free transform snapshot,
   // so it is cheap to call from a Flow paint every camera tick. Screen space is

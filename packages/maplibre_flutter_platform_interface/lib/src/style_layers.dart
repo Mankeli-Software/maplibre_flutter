@@ -54,4 +54,21 @@ abstract interface class MapLibreStyleLayers {
   });
 
   void removeImage(String id);
+
+  /// The features the engine actually DREW inside a screen-space rect (logical
+  /// points, top-left origin — the same space as [MapLibreMapProjector]).
+  ///
+  /// Returns a GeoJSON `FeatureCollection` string, or null if the query failed
+  /// or timed out. For a clustered source this returns the **cluster** features
+  /// supercluster produced, with their `point_count` and real positions —
+  /// state that lives inside the engine and cannot be recomputed from the
+  /// original points. That is what makes it possible to draw clusters as
+  /// Flutter widgets without reimplementing clustering.
+  String? queryRenderedFeaturesJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+  });
 }

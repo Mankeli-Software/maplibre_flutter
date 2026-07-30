@@ -492,6 +492,71 @@ void main() {
     );
   });
 
+  // queryRenderedFeatures takes a screen box, and its convention has to MATCH
+  // project()'s — a caller works out where something is with project(), then
+  // queries there. Verified, not assumed (the projection Y axis was mirrored
+  // for exactly this reason).
+  test('queries rendered features in the same screen space as project', () {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 9);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    // One point, well away from the centre so a Y flip would be obvious.
+    const lat = 60.55, lng = 22.27;
+    map.addSourceJson('q', '''
+      {"type":"geojson","data":{"type":"Feature","properties":{"tag":"target"},
+       "geometry":{"type":"Point","coordinates":[$lng,$lat]}}}
+    ''');
+    map.addLayerJson('''
+      {"id":"q-c","type":"circle","source":"q",
+       "paint":{"circle-radius":10,"circle-color":"#ff00ff"}}
+    ''');
+
+    // Wait for it to actually paint before querying what was rendered.
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      if (countColor(map.copyFrame()!, 255, 0, 255) > 20) break;
+      sleep(const Duration(milliseconds: 50));
+    }
+
+    // Where project() says it is — query a small box around that point.
+    final at = map.project(lat, lng, generation: map.presentedGeneration)!;
+    final hit = map.queryRenderedFeatures(
+      at.x - 12,
+      at.y - 12,
+      at.x + 12,
+      at.y + 12,
+    );
+    expect(hit, isNotNull);
+    expect(
+      hit!.contains('target'),
+      isTrue,
+      reason:
+          'querying where project() placed the feature must find it; if this '
+          'fails the query box Y convention disagrees with the projection',
+    );
+
+    // And the mirrored position must NOT find it, which is what proves the
+    // test would catch a flip rather than passing by luck.
+    final mirrored = map.queryRenderedFeatures(
+      at.x - 12,
+      (256 - at.y) - 12,
+      at.x + 12,
+      (256 - at.y) + 12,
+    );
+    expect(
+      mirrored == null || !mirrored.contains('target'),
+      isTrue,
+      reason: 'the vertically mirrored box must not match',
+    );
+  });
+
   test('rejects malformed style JSON synchronously', () {
     final map = MapLibreCoreMap.create(
       width: 64,

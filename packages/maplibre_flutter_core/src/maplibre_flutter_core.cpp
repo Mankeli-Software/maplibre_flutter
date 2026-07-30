@@ -38,6 +38,12 @@
 #include <mbgl/style/layer.hpp>
 #include <mbgl/style/source.hpp>
 #include <mbgl/style/sources/geojson_source.hpp>
+// Rendered-feature query: the renderer lives on the frontend, and results come
+// back as mbgl Features which mapbox::geojson can stringify for us.
+#include <mapbox/geojson.hpp>
+#include <mbgl/renderer/query.hpp>
+#include <mbgl/renderer/renderer.hpp>
+#include <mbgl/util/geojson.hpp>
 #include <mbgl/util/client_options.hpp>
 #include <mbgl/util/geo.hpp>
 #include <mbgl/util/image.hpp>
@@ -1254,6 +1260,90 @@ void mbl_map_remove_image(MblMap *m, const char *id) {
     m->map->getStyle().removeImage(imageId);
     m->renderRequested = true;
   });
+}
+
+// --- Rendered-feature query --------------------------------------------------
+
+void mbl_string_free(char *s) { std::free(s); }
+
+char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
+                                      double max_x, double max_y,
+                                      const char *layer_ids,
+                                      uint32_t timeout_ms) {
+  if (m == nullptr) return nullptr;
+
+  std::optional<std::vector<std::string>> layers;
+  if (layer_ids != nullptr && *layer_ids != '\0') {
+    std::vector<std::string> ids;
+    std::string csv(layer_ids);
+    size_t start = 0;
+    while (start <= csv.size()) {
+      const size_t comma = csv.find(',', start);
+      const size_t end = comma == std::string::npos ? csv.size() : comma;
+      if (end > start) ids.emplace_back(csv.substr(start, end - start));
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    if (!ids.empty()) layers = std::move(ids);
+  }
+
+  // The renderer is owned by the render thread, so the query has to run there.
+  // Hand the result back through a shared promise and wait with a deadline: a
+  // busy render thread then costs a dropped query rather than a hung UI.
+  struct QueryResult {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    std::string json;
+  };
+  auto result = std::make_shared<QueryResult>();
+
+  const double height = static_cast<double>(m->renderHeight);
+  m->post([m, result, min_x, min_y, max_x, max_y, layers, height] {
+    std::string json;
+    try {
+      auto *renderer = m->frontend != nullptr ? m->frontend->getRenderer()
+                                              : nullptr;
+      if (renderer != nullptr) {
+        // NOTE the query is TOP-LEFT origin, unlike TransformState's projection
+        // (which is bottom-up and therefore flipped in mbl_map_pixel*). The two
+        // mbgl entry points genuinely disagree, so this passes the caller's box
+        // through unchanged. Established by test, not by reading: flipping here
+        // made every query miss.
+        (void)height;
+        mbgl::ScreenBox box{{min_x, min_y}, {max_x, max_y}};
+        const auto features = renderer->queryRenderedFeatures(
+            box, mbgl::RenderedQueryOptions(layers));
+        // Hand back one FeatureCollection so the Dart side parses a single
+        // shape (and an empty result is still valid GeoJSON, not a null).
+        const mapbox::feature::feature_collection<double> collection(
+            features.begin(), features.end());
+        json = mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+      }
+    } catch (const std::exception &e) {
+      fprintf(stderr, "maplibre_flutter_core: query failed: %s\n", e.what());
+    } catch (...) {
+      fprintf(stderr, "maplibre_flutter_core: query failed (unknown)\n");
+    }
+    {
+      std::lock_guard<std::mutex> lk(result->mutex);
+      result->json = std::move(json);
+      result->done = true;
+    }
+    result->cv.notify_all();
+  });
+
+  std::unique_lock<std::mutex> lk(result->mutex);
+  if (!result->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                           [&] { return result->done; })) {
+    return nullptr; // timed out; the lambda still owns `result` safely
+  }
+  if (result->json.empty()) return nullptr;
+  char *out = static_cast<char *>(std::malloc(result->json.size() + 1));
+  if (out == nullptr) return nullptr;
+  std::memcpy(out, result->json.data(), result->json.size());
+  out[result->json.size()] = '\0';
+  return out;
 }
 
 uint64_t mbl_map_presented_generation(MblMap *m) {

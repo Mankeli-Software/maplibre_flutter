@@ -38,6 +38,21 @@ class _RecordingLayers implements MapLibreStyleLayers {
   }) => images[id] = (w: width, h: height, pr: pixelRatio, bytes: rgba.length);
   @override
   void removeImage(String id) {}
+
+  /// Canned query payload, plus the rect the controller asked for.
+  String? queryJson;
+  Rect? queriedRect;
+  @override
+  String? queryRenderedFeaturesJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+  }) {
+    queriedRect = Rect.fromLTRB(minX, minY, maxX, maxY);
+    return queryJson;
+  }
 }
 
 void main() {
@@ -187,6 +202,77 @@ void main() {
     expect(rec.layers, hasLength(1), reason: 'no new layers on a data update');
     final data = jsonDecode(rec.lastData!) as Map<String, Object?>;
     expect((data['features'] as List), hasLength(2));
+  });
+
+  test('queryRenderedFeatures parses clusters and single points', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+    rec.queryJson = jsonEncode({
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [22.27, 60.45], // [lng, lat]
+          },
+          'properties': {'point_count': 42, 'cluster_id': 7},
+        },
+        {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [18.06, 59.33],
+          },
+          'properties': <String, Object?>{},
+        },
+      ],
+    });
+
+    final found = layers.queryRenderedFeatures(
+      const Rect.fromLTRB(0, 0, 400, 300),
+    );
+
+    expect(rec.queriedRect, const Rect.fromLTRB(0, 0, 400, 300));
+    expect(found, hasLength(2));
+
+    expect(found[0].isCluster, isTrue);
+    expect(found[0].pointCount, 42);
+    // Flipped back from GeoJSON's [lng, lat].
+    expect(found[0].point.latitude, closeTo(60.45, 1e-9));
+    expect(found[0].point.longitude, closeTo(22.27, 1e-9));
+
+    expect(found[1].isCluster, isFalse);
+    expect(found[1].pointCount, 1, reason: 'a lone point counts as one');
+  });
+
+  test('queryRenderedFeatures degrades to empty, never throws', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+
+    // Runs on camera ticks, so a bad/absent payload must not blow up the frame.
+    rec.queryJson = null;
+    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
+    rec.queryJson = '{not json';
+    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
+    // Non-point geometry is skipped rather than mis-parsed.
+    rec.queryJson = jsonEncode({
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'LineString',
+            'coordinates': [
+              [0, 0],
+              [1, 1],
+            ],
+          },
+          'properties': <String, Object?>{},
+        },
+      ],
+    });
+    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
   });
 
   // NOTE both rasterizer tests run inside tester.runAsync. RenderRepaintBoundary

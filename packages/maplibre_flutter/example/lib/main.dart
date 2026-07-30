@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -22,28 +23,81 @@ class ExampleApp extends StatelessWidget {
   }
 }
 
+// --- Styles ------------------------------------------------------------------
+
 /// Two keyless styles to toggle between (no API key required).
 const _demotiles = 'https://demotiles.maplibre.org/style.json';
 const _liberty = 'https://tiles.openfreemap.org/styles/liberty';
 
-/// A few places the "fly to" button cycles through.
+/// A font BOTH styles actually serve.
+///
+/// This matters more than it looks. A symbol layer naming a font the style
+/// cannot serve makes mbgl 404 the glyph range, and that failure comes back out
+/// of the render itself — no frame is produced and the whole source disappears.
+/// Verified by probing the glyph endpoints: demotiles has "Open Sans Semibold"
+/// (NOT Regular) and "Noto Sans Regular"; Liberty has the Noto family only. So
+/// Noto Sans Regular is the one safe choice across both.
+const _safeFont = <String>['Noto Sans Regular'];
+
+// --- Places ------------------------------------------------------------------
+
+const _turku = LatLng(60.4518, 22.2666);
+const _stockholm = LatLng(59.3293, 18.0686);
+const _london = LatLng(51.5074, -0.1278);
+
 const _places = <(String, LatLng, double)>[
-  ('London', LatLng(51.5074, -0.1278), 10),
+  ('Finland', LatLng(64.5, 26.0), 4.2),
   ('Turku', _turku, 10),
   ('Stockholm', _stockholm, 10),
-  ('Tokyo', LatLng(35.6812, 139.7671), 10),
-  ('New York', LatLng(40.7128, -74.0060), 10),
+  ('London', _london, 10),
 ];
 
-/// Turku, Finland — centre of the marker stress-test cluster.
-const _turku = LatLng(60.4518, 22.2666);
+// --- Scenarios ---------------------------------------------------------------
 
-/// Stockholm, Sweden — home of the self-animating marker.
-const _stockholm = LatLng(59.3293, 18.0686);
+/// One thing under test at a time. The example used to be a pile of interacting
+/// toggles, which made it unclear what any given frame was demonstrating.
+enum Scenario {
+  interaction(
+    'Interaction',
+    'Widget markers that must stay live: tap London for a snackbar, drag the '
+        'indigo pin, watch Stockholm pulse. Tap empty map to drop a pin '
+        '(projection round-trip).',
+  ),
+  widgetMarkers(
+    'Widget markers (stress)',
+    'Flutter widgets glued to points, the interactive tier. Watch frame times '
+        'as the count rises — this tier tops out in the hundreds of rich '
+        'children. Pins must track the map exactly, including near the edges.',
+  ),
+  enginePoints(
+    'Engine points',
+    'Points drawn by mbgl itself, unclustered. Glued by construction and '
+        'GPU-scaled: 50k should cost far less than 2k widget markers.',
+  ),
+  engineClusters(
+    'Engine clustering',
+    'Same data, clustered inside the engine by supercluster. Bubbles are '
+        'labelled with their point count and split apart as you zoom in.',
+  ),
+  engineIcons(
+    'Engine icons from a widget',
+    'A Flutter widget painted once and drawn by the engine at every point. '
+        'Clustered, so leaves appear as you zoom in. Static snapshots — no '
+        'animation, no gestures.',
+  ),
+  hybrid(
+    'Hybrid: animated + 50k',
+    'All 50k live in the engine, clustered there. queryRenderedFeatures asks '
+        'the engine what it actually drew, and each of those becomes a REAL '
+        'animated Flutter widget — pulsing bubbles carrying the engine\'s own '
+        'point_count, individual pins once zoomed in. Live widget count stays '
+        'small however big the dataset is.',
+  );
 
-/// Cluster sizes the stress button cycles through. Every marker is reprojected
-/// on every camera tick, so this is the load knob for the overlay.
-const _stressCounts = <int>[0, 100, 500, 2000];
+  const Scenario(this.label, this.blurb);
+  final String label;
+  final String blurb;
+}
 
 class MapDemoPage extends StatefulWidget {
   const MapDemoPage({super.key});
@@ -53,169 +107,228 @@ class MapDemoPage extends StatefulWidget {
 }
 
 class _MapDemoPageState extends State<MapDemoPage> {
-  // We construct and own the controller, so we dispose it (see [dispose]).
   final MapLibreMapController _controller = MapLibreMapController();
   bool _ready = false;
   String _style = _demotiles;
   int _placeIndex = 0;
 
-  // A draggable marker (start at Paris) and pins dropped by tapping the map —
-  // both demonstrate the projection round-trip (screen <-> LatLng).
+  Scenario _scenario = Scenario.interaction;
+
+  // Interaction scenario state.
   LatLng _draggable = const LatLng(48.8566, 2.3522);
   final List<LatLng> _dropped = <LatLng>[];
 
-  // Stress-test cluster around Turku. Generated once per size change (not per
-  // build) so a rebuild never pays the generation cost.
-  int _stressIndex = 0;
-  List<LatLng> _stressPoints = const <LatLng>[];
+  // Widget-marker stress state.
+  static const _widgetCounts = <int>[100, 500, 2000];
+  int _widgetCountIndex = 0;
+  List<LatLng> _widgetPoints = const <LatLng>[];
+  bool _repaintBoundaries = true;
+  bool _fancyMarkers = false;
 
-  // Perf A/B switches for the cluster.
-  bool _stressBoundaries = true; // per-marker RepaintBoundary
-  bool _fancyMarkers = false; // expensive child instead of a plain dot
+  // Engine dataset state.
+  static const _engineCounts = <int>[5000, 50000];
+  int _engineCountIndex = 1;
 
-  /// Scatters [count] points around Turku. Seeded so every run — and every
-  /// before/after comparison — gets the identical layout.
-  static List<LatLng> _cluster(int count) {
-    final rnd = math.Random(42);
-    return List<LatLng>.generate(count, (_) {
-      // ~±0.15 deg lat / ±0.30 deg lng: a spread that stays on screen around
-      // Turku at city zoom, and spills off it when zoomed in (exercising the
-      // off-screen parking path too).
-      return LatLng(
-        _turku.latitude + (rnd.nextDouble() - 0.5) * 0.30,
-        _turku.longitude + (rnd.nextDouble() - 0.5) * 0.60,
-      );
-    });
-  }
+  // Hybrid state: what the engine reports drawing, promoted to real widgets.
+  List<MapLibreQueriedFeature> _liveFeatures = const [];
 
-  void _cycleStress() {
-    setState(() {
-      _stressIndex = (_stressIndex + 1) % _stressCounts.length;
-      _stressPoints = _cluster(_stressCounts[_stressIndex]);
-    });
-  }
-
-  // Engine-drawn dataset (controller.layers): orders of magnitude more points
-  // than widget markers can carry, clustered inside mbgl. Cycled by a button.
-  int _engineIndex = 0;
-  bool _engineIcons = false; // draw with a Flutter-widget icon instead of dots
-
-  /// How many engine-drawn points to load. 50k is deliberately absurd for
-  /// widget markers and unremarkable for a style layer — that contrast is the
-  /// point of the demo.
-  static const _engineCounts = <int>[0, 5000, 50000];
-
-  /// Scatters [count] points across Finland, deterministically.
-  static List<LatLng> _finland(int count) {
+  /// The dataset every engine scenario draws. Deterministic, so runs compare.
+  static List<LatLng> _dataset(int count) {
     final rnd = math.Random(7);
-    return List<LatLng>.generate(count, (_) {
-      return LatLng(
+    return List<LatLng>.generate(
+      count,
+      (_) => LatLng(
         59.9 + rnd.nextDouble() * 10.0, // ~59.9..69.9 N
         21.0 + rnd.nextDouble() * 10.0, // ~21..31 E
-      );
-    });
+      ),
+    );
   }
 
-  Future<void> _cycleEnginepoints() async {
-    _engineIndex = (_engineIndex + 1) % _engineCounts.length;
-    setState(() {});
-    await _applyEnginePoints();
-  }
-
-  /// (Re)builds the engine dataset for the current count/mode.
-  ///
-  /// Also called after a style swap: `setStyle` replaces the whole style
-  /// document, so every source and layer we added goes with it and has to be
-  /// re-applied.
-  Future<void> _applyEnginePoints() async {
-    final count = _engineCounts[_engineIndex];
-
-    final layers = _controller.layers;
-    layers.removePoints('bulk');
-    // The icons path uses its own layer id, outside removePoints' scheme.
-    layers
-      ..removeLayer('bulk-points')
-      ..removeSource('bulk');
-    if (count == 0) return;
-
-    if (_engineIcons) {
-      // A Flutter widget, painted once and then drawn by the ENGINE at every
-      // point — the bridge between the two annotation styles.
-      //
-      // The rasterized box must leave room for anything the widget paints
-      // OUTSIDE its content, or it gets clipped: _FancyMarker casts a shadow, so
-      // the icon is sized with padding around it (see _IconFrame).
-      await layers.addWidgetIcon(
-        'bulk-pin',
-        const _IconFrame(child: _FancyMarker()),
-        size: const Size(44, 34),
-      );
-      // NOT clustered here: clustering collapses everything into a handful of
-      // bubbles, so a wide view shows a single icon and the demo looks broken.
-      // Unclustered is also the more interesting stress test — thousands of
-      // widget-derived icons, all drawn by the engine.
-      layers
-        ..addSourceJson(
-          'bulk',
-          jsonEncode({
-            'type': 'geojson',
-            'data': {
-              'type': 'FeatureCollection',
-              'features': [
-                for (final p in _finland(count))
-                  {
-                    'type': 'Feature',
-                    'geometry': {
-                      'type': 'Point',
-                      'coordinates': [p.longitude, p.latitude],
-                    },
-                    'properties': const <String, Object?>{},
-                  },
-              ],
-            },
-          }),
-        )
-        ..addLayerJson(
-          jsonEncode({
-            'id': 'bulk-points',
-            'type': 'symbol',
-            'source': 'bulk',
-            'layout': {'icon-image': 'bulk-pin', 'icon-allow-overlap': true},
-          }),
-        );
-      return;
-    }
-
-    layers.addPoints(
-      'bulk',
-      _finland(count),
-      cluster: true,
-      radius: 4,
-      // Cluster counts need a font THIS style serves. Naming one it does not
-      // have makes every tile 404 its glyphs, which stops the whole source from
-      // rendering (not just the text) — the bug that made these points vanish
-      // after a style toggle.
-      clusterTextFont: [
-        _style == _demotiles ? 'Open Sans Regular' : 'Noto Sans Regular',
-      ],
+  /// Widget markers cluster tightly around Turku so they share a viewport.
+  static List<LatLng> _widgetCluster(int count) {
+    final rnd = math.Random(42);
+    return List<LatLng>.generate(
+      count,
+      (_) => LatLng(
+        _turku.latitude + (rnd.nextDouble() - 0.5) * 0.30,
+        _turku.longitude + (rnd.nextDouble() - 0.5) * 0.60,
+      ),
     );
   }
 
   @override
   void initState() {
     super.initState();
-    // The controller exists immediately; the native map is ready a bit later.
-    // Wait for it, then enable the camera/style controls.
-    _controller.onReady.then((_) {
-      if (mounted) setState(() => _ready = true);
+    _controller.onReady.then((_) async {
+      if (!mounted) return;
+      setState(() => _ready = true);
+      await _applyScenario();
     });
   }
 
   @override
   void dispose() {
+    _controller.onCameraChanged?.removeListener(_onCameraChangedForHybrid);
+    _trailingQuery?.cancel();
     _controller.dispose();
     super.dispose();
   }
+
+  // --- Scenario wiring --------------------------------------------------------
+
+  Future<void> _selectScenario(Scenario s) async {
+    setState(() => _scenario = s);
+    await _applyScenario();
+  }
+
+  /// Tears down whatever the previous scenario built and sets up the new one.
+  ///
+  /// Also re-run after a style swap: loading a style REPLACES the whole
+  /// document, so every source and layer we added goes with it.
+  Future<void> _applyScenario() async {
+    if (!_ready) return;
+    final layers = _controller.layers;
+
+    // Clear everything any scenario might have added.
+    _controller.onCameraChanged?.removeListener(_onCameraChangedForHybrid);
+    _trailingQuery?.cancel();
+    // Every layer first, THEN the source: mbgl refuses to remove a source while
+    // any layer still references it ("Source 'bulk' is in use, cannot remove").
+    layers
+      ..removeLayer('bulk-icons')
+      ..removePoints('bulk')
+      ..removeSource('bulk');
+    setState(() {
+      _liveFeatures = const [];
+      _widgetPoints = const [];
+    });
+
+    switch (_scenario) {
+      case Scenario.interaction:
+        break;
+
+      case Scenario.widgetMarkers:
+        setState(
+          () =>
+              _widgetPoints = _widgetCluster(_widgetCounts[_widgetCountIndex]),
+        );
+
+      case Scenario.enginePoints:
+        layers.addPoints(
+          'bulk',
+          _dataset(_engineCounts[_engineCountIndex]),
+          radius: 3,
+        );
+
+      case Scenario.engineClusters:
+        layers.addPoints(
+          'bulk',
+          _dataset(_engineCounts[_engineCountIndex]),
+          cluster: true,
+          radius: 4,
+          clusterTextFont: _safeFont,
+        );
+
+      case Scenario.engineIcons:
+        await _applyEngineIcons();
+
+      case Scenario.hybrid:
+        layers.addPoints(
+          'bulk',
+          _dataset(_engineCounts[_engineCountIndex]),
+          cluster: true,
+          radius: 4,
+          clusterTextFont: _safeFont,
+        );
+        // Driven by the camera, not a timer: re-query exactly when the view
+        // changed. Throttled, because each query is a round trip to the render
+        // thread and the camera ticks at frame rate.
+        _controller.onCameraChanged?.addListener(_onCameraChangedForHybrid);
+        _refreshLiveWidgets();
+    }
+  }
+
+  /// Engine icons: a rasterized Flutter widget as `icon-image`.
+  ///
+  /// Clustered like the circle scenario — an unclustered 50k icon layer with
+  /// allow-overlap paints a solid mass at world view, which is useless to look
+  /// at. Cluster bubbles carry the counts; leaves appear as you zoom in.
+  Future<void> _applyEngineIcons() async {
+    final layers = _controller.layers;
+    // Padded, because rasterizeWidget captures exactly the box it is given and
+    // the marker's shadow paints outside its own bounds.
+    await layers.addWidgetIcon(
+      'bulk-pin',
+      const _IconFrame(child: _FancyMarker()),
+      size: const Size(44, 34),
+    );
+    if (!mounted) return;
+
+    layers.addPoints(
+      'bulk',
+      _dataset(_engineCounts[_engineCountIndex]),
+      cluster: true,
+      radius: 4,
+      clusterTextFont: _safeFont,
+    );
+    // Leaves (non-cluster features) drawn with the widget-derived icon, on top
+    // of the plain circles addPoints made for them.
+    layers.addLayerJson(
+      jsonEncode({
+        'id': 'bulk-icons',
+        'type': 'symbol',
+        'source': 'bulk',
+        'filter': [
+          '!',
+          ['has', 'point_count'],
+        ],
+        'layout': {'icon-image': 'bulk-pin', 'icon-allow-overlap': true},
+      }),
+    );
+  }
+
+  /// Hybrid: ask the ENGINE what it drew in the viewport, and wrap each of those
+  /// features in a real, animated Flutter widget.
+  ///
+  /// This is why it uses queryRenderedFeatures rather than filtering the source
+  /// list in Dart: on a clustered source the engine returns the CLUSTERS it
+  /// created — position and `point_count` — which Dart cannot recompute without
+  /// reimplementing supercluster. So zoomed out you get a few animated cluster
+  /// bubbles; zoomed in, individual animated pins. The full 50k never leaves the
+  /// engine, so the widget count stays tiny no matter how large the dataset is.
+  /// Throttle: at most ~10 queries a second while the camera moves, plus one
+  /// trailing query so the final resting view is always correct.
+  DateTime _lastQuery = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _trailingQuery;
+
+  void _onCameraChangedForHybrid() {
+    final now = DateTime.now();
+    if (now.difference(_lastQuery) > const Duration(milliseconds: 100)) {
+      _lastQuery = now;
+      _refreshLiveWidgets();
+    }
+    _trailingQuery?.cancel();
+    _trailingQuery = Timer(
+      const Duration(milliseconds: 150),
+      _refreshLiveWidgets,
+    );
+  }
+
+  void _refreshLiveWidgets() {
+    if (!mounted || _scenario != Scenario.hybrid) return;
+    final size = MediaQuery.sizeOf(context);
+    final found = _controller.layers.queryRenderedFeatures(
+      Offset.zero & size,
+      // Only our own layers — otherwise every basemap road comes back too.
+      layerIds: const ['bulk-clusters', 'bulk-points'],
+    );
+    // Cap purely as a safety net; clustering already keeps this small.
+    final capped = found.length > 250 ? found.sublist(0, 250) : found;
+    if (!mounted) return;
+    setState(() => _liveFeatures = capped);
+  }
+
+  // --- Camera / style ---------------------------------------------------------
 
   Future<void> _zoomBy(double delta) async {
     final camera = await _controller.camera.getPosition();
@@ -234,62 +347,79 @@ class _MapDemoPageState extends State<MapDemoPage> {
     );
   }
 
-  // Style is declarative: change the widget's `style` prop and rebuild. The
-  // widget pushes the new style to the native map (CLAUDE.md §3).
   Future<void> _toggleStyle() async {
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
-    // Loading a style REPLACES the whole document, taking our sources and
-    // layers with it — so re-apply them once the new style has settled. (Widget
-    // markers are unaffected: they live in Flutter, not the style.)
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    if (mounted) await _applyEnginePoints();
+    // A new style replaces the document, taking our sources and layers with it,
+    // so rebuild the scenario once it has settled. (Widget markers are
+    // unaffected — they live in Flutter, not the style.)
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (mounted) await _applyScenario();
   }
 
+  // --- Markers ----------------------------------------------------------------
+
   List<MapLibreMarker> _buildMarkers() {
-    return <MapLibreMarker>[
-      // A fixed, tappable pin glued to London (tip on the point).
-      MapLibreMarker(
-        point: _places[0].$2,
-        alignment: Alignment.bottomCenter,
-        child: GestureDetector(
-          onTap: () => ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Tapped London'))),
-          child: const Icon(Icons.location_on, color: Colors.red, size: 40),
-        ),
-      ),
-      // A draggable pin: update its point from the drag callbacks so it settles.
-      MapLibreMarker(
-        point: _draggable,
-        alignment: Alignment.bottomCenter,
-        draggable: true,
-        onDragUpdate: (p) => setState(() => _draggable = p),
-        onDragEnd: (p) => setState(() => _draggable = p),
-        child: const Icon(Icons.push_pin, color: Colors.indigo, size: 40),
-      ),
-      // A marker that animates itself. Markers are repositioned by the overlay
-      // at PAINT time (no rebuild), so a child with its own ticker keeps
-      // animating smoothly while the map pans/zooms — this is the check that
-      // markers really are live widgets, not baked pictures.
-      const MapLibreMarker(point: _stockholm, child: _PulsingMarker()),
-      // Pins dropped by tapping the map.
-      for (final p in _dropped)
-        MapLibreMarker(
-          point: p,
-          child: const Icon(Icons.circle, color: Colors.green, size: 16),
-        ),
-      // Stress cluster around Turku. Deliberately last: a long list here is the
-      // load the Flow delegate reprojects on every camera tick. `repaintBoundary`
-      // is A/B-able from the UI: it should WIN for expensive children and LOSE
-      // for thousands of trivial dots (a layer each costs more than a redraw).
-      for (final p in _stressPoints)
-        MapLibreMarker(
-          point: p,
-          repaintBoundary: _stressBoundaries,
-          child: _fancyMarkers ? const _FancyMarker() : const _Dot(),
-        ),
-    ];
+    switch (_scenario) {
+      case Scenario.interaction:
+        return [
+          MapLibreMarker(
+            point: _london,
+            alignment: Alignment.bottomCenter,
+            child: GestureDetector(
+              onTap: () => ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Tapped London'))),
+              child: const Icon(Icons.location_on, color: Colors.red, size: 40),
+            ),
+          ),
+          MapLibreMarker(
+            point: _draggable,
+            alignment: Alignment.bottomCenter,
+            draggable: true,
+            onDragUpdate: (p) => setState(() => _draggable = p),
+            onDragEnd: (p) => setState(() => _draggable = p),
+            child: const Icon(Icons.push_pin, color: Colors.indigo, size: 40),
+          ),
+          const MapLibreMarker(point: _stockholm, child: _PulsingMarker()),
+          for (final p in _dropped)
+            MapLibreMarker(
+              point: p,
+              child: const Icon(Icons.circle, color: Colors.green, size: 16),
+            ),
+        ];
+
+      case Scenario.widgetMarkers:
+        return [
+          for (final p in _widgetPoints)
+            MapLibreMarker(
+              point: p,
+              repaintBoundary: _repaintBoundaries,
+              child: _fancyMarkers ? const _FancyMarker() : const _Dot(),
+            ),
+        ];
+
+      case Scenario.hybrid:
+        // Animated widgets, but only for what is on screen.
+        return [
+          for (final f in _liveFeatures)
+            MapLibreMarker(
+              point: f.point,
+              // Clusters become animated bubbles carrying the engine's own
+              // point_count; single points become animated pins.
+              child: f.isCluster
+                  ? _PulsingCluster(count: f.pointCount)
+                  : const _PulsingMarker(),
+            ),
+        ];
+
+      case Scenario.enginePoints:
+      case Scenario.engineClusters:
+      case Scenario.engineIcons:
+        return const [];
+    }
   }
+
+  // --- UI ---------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -302,118 +432,152 @@ class _MapDemoPageState extends State<MapDemoPage> {
               controller: _controller,
               style: _style,
               options: const MapOptions(
-                initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
+                initialCamera: MapCamera(center: LatLng(64.5, 26.0), zoom: 4.2),
               ),
               markers: _buildMarkers(),
-              onTap: (point) => setState(() => _dropped.add(point)),
+              onTap: _scenario == Scenario.interaction
+                  ? (point) => setState(() => _dropped.add(point))
+                  : null,
             ),
           ),
-          // Frame timings, so the stress test is measured rather than guessed.
-          const Positioned(top: 16, left: 16, child: _FrameStats()),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            // On web the map is a DOM element under the Flutter scene, so
-            // controls drawn over it must intercept pointer events or the
-            // clicks leak through to the map (CLAUDE.md §3 web tier).
-            // PointerInterceptor is a no-op on non-web platforms.
-            child: PointerInterceptor(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+          Positioned(top: 12, left: 12, right: 12, child: _scenarioBar()),
+          const Positioned(bottom: 12, left: 12, child: _FrameStats()),
+          Positioned(right: 16, bottom: 16, child: _controls()),
+        ],
+      ),
+    );
+  }
+
+  /// Says what is under test right now, and what to look for.
+  Widget _scenarioBar() {
+    return PointerInterceptor(
+      child: Card(
+        color: Colors.black.withValues(alpha: 0.8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
                 children: [
-                  FloatingActionButton(
-                    heroTag: 'zoom_in',
-                    onPressed: _ready ? () => _zoomBy(1) : null,
-                    child: const Icon(Icons.add),
+                  const Text(
+                    'Scenario:',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton(
-                    heroTag: 'zoom_out',
-                    onPressed: _ready ? () => _zoomBy(-1) : null,
-                    child: const Icon(Icons.remove),
-                  ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'fly',
-                    onPressed: _ready ? _flyToNextPlace : null,
-                    icon: const Icon(Icons.flight),
-                    label: Text('Fly to ${_places[_placeIndex].$1}'),
-                  ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'style',
-                    onPressed: _ready ? _toggleStyle : null,
-                    icon: const Icon(Icons.layers),
-                    label: Text(_style == _demotiles ? 'Demotiles' : 'Liberty'),
-                  ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'stress',
-                    onPressed: _ready ? _cycleStress : null,
-                    icon: const Icon(Icons.scatter_plot),
-                    label: Text('Turku ×${_stressCounts[_stressIndex]}'),
-                  ),
-                  const SizedBox(height: 8),
-                  // Engine-drawn + clustered: the scalable path. Compare its
-                  // frame times at 50k against the widget markers at 2k.
-                  FloatingActionButton.extended(
-                    heroTag: 'engine',
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
-                    onPressed: _ready ? _cycleEnginepoints : null,
-                    icon: const Icon(Icons.blur_on),
-                    label: Text('Engine ×${_engineCounts[_engineIndex]}'),
-                  ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'engine_icons',
-                    backgroundColor: _engineIcons ? Colors.teal : Colors.grey,
-                    foregroundColor: Colors.white,
-                    onPressed: _ready
-                        ? () async {
-                            setState(() => _engineIcons = !_engineIcons);
-                            // Rebuild the dataset with the new representation.
-                            _engineIndex =
-                                (_engineIndex - 1) % _engineCounts.length;
-                            if (_engineIndex < 0) {
-                              _engineIndex += _engineCounts.length;
-                            }
-                            await _cycleEnginepoints();
-                          }
+                  const SizedBox(width: 8),
+                  DropdownButton<Scenario>(
+                    value: _scenario,
+                    dropdownColor: Colors.black87,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    underline: const SizedBox.shrink(),
+                    onChanged: _ready
+                        ? (s) => s == null ? null : _selectScenario(s)
                         : null,
-                    icon: const Icon(Icons.image_outlined),
-                    label: Text('Icons ${_engineIcons ? 'on' : 'off'}'),
+                    items: [
+                      for (final s in Scenario.values)
+                        DropdownMenuItem(value: s, child: Text(s.label)),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'boundary',
-                    backgroundColor: _stressBoundaries ? null : Colors.grey,
-                    onPressed: () =>
-                        setState(() => _stressBoundaries = !_stressBoundaries),
-                    icon: const Icon(Icons.layers_outlined),
-                    label: Text('Layers ${_stressBoundaries ? 'on' : 'off'}'),
-                  ),
-                  const SizedBox(height: 8),
-                  FloatingActionButton.extended(
-                    heroTag: 'fancy',
-                    backgroundColor: _fancyMarkers ? null : Colors.grey,
-                    onPressed: () =>
-                        setState(() => _fancyMarkers = !_fancyMarkers),
-                    icon: const Icon(Icons.auto_awesome),
-                    label: Text('Fancy ${_fancyMarkers ? 'on' : 'off'}'),
-                  ),
+                  const Spacer(),
+                  if (_scenario == Scenario.hybrid)
+                    Text(
+                      'live widgets: ${_liveFeatures.length}',
+                      style: const TextStyle(
+                        color: Colors.lightGreenAccent,
+                        fontSize: 12,
+                      ),
+                    ),
                 ],
               ),
+              Text(
+                _scenario.blurb,
+                style: const TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Only the controls the active scenario actually uses.
+  Widget _controls() {
+    final usesEngineCount =
+        _scenario == Scenario.enginePoints ||
+        _scenario == Scenario.engineClusters ||
+        _scenario == Scenario.engineIcons ||
+        _scenario == Scenario.hybrid;
+
+    return PointerInterceptor(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (_scenario == Scenario.widgetMarkers) ...[
+            _mini(
+              'Count ${_widgetCounts[_widgetCountIndex]}',
+              Icons.numbers,
+              () {
+                _widgetCountIndex =
+                    (_widgetCountIndex + 1) % _widgetCounts.length;
+                _applyScenario();
+              },
             ),
+            _mini(
+              'Layers ${_repaintBoundaries ? 'on' : 'off'}',
+              Icons.layers_outlined,
+              () => setState(() => _repaintBoundaries = !_repaintBoundaries),
+            ),
+            _mini(
+              'Fancy ${_fancyMarkers ? 'on' : 'off'}',
+              Icons.auto_awesome,
+              () => setState(() => _fancyMarkers = !_fancyMarkers),
+            ),
+          ],
+          if (usesEngineCount)
+            _mini(
+              'Points ${_engineCounts[_engineCountIndex]}',
+              Icons.blur_on,
+              () {
+                _engineCountIndex =
+                    (_engineCountIndex + 1) % _engineCounts.length;
+                _applyScenario();
+              },
+            ),
+          _mini('Zoom in', Icons.add, () => _zoomBy(1)),
+          _mini('Zoom out', Icons.remove, () => _zoomBy(-1)),
+          _mini(
+            'Fly: ${_places[_placeIndex].$1}',
+            Icons.flight,
+            _flyToNextPlace,
+          ),
+          _mini(
+            _style == _demotiles ? 'Demotiles' : 'Liberty',
+            Icons.map_outlined,
+            _toggleStyle,
           ),
         ],
       ),
     );
   }
+
+  Widget _mini(String label, IconData icon, VoidCallback onPressed) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: FloatingActionButton.extended(
+        heroTag: label,
+        onPressed: _ready ? onPressed : null,
+        icon: Icon(icon),
+        label: Text(label),
+      ),
+    );
+  }
 }
 
-/// One dot of the Turku stress cluster. `const` so a rebuild reuses the same
-/// widget instance for every marker in the list.
+// --- Marker widgets ----------------------------------------------------------
+
+/// One dot of the widget-marker stress cluster.
 class _Dot extends StatelessWidget {
   const _Dot();
 
@@ -434,8 +598,8 @@ class _Dot extends StatelessWidget {
 /// Padding around a marker being rasterized into an engine icon.
 ///
 /// [MapLibreLayersController.rasterizeWidget] captures exactly the box it is
-/// given, so anything drawn OUTSIDE the child's own bounds — a shadow, a glow, a
-/// stroke — is clipped at the edges. Framing the child leaves room for it.
+/// given, so anything drawn OUTSIDE the child's bounds — a shadow, a glow — is
+/// clipped at the edges. Framing the child leaves room for it.
 class _IconFrame extends StatelessWidget {
   const _IconFrame({required this.child});
   final Widget child;
@@ -448,8 +612,7 @@ class _IconFrame extends StatelessWidget {
   }
 }
 
-/// A deliberately expensive marker — rounded card, gradient, shadow, border and
-/// text. This is what "complicated markers" costs to paint, and it is the case
+/// A deliberately expensive marker — gradient, shadow, border and text. The case
 /// where a per-marker `RepaintBoundary` should pay for itself.
 class _FancyMarker extends StatelessWidget {
   const _FancyMarker();
@@ -480,11 +643,92 @@ class _FancyMarker extends StatelessWidget {
   }
 }
 
-/// A marker that drives its own animation (a pulsing ring around a dot).
+/// An animated CLUSTER bubble: a pulsing ring around the engine's point count.
 ///
-/// The overlay repositions markers by paint-time transform without rebuilding
-/// them, so this keeps ticking at full rate while the map moves — and equally,
-/// it animates while the map sits still.
+/// The count comes from supercluster inside mbgl (via queryRenderedFeatures),
+/// not from anything Dart worked out — this is a real widget drawn over a real
+/// engine cluster.
+class _PulsingCluster extends StatefulWidget {
+  const _PulsingCluster({required this.count});
+  final int count;
+
+  @override
+  State<_PulsingCluster> createState() => _PulsingClusterState();
+}
+
+class _PulsingClusterState extends State<_PulsingCluster>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Bigger clusters get a bigger bubble, like the engine's own step scale.
+    final radius = widget.count >= 750
+        ? 34.0
+        : widget.count >= 100
+        ? 28.0
+        : 22.0;
+    return SizedBox(
+      width: radius * 2 + 16,
+      height: radius * 2 + 16,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) {
+          final t = _c.value;
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: radius * 2 + 16 * t,
+                height: radius * 2 + 16 * t,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.orangeAccent.withValues(
+                      alpha: (1 - t).clamp(0.0, 1.0),
+                    ),
+                    width: 3,
+                  ),
+                ),
+              ),
+              Container(
+                width: radius * 2,
+                height: radius * 2,
+                decoration: BoxDecoration(
+                  color: Colors.deepOrange.withValues(alpha: 0.85),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '${widget.count}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A marker that drives its own animation, to prove markers stay live widgets:
+/// the overlay repositions them at paint time without rebuilding, so this keeps
+/// ticking while the map moves.
 class _PulsingMarker extends StatefulWidget {
   const _PulsingMarker();
 
@@ -513,11 +757,10 @@ class _PulsingMarkerState extends State<_PulsingMarker>
       child: AnimatedBuilder(
         animation: _c,
         builder: (context, _) {
-          final t = _c.value; // 0 -> 1, repeating
+          final t = _c.value;
           return Stack(
             alignment: Alignment.center,
             children: [
-              // Expanding, fading ring.
               Container(
                 width: 16 + 32 * t,
                 height: 16 + 32 * t,
@@ -546,9 +789,8 @@ class _PulsingMarkerState extends State<_PulsingMarker>
   }
 }
 
-/// Rolling average of Flutter's own frame timings (UI = build+layout on the
-/// platform thread, raster = GPU work). Watch `raster` while cycling the Turku
-/// cluster: that is where marker reprojection + compositing shows up.
+/// Rolling average of Flutter's frame timings. `raster` is where marker
+/// compositing shows up; `ui` is Dart-side build/layout/paint.
 class _FrameStats extends StatefulWidget {
   const _FrameStats();
 
@@ -557,7 +799,7 @@ class _FrameStats extends StatefulWidget {
 }
 
 class _FrameStatsState extends State<_FrameStats> {
-  static const _window = 60; // frames averaged
+  static const _window = 60;
   final List<FrameTiming> _recent = <FrameTiming>[];
   double _ui = 0;
   double _raster = 0;
@@ -596,7 +838,6 @@ class _FrameStatsState extends State<_FrameStats> {
 
   @override
   Widget build(BuildContext context) {
-    // 16.7ms is the 60fps budget; flag frames that blow it.
     final over = _raster > 16.7 || _ui > 16.7;
     return IgnorePointer(
       child: Container(
@@ -606,8 +847,7 @@ class _FrameStatsState extends State<_FrameStats> {
           borderRadius: BorderRadius.circular(6),
         ),
         child: Text(
-          'ui ${_ui.toStringAsFixed(1)}ms   '
-          'raster ${_raster.toStringAsFixed(1)}ms',
+          'ui ${_ui.toStringAsFixed(1)}ms   raster ${_raster.toStringAsFixed(1)}ms',
           style: TextStyle(
             color: over ? Colors.orangeAccent : Colors.greenAccent,
             fontFeatures: const [FontFeature.tabularFigures()],

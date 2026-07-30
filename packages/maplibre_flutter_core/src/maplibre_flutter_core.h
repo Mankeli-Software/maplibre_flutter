@@ -181,6 +181,29 @@ FFI_PLUGIN_EXPORT void mbl_map_add_image(MblMap *map, const char *id,
                                          int sdf);
 FFI_PLUGIN_EXPORT void mbl_map_remove_image(MblMap *map, const char *id);
 
+// Query the features the engine actually DREW inside a screen-space box
+// (logical points, top-left origin — the same space as the projection
+// functions and gesture anchors).
+//
+// This is how a caller finds out what is on screen without duplicating the
+// engine's work: for a clustered geojson source it returns supercluster's
+// cluster features, with their `point_count` and their real positions, which
+// Dart could not compute itself. Pass a comma-separated `layer_ids` to restrict
+// the query, or NULL for every layer.
+//
+// Returns a heap-allocated GeoJSON FeatureCollection string that the caller
+// must release with mbl_string_free, or NULL on failure. Runs the query ON the
+// render thread (mbgl's renderer is thread-affine) and waits up to
+// `timeout_ms`, returning NULL if that elapses — so a busy render thread costs
+// a dropped query, never a deadlock.
+FFI_PLUGIN_EXPORT char *mbl_map_query_rendered_features(
+    MblMap *map, double min_x, double min_y, double max_x, double max_y,
+    const char *layer_ids, uint32_t timeout_ms);
+
+// Frees a string returned by this library (e.g. from
+// mbl_map_query_rendered_features).
+FFI_PLUGIN_EXPORT void mbl_string_free(char *s);
+
 // The projection generation of the frame most recently PUBLISHED (i.e. the one
 // the compositor is showing). Camera commands are applied asynchronously on the
 // render thread, so the newest transform usually runs ahead of the visible

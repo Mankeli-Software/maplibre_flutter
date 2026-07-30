@@ -534,6 +534,49 @@ class MapLibreCoreMap {
     });
   }
 
+  /// The features the engine actually DREW inside a screen-space box (logical
+  /// points, top-left origin — the same space as [project] and [moveBy]).
+  ///
+  /// Returns a GeoJSON `FeatureCollection` string, or null if the query failed
+  /// or timed out. For a clustered geojson source this returns supercluster's
+  /// **cluster features**, carrying `point_count` and their real positions —
+  /// information that lives inside the engine and cannot be recomputed in Dart.
+  ///
+  /// Restrict the query with [layerIds]. Runs on the render thread and waits up
+  /// to [timeout]; a busy renderer therefore costs a dropped query rather than a
+  /// stalled caller.
+  String? queryRenderedFeatures(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final layers = layerIds == null || layerIds.isEmpty
+          ? ffi.nullptr
+          : layerIds.join(',').toNativeUtf8(allocator: arena).cast<ffi.Char>();
+      final out = bindings.mbl_map_query_rendered_features(
+        _handle,
+        minX,
+        minY,
+        maxX,
+        maxY,
+        layers,
+        timeout.inMilliseconds,
+      );
+      if (out == ffi.nullptr) return null;
+      try {
+        return out.cast<Utf8>().toDartString();
+      } finally {
+        // Native-allocated; must go back through the library's own free.
+        bindings.mbl_string_free(out);
+      }
+    });
+  }
+
   /// The projection generation of the frame currently ON SCREEN.
   ///
   /// Camera commands are applied asynchronously on the core's render thread, so

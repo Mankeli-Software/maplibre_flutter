@@ -230,6 +230,30 @@ external void mbl_map_remove_image(
   ffi.Pointer<ffi.Char> id,
 );
 
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_query_rendered_features(
+  ffi.Pointer<MblMap> map,
+  double min_x,
+  double min_y,
+  double max_x,
+  double max_y,
+  ffi.Pointer<ffi.Char> layer_ids,
+  int timeout_ms,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Char>)>()
+external void mbl_string_free(ffi.Pointer<ffi.Char> s);
+
 @ffi.Native<ffi.Uint64 Function(ffi.Pointer<MblMap>)>()
 external int mbl_map_presented_generation(ffi.Pointer<MblMap> map);
 

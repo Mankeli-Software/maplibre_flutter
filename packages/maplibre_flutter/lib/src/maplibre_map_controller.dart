@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:ui' show Size;
 
+import 'package:flutter/foundation.dart' show Listenable;
+
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
@@ -60,6 +62,24 @@ class MapLibreMapController {
   /// Whether a native map is currently bound (true between [attach] and
   /// [detach]/[dispose]).
   bool get isAttached => _platform != null;
+
+  /// Fires on every camera change — each gesture step, animation frame and
+  /// imperative move — for code that must track the view, e.g. re-running
+  /// [MapLibreLayersController.queryRenderedFeatures] to keep an overlay in
+  /// sync with what the engine drew.
+  ///
+  /// Null before attach and on renderers that cannot report it. Prefer this to
+  /// polling: it fires exactly when something changed, and not otherwise.
+  /// Listeners run on the platform thread's frame cadence, so keep them cheap
+  /// (or throttle) — a query is a round trip to the render thread.
+  Listenable? get onCameraChanged {
+    final platform = _platform;
+    // Explicit cast rather than relying on promotion: MapLibreMapProjector
+    // implements Listenable, but the CFE will not promote across this
+    // capability check (analyze accepts it, the compiler does not).
+    if (platform is MapLibreMapProjector) return platform as Listenable;
+    return null;
+  }
 
   /// Whether [dispose] has been called. A disposed controller cannot be reused.
   bool get isDisposed => _disposed;
