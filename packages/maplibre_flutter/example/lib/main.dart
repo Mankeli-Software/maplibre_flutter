@@ -214,6 +214,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Ticker? _stressTicker;
   bool _stressing = false;
   final List<_Wanderer> _wanderers = <_Wanderer>[];
+  // Retained so cars can be added later without re-resolving the asset or
+  // re-deciding where the field is.
+  String? _stressAsset;
+  LatLng? _stressCentre;
+  int _stressNextId = 0;
+  final math.Random _stressRng = math.Random(7); // seeded: runs stay comparable
   int _stressFrames = 0;
   Duration _stressLastReport = Duration.zero;
   double _stressFps = 0;
@@ -439,41 +445,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
       duration: const Duration(milliseconds: 700),
     );
 
-    final rng = math.Random(7); // fixed seed: runs stay comparable
+    _stressAsset = assetPath;
+    _stressCentre = centre;
+    _wanderers.clear();
+    _spawnCars(_stressCount, assetPath, centre);
+
+    // Metres -> degrees for the per-frame updates. Longitude degrees shrink with
+    // latitude, so scale by cos(lat) or the field comes out stretched.
     final latPerMetre = 1 / 111320.0;
     final lngPerMetre =
         1 / (111320.0 * math.cos(centre.latitude * math.pi / 180));
-
-    _wanderers.clear();
-    for (var i = 0; i < _stressCount; i++) {
-      _wanderers.add(_Wanderer(
-        id: 'stress-$i',
-        // Metres from the centre, so the field is a known size regardless of zoom.
-        x: (rng.nextDouble() - 0.5) * _stressFieldMetres,
-        y: (rng.nextDouble() - 0.5) * _stressFieldMetres,
-        bearing: rng.nextDouble() * 360,
-        speed: 6 + rng.nextDouble() * 14, // 6-20 m/s
-        turnRate: (rng.nextDouble() - 0.5) * 30, // deg/s, so paths curve
-      ));
-    }
-
-    for (final w in _wanderers) {
-      try {
-        // ignore: experimental_member_use
-        _controller.addModel(MapLibreModel(
-          id: w.id,
-          assetPath: assetPath,
-          point: LatLng(centre.latitude + w.y * latPerMetre,
-              centre.longitude + w.x * lngPerMetre),
-          scale: _modelScale,
-          headingDegrees: _modelHeading + w.bearing,
-          elevationMetres: _modelElevation,
-        ));
-      } on ArgumentError catch (e) {
-        setState(() => _modelError = '${e.message}');
-        return;
-      }
-    }
 
     _stressFrames = 0;
     _stressLastReport = Duration.zero;
@@ -489,14 +470,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
       if (dt > 0) worst = math.max(worst, dt * 1000);
       last = elapsed;
 
-      for (final w in _wanderers) {
+      final centreNow = _stressCentre ?? centre;
+      for (final w in List<_Wanderer>.of(_wanderers)) {
         w.advance(dt, _stressFieldMetres);
         // ignore: experimental_member_use
         _controller.updateModel(MapLibreModel(
           id: w.id,
           assetPath: assetPath,
-          point: LatLng(centre.latitude + w.y * latPerMetre,
-              centre.longitude + w.x * lngPerMetre),
+          point: LatLng(centreNow.latitude + w.y * latPerMetre,
+              centreNow.longitude + w.x * lngPerMetre),
           scale: _modelScale,
           headingDegrees: _modelHeading + w.bearing,
           elevationMetres: _modelElevation,
@@ -527,14 +509,70 @@ class _MapDemoPageState extends State<MapDemoPage> {
     });
   }
 
+  /// Adds or removes cars WITHOUT restarting the field.
+  ///
+  /// Respawning everything would re-add every model and reset the wanderers,
+  /// which is both slower and a worse measurement — the interesting number is how
+  /// the frame time moves as cars are added to a running scene.
+  Future<void> _changeCars(int delta) async {
+    if (!_stressing) {
+      if (delta > 0) await _toggleStress();
+      return;
+    }
+    final asset = _stressAsset;
+    final centre = _stressCentre;
+    if (asset == null || centre == null) return;
+
+    if (delta > 0) {
+      _spawnCars(delta, asset, centre);
+    } else {
+      final n = math.min(-delta, _wanderers.length - 1); // keep at least one
+      for (var i = 0; i < n; i++) {
+        final w = _wanderers.removeLast();
+        // ignore: experimental_member_use
+        _controller.removeModel(w.id);
+      }
+    }
+    setState(() => _stressCount = _wanderers.length);
+  }
+
+  /// Appends [n] wanderers and adds a model for each. Only the new ones are
+  /// touched; existing cars keep moving.
+  void _spawnCars(int n, String assetPath, LatLng centre) {
+    final latPerMetre = 1 / 111320.0;
+    final lngPerMetre =
+        1 / (111320.0 * math.cos(centre.latitude * math.pi / 180));
+
+    for (var i = 0; i < n; i++) {
+      final w = _Wanderer(
+        id: 'stress-${_stressNextId++}',
+        x: (_stressRng.nextDouble() - 0.5) * _stressFieldMetres,
+        y: (_stressRng.nextDouble() - 0.5) * _stressFieldMetres,
+        bearing: _stressRng.nextDouble() * 360,
+        speed: 6 + _stressRng.nextDouble() * 14,
+        turnRate: (_stressRng.nextDouble() - 0.5) * 30,
+      );
+      _wanderers.add(w);
+      try {
+        // ignore: experimental_member_use
+        _controller.addModel(MapLibreModel(
+          id: w.id,
+          assetPath: assetPath,
+          point: LatLng(centre.latitude + w.y * latPerMetre,
+              centre.longitude + w.x * lngPerMetre),
+          scale: _modelScale,
+          headingDegrees: _modelHeading + w.bearing,
+          elevationMetres: _modelElevation,
+        ));
+      } on ArgumentError catch (e) {
+        setState(() => _modelError = '${e.message}');
+        return;
+      }
+    }
+  }
+
   Widget _stressStep(String label, int delta) => GestureDetector(
-        onTap: () async {
-          final next = (_stressCount + delta).clamp(8, 200);
-          if (next == _stressCount) return;
-          await _toggleStress(); // tear down
-          setState(() => _stressCount = next);
-          await _toggleStress(); // respawn at the new count
-        },
+        onTap: () => _changeCars(delta),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
@@ -706,6 +744,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
                         : null,
                     icon: Icon(_driving ? Icons.stop : Icons.play_arrow),
                     label: Text(_driving ? 'Stop driving' : 'Drive model'),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'morecars',
+                    onPressed: _ready ? () => _changeCars(8) : null,
+                    icon: const Icon(Icons.add),
+                    label: Text(_stressing ? '8 more cars' : 'Add cars'),
                   ),
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(
