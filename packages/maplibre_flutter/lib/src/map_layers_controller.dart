@@ -138,6 +138,47 @@ class MapLibreLayersController {
 
   void removeImage(String id) => _layers?.removeImage(id);
 
+  /// Style-wide transition behaviour.
+  ///
+  /// The reason this is exposed: **symbol layers fade, circle layers do not.**
+  /// When a clustered source re-clusters, a cluster's circle stops being drawn
+  /// on the next frame while its count label ramps its opacity down over
+  /// [duration] (300 ms by default), so the number appears to hang in the air
+  /// for a few frames after its bubble has gone.
+  ///
+  /// Two ways to deal with that, and the gentler one is usually right:
+  ///
+  /// ```dart
+  /// // Keeps every fade, shrinks the mismatch to a couple of frames.
+  /// layers.setTransitionOptions(duration: const Duration(milliseconds: 80));
+  ///
+  /// // Removes it entirely — see the caveat below.
+  /// layers.setTransitionOptions(placementTransitions: false);
+  /// ```
+  ///
+  /// [placementTransitions] `false` makes symbols appear and disappear
+  /// instantly, but it is a property of the **style**, not of one layer, so the
+  /// basemap's own labels stop fading as well — they pop in and out while
+  /// panning. Shortening [duration] avoids that, and only shortens the fade:
+  /// mbgl clamps how often it recomputes placement at `max(300ms, duration)`.
+  ///
+  /// [duration] also governs paint-property transitions, and [delay] their
+  /// start; null leaves the style document's own values. Both survive a style
+  /// change (which would otherwise reset them), and apply to the continuous
+  /// render mode only.
+  ///
+  /// Defaults are the engine's own behaviour, which is also what
+  /// maplibre-gl-js does (its `fadeDuration`).
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions = true,
+  }) => _layers?.setTransitionOptions(
+    duration: duration,
+    delay: delay,
+    placementTransitions: placementTransitions,
+  );
+
   // --- Queries ----------------------------------------------------------------
 
   /// The features the engine actually drew inside [rect] (logical pixels in the

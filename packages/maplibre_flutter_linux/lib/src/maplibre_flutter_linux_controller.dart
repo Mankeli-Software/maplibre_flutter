@@ -315,6 +315,20 @@ class MapLibreFlutterLinuxController
   }
 
   @override
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions = true,
+  }) {
+    if (_disposed) return;
+    _coreMap.setTransitionOptions(
+      duration: duration,
+      delay: delay,
+      placementTransitions: placementTransitions,
+    );
+  }
+
+  @override
   String? queryRenderedFeaturesJson(
     double minX,
     double minY,

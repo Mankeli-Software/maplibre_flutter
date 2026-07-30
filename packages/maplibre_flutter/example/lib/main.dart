@@ -222,6 +222,17 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _widgetPoints = const [];
     });
 
+    // KNOWN, ACCEPTED: a cluster's count label outlives its bubble by ~300 ms.
+    // Symbol layers fade (mbgl ramps their opacity over the style's transition
+    // duration); a circle is a feature that simply stops being drawn. So the
+    // number hangs in the air for a few frames after the circle has gone.
+    //
+    // Deliberately NOT worked around here. Every lever is style-wide — see
+    // MapLibreLayersController.setTransitionOptions — so buying this back means
+    // overriding the style's own transition behaviour and changing how the
+    // BASEMAP's labels fade, which is a worse trade than the artifact. The knob
+    // is there for apps that decide otherwise. maplibre-gl-js behaves the same.
+
     switch (_scenario) {
       case Scenario.interaction:
         break;

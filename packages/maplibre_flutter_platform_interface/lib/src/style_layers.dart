@@ -55,6 +55,17 @@ abstract interface class MapLibreStyleLayers {
 
   void removeImage(String id);
 
+  /// Style-wide transition behaviour; see the app-facing
+  /// `MapLibreLayersController.setTransitionOptions` for the rationale.
+  ///
+  /// [duration] and [delay] null means "leave the style's own value".
+  /// [placementTransitions] false stops symbol layers fading in and out.
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions,
+  });
+
   /// The features the engine actually DREW inside a screen-space rect (logical
   /// points, top-left origin — the same space as [MapLibreMapProjector]).
   ///

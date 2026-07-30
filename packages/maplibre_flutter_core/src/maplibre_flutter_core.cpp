@@ -26,6 +26,7 @@
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/resource_options.hpp>
 #include <mbgl/style/style.hpp>
+#include <mbgl/style/transition_options.hpp>
 // Style mutation (sources/layers/images) for engine-drawn datasets. The
 // conversion headers live under mbgl's private src/, which is already on this
 // shim's include path (see CMakeLists) — convertJSON gives us the whole style
@@ -161,6 +162,16 @@ struct MblMap {
   // being presented, applied to `presentedGeneration` when the frame lands (the
   // zero-copy blit completes asynchronously on a GPU-callback thread).
   uint64_t pendingPresentGen = 0;
+
+  // Sticky style transition options. Loading a style RESETS the style's own
+  // transition options to whatever the document says (mbgl style_impl.cpp:
+  // `transitionOptions = parser.transition`), so a caller's request has to be
+  // remembered and re-applied every time a style finishes loading — the same
+  // hazard as sources and layers being wiped by a style swap. Render-thread only.
+  bool transitionOptionsSet = false;
+  int32_t transitionDurationMs = -1; // <0 = leave the document/engine default
+  int32_t transitionDelayMs = -1;
+  bool placementTransitions = true;
 
   // Frame-ready callback (called on the render thread).
   std::mutex cbMutex;
@@ -786,6 +797,21 @@ void publishCurrentFrame(MblMap *m) {
   }
 }
 
+// Pushes the remembered transition options onto the style. Render thread only.
+void applyTransitionOptions(MblMap *m) {
+  if (!m->transitionOptionsSet || m->map == nullptr) return;
+  std::optional<mbgl::Duration> duration;
+  std::optional<mbgl::Duration> delay;
+  if (m->transitionDurationMs >= 0) {
+    duration = mbgl::Milliseconds(m->transitionDurationMs);
+  }
+  if (m->transitionDelayMs >= 0) {
+    delay = mbgl::Milliseconds(m->transitionDelayMs);
+  }
+  m->map->getStyle().setTransitionOptions(mbgl::style::TransitionOptions(
+      duration, delay, m->placementTransitions));
+}
+
 // Observes the Continuous-mode map; each rendered frame (partial or full) is
 // published, so the texture refines progressively as tiles stream in.
 class FrameObserver final : public mbgl::MapObserver {
@@ -794,6 +820,12 @@ public:
   void onDidFinishRenderingFrame(const RenderFrameStatus &) override {
     publishCurrentFrame(m);
   }
+
+  // A freshly loaded style has just overwritten its transition options with the
+  // document's, so re-assert ours. Continuous mode only, which is also the only
+  // mode where mbgl honours them at all (render_orchestrator.cpp forces default
+  // TransitionOptions in Static).
+  void onDidFinishLoadingStyle() override { applyTransitionOptions(m); }
 
 private:
   MblMap *m;
@@ -1249,6 +1281,20 @@ void mbl_map_add_image(MblMap *m, const char *id, const uint8_t *rgba,
   m->post([m, holder, imageId, pixel_ratio, isSdf] {
     m->map->getStyle().addImage(std::make_unique<mbgl::style::Image>(
         imageId, std::move(*holder), pixel_ratio, isSdf));
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_set_transition_options(MblMap *m, int32_t duration_ms,
+                                   int32_t delay_ms,
+                                   int placement_transitions) {
+  if (m == nullptr) return;
+  m->post([m, duration_ms, delay_ms, placement_transitions] {
+    m->transitionOptionsSet = true;
+    m->transitionDurationMs = duration_ms;
+    m->transitionDelayMs = delay_ms;
+    m->placementTransitions = placement_transitions != 0;
+    applyTransitionOptions(m);
     m->renderRequested = true;
   });
 }

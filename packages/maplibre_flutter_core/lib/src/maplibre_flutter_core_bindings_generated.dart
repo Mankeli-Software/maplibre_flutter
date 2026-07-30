@@ -231,6 +231,16 @@ external void mbl_map_remove_image(
 );
 
 @ffi.Native<
+  ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int32, ffi.Int32, ffi.Int)
+>()
+external void mbl_map_set_transition_options(
+  ffi.Pointer<MblMap> map,
+  int duration_ms,
+  int delay_ms,
+  int placement_transitions,
+);
+
+@ffi.Native<
   ffi.Pointer<ffi.Char> Function(
     ffi.Pointer<MblMap>,
     ffi.Double,

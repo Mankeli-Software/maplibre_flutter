@@ -181,6 +181,24 @@ FFI_PLUGIN_EXPORT void mbl_map_add_image(MblMap *map, const char *id,
                                          int sdf);
 FFI_PLUGIN_EXPORT void mbl_map_remove_image(MblMap *map, const char *id);
 
+// Style-wide transition behaviour. `duration_ms` / `delay_ms` below zero leave
+// the style document's own value (mbgl's default is 300 ms / 0).
+//
+// `placement_transitions` = 0 stops SYMBOL layers fading in and out. That fade
+// is why a cluster's count label lingers ~300 ms after its circle has gone: a
+// circle is a feature that simply stops being drawn, while a symbol ramps its
+// opacity over the transition duration (mbgl `Placement::symbolFadeChange`).
+// Turning it off makes the two disappear together — at the cost of the basemap's
+// own labels popping rather than fading, since this is a property of the style,
+// not of one layer.
+//
+// Sticky: re-applied automatically after every style load, which would
+// otherwise reset it to the document's values. Only honoured in Continuous mode
+// (mbgl ignores transition options in Static).
+FFI_PLUGIN_EXPORT void mbl_map_set_transition_options(
+    MblMap *map, int32_t duration_ms, int32_t delay_ms,
+    int placement_transitions);
+
 // Query the features the engine actually DREW inside a screen-space box
 // (logical points, top-left origin — the same space as the projection
 // functions and gesture anchors).

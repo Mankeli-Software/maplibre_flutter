@@ -39,6 +39,18 @@ class _RecordingLayers implements MapLibreStyleLayers {
   @override
   void removeImage(String id) {}
 
+  ({Duration? duration, Duration? delay, bool placement})? transitions;
+  @override
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions = true,
+  }) => transitions = (
+    duration: duration,
+    delay: delay,
+    placement: placementTransitions,
+  );
+
   /// Canned query payload, plus the rect the controller asked for.
   String? queryJson;
   Rect? queriedRect;

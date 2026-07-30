@@ -1965,5 +1965,56 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     including the new hex-colour and int-number encodings. The new typed scenario itself is
     **written and analysing but not yet eyeballed on device** — that run is the outstanding check.
 
+- **2026-07-30 — Cluster count labels outlived their bubbles: mbgl's SYMBOL placement fade.
+  Fixed by exposing the engine's own knob (a new C ABI function), opt-in.** Reported symptom: in
+  the engine-clustering scenario the count text lingered "a few frames" after the cluster circle
+  had gone. **Pre-existing and unrelated to the typed style API** — the `c-count` document is
+  unchanged apart from key order and colour spelling.
+  - **Cause:** symbol layers fade, circle layers do not. `Placement::symbolFadeChange`
+    (`src/mbgl/text/placement.cpp:1277`) returns 1.0 (instant) only when placement transitions are
+    disabled or the duration is zero; otherwise labels ramp opacity over
+    `transitionOptions.duration`, default `util::DEFAULT_TRANSITION_DURATION` = **300 ms**
+    (`include/mbgl/util/constants.hpp:59`) ≈ 18 frames at 60 fps. A circle is a feature that simply
+    stops being drawn on the next frame, so the two disagree. Only applies in **Continuous** mode
+    (`render_orchestrator.cpp:178` substitutes default `TransitionOptions()` in Static) — which is
+    the desktop default. maplibre-gl-js behaves identically (`fadeDuration`, default 300).
+  - **Fix:** new `mbl_map_set_transition_options(map, duration_ms, delay_ms, placement_transitions)`
+    over `mbgl::style::Style::setTransitionOptions`. `enablePlacementTransitions = false` is the
+    **surgical** knob — it stops the symbol fade while leaving paint-property transitions alone,
+    whereas `duration: 0` would flatten those too. Negative ms means "leave the document's value".
+  - **STICKY, and that is the non-obvious part:** loading a style **overwrites** the style's
+    transition options with the document's (`style_impl.cpp:106`, `transitionOptions =
+    parser.transition`) — the same hazard as a style swap wiping sources and layers. So the shim
+    remembers the request on `MblMap` and re-applies it from a new
+    `FrameObserver::onDidFinishLoadingStyle`. That observer exists only on the Continuous path,
+    which is exactly where transitions are honoured, so no Static-path plumbing was needed.
+  - **Default is unchanged (engine behaviour), because the knob is style-wide, not per layer:**
+    turning it off also stops the *basemap's* labels fading while panning.
+  - **FINAL DECISION (user, on device): do NOT override the style's defaults — the artifact is
+    accepted as an engine limitation.** Two mitigations were tried and both rejected:
+    `placementTransitions: false` (fixes the lingering count, but the basemap's labels then pop in
+    and out — worse than the bug) and a short `duration` (80 ms, which keeps every fade and cuts the
+    overhang from ~18 frames to ~2). The objection to the second is the principle, not the number:
+    **every lever mbgl offers here is style-wide**, so any mitigation means overriding the style
+    document's own transition behaviour. So the example applies nothing, the library default is
+    untouched, and a cluster count outliving its bubble by ~300 ms is documented rather than fought.
+    maplibre-gl-js behaves identically.
+  - **The knob still ships**, as an opt-in escape hatch for apps that decide differently —
+    `controller.layers.setTransitionOptions(duration:, delay:, placementTransitions:)` — with the
+    trade-off spelled out in its dartdoc. Note for future work: `Placement::getUpdatePeriod` clamps
+    the placement *recalculation* period at `max(300ms, duration)`, so shortening `duration`
+    shortens only the fade, not how often placement runs. The genuinely per-layer fix, if this ever
+    matters enough, is to draw the bubble as an **SDF symbol icon in the same layer as the count**
+    (`icon-image` + `icon-size` stepped by `point_count`) so bubble and text are ONE symbol and
+    cannot disengage at any duration.
+  - **Ripple:** one method added to the platform interface's `MapLibreStyleLayers`, forwarded by all
+    five core controllers (macOS/Linux/Windows/iOS/Android). Blind-porting was acceptable here,
+    unlike the 2026-06-21 pinch-anchor regression, because these are **verbatim pass-throughs of
+    scalars to the identical core call with no coordinate or convention transform** — there is
+    nothing platform-specific to get wrong. Only macOS is behaviourally verified.
+  - **Test honesty:** the native test pins that the call is safe on a live map before the first
+    frame, mid-life, and across a style load (the sticky path), and that rendering continues. It
+    does **not** assert the fade is gone — that is a per-frame opacity ramp, invisible in a still
+    frame, and needs an on-device look.
 
 _Append new decisions here with date and rationale._

@@ -360,6 +360,60 @@ void main() {
     return '{"type":"FeatureCollection","features":[${features.join(",")}]}';
   }
 
+  // What this does NOT assert: that symbol labels stop fading. That is a
+  // per-frame opacity ramp inside mbgl's placement, only honoured in Continuous
+  // mode, and not observable from a still frame — it needs an on-device look.
+  // What it does pin: the call is safe on a live map, before and after a style
+  // load (the sticky re-apply path), and does not disturb rendering.
+  test('setTransitionOptions is safe and survives a style change', () {
+    final map = MapLibreCoreMap.create(
+      width: 128,
+      height: 128,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+      continuous: true,
+    );
+    addTearDown(map.dispose);
+
+    // Before the first frame, mid-life, and with every argument exercised.
+    map
+      ..setTransitionOptions(placementTransitions: false)
+      ..setCamera(latitude: 60.45, longitude: 22.27, zoom: 3);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    expect(map.copyFrame(), isNotNull);
+
+    // A style load resets the style's transition options to the document's, so
+    // the shim re-applies ours from onDidFinishLoadingStyle. Nothing to read
+    // back through the C ABI; this asserts the map keeps rendering through it.
+    map
+      ..setStyle('https://demotiles.maplibre.org/style.json')
+      ..setTransitionOptions(
+        duration: const Duration(milliseconds: 120),
+        delay: Duration.zero,
+        placementTransitions: true,
+      );
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    // Continuous mode publishes PARTIAL frames, so a freshly loaded style is
+    // legitimately blank for a moment — and awaitFrame returns as soon as any
+    // frame exists, including that one. So poll for real content instead of
+    // asserting on whichever frame happens to be current.
+    bool hasContent() {
+      final f = map.copyFrame();
+      return f != null && f.any((b) => b != 0);
+    }
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 20) && !hasContent()) {
+      sleep(const Duration(milliseconds: 50));
+    }
+    expect(
+      hasContent(),
+      isTrue,
+      reason: 'still rendering after a style reload',
+    );
+  });
+
   test('draws a geojson circle layer the engine renders itself', () {
     final map = MapLibreCoreMap.create(
       width: 256,

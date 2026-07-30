@@ -256,11 +256,12 @@ class MapLibreCoreMap {
   // maplibre-gl-js takes — so expressions, filters and data-driven styling all
   // work without extra API here.
   //
-  // TODO(typed-style-api): expose a typed Dart layer/source API, generated from
-  // the vendored style spec — see docs/typed-style-api.md
-  // (CircleLayer(circleRadius: ...), Expression builders) over this. Raw JSON is
-  // the right primitive underneath, but it is stringly-typed for callers; a
-  // typed façade is a goal once the shape settles.
+  // The typed layer/source API generated from the vendored style spec lives a
+  // level up, in `maplibre_flutter` (`CircleLayer`, `GeoJsonSource`, `Expr` —
+  // see docs/typed-style-api.md); it serialises straight to these methods, so
+  // raw JSON stays the right primitive here and needs no C ABI counterpart.
+  // TODO(typed-style-api): typed coverage up there is the `circle` layer and the
+  // `geojson` source so far.
 
   /// Adds a style source under [id]. Throws [ArgumentError] if [json] is not a
   /// valid source document (reported synchronously — parsing needs no map).
@@ -331,6 +332,34 @@ class MapLibreCoreMap {
         id.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
       );
     });
+  }
+
+  /// Style-wide transition behaviour.
+  ///
+  /// [duration] and [delay] default to the style document's own values (mbgl
+  /// uses 300 ms / 0) when null.
+  ///
+  /// [placementTransitions] `false` stops **symbol** layers fading in and out.
+  /// That fade is why a cluster's count label outlives its circle by ~300 ms: a
+  /// circle is a feature that simply stops being drawn, while a symbol ramps its
+  /// opacity over the transition duration. Turning it off makes them vanish
+  /// together — at the cost of the basemap's own labels popping rather than
+  /// fading, since this is a property of the style, not of one layer.
+  ///
+  /// Sticky: re-applied after every style load, which would otherwise reset it.
+  /// Only honoured in Continuous mode; mbgl ignores transitions in Static.
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions = true,
+  }) {
+    _checkAlive();
+    bindings.mbl_map_set_transition_options(
+      _handle,
+      duration?.inMilliseconds ?? -1,
+      delay?.inMilliseconds ?? -1,
+      placementTransitions ? 1 : 0,
+    );
   }
 
   /// Registers an icon for use as `icon-image` in a symbol layer, from raw
