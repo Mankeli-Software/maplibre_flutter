@@ -1778,4 +1778,65 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
     iOS-core/Android-core controllers (≈10 lines each) + web (gl-js `map.project`, wasm-core embind);
     temporal-swim correlation via `projGeneration`/presented-frame on slow-present tiers if needed.
 
+- **2026-07-29 — Two-tier map annotations: widget markers + engine-drawn layers (on
+  `feat/glued-widget-markers`).** Started from a bundled commit that glued interactive Flutter
+  widgets to LatLng points (macOS-first, written in a container with no toolchain, so never
+  built). Verified it, fixed two projection defects, made it fast, then added the scalable
+  second tier. **The settled architecture is a HYBRID, and it matches what every MapLibre SDK
+  does:**
+  - **Widget markers** (`MapLibreMap.markers`) — real Flutter widgets glued to a point: gestures,
+    animation, arbitrary content. **Measured ceiling ≈500 rich markers smooth in release on
+    macOS**; each costs a render object painted every camera tick. This is maplibre-gl-js's DOM
+    `Marker` / the mobile SDKs' view annotations.
+  - **Engine layers** (`controller.layers`) — points in the STYLE, drawn by mbgl with the map:
+    glued by construction, GPU-scaled to 100k+, clustering built in. Pictures, not widgets — no
+    child gestures, no per-marker animation. This is what the SDKs' bulk annotation APIs are
+    actually built on.
+  - **Bridge:** `layers.addWidgetIcon()` paints a Flutter widget off-screen
+    (`RenderObjectToWidgetAdapter` + a throwaway `RenderRepaintBoundary`, one layout/paint pass)
+    and registers the RGBA as a style image, so **bulk points are styled with Flutter widgets
+    rather than asset sprites**. The icon is a snapshot — that is the tradeoff.
+  - **Style API takes MapLibre Style Spec JSON, not typed setters.** mbgl's `convertJSON<T>`
+    (via the private `src/mbgl/style/conversion/json.hpp`, already on the shim's include path)
+    buys the whole spec — expressions, filters, data-driven styling, cluster options — for seven
+    C functions instead of hundreds of property accessors. **Clustering therefore needed no code
+    of its own:** `"cluster": true` on a geojson source runs supercluster inside the engine.
+    Parsing runs synchronously on the calling thread (it needs no map) so bad JSON throws
+    immediately; only the mutation is posted to the render thread. **TODO(typed-style-api):** a
+    typed Dart layer/source API over the JSON is the agreed end goal, deliberately out of PoC scope.
+  - **Y-AXIS BUG (would have shipped):** `TransformState::latLngToScreenCoordinate` returns a
+    **bottom-up** y — its internal `size.height - y` converts *into* GL's convention, not out of
+    it — and `screenCoordinateToLatLng` expects the same. The shim passed both through while
+    documenting them as top-left, so markers tracked correctly left/right and **inverted
+    vertically**. **Every existing projection test was blind to it**: a round-trip cancels a
+    symmetric flip and the camera centre is symmetric. **Rule: test projections against absolute
+    directions (north is up), never only round-trips.**
+  - **MARKERS LAGGED THE MAP — a synchronisation gap, not throughput.** Camera commands are
+    posted to the render thread and applied there, so the newest transform runs *ahead* of the
+    frame the compositor shows; projecting against it makes anchored widgets swim. Fix: the core
+    keeps a ring of 8 transforms keyed by generation, tags each published frame with the
+    generation it was drawn with, and `mbl_map_presented_generation()` lets callers project
+    against **the frame actually on screen**. Gotchas found: only the Continuous path was tagged
+    at first (every headless test runs **Static**, via `renderCpu`, and saw generation 0); the
+    generation must be recorded **before** bumping `frameCount`, which is the signal `awaitFrame`
+    and the present path wake on; and `awaitFrame()` returns as soon as ANY frame exists, so it
+    cannot be used to wait for the *next* one.
+  - **Perf work:** the Flow overlay never culled — `paintChild` ran for every marker including
+    ones parked off-screen, and the core's `visible` flag only means "in front of a pitched
+    camera". Added viewport culling (frame times now fall when the cluster pans off-screen,
+    user-confirmed) and `MapLibreMarker.repaintBoundary` (default true) so a rich child
+    rasterises once and camera ticks move a layer instead of repainting content — documented as a
+    *pessimisation* for thousands of trivial markers.
+  - **Flutter gotchas worth keeping:** `createTicker()` does an inherited-widget lookup, so a lazy
+    `late final _ticker = createTicker(...)` constructs it inside `dispose()` when it never ran —
+    asserting on a deactivated element; create it in `initState`. And `RenderRepaintBoundary
+    .toImage()` waits on a real raster-pipeline callback that `flutter_test`'s fake async never
+    delivers — rasterizer tests **must** use `tester.runAsync` or they hang to the 10-minute timeout.
+  - **Status: macOS only, not yet device-verified for the sync fix.** Linux/Windows/iOS-core/
+    Android-core controllers still project against the newest transform (two lines each,
+    deliberately NOT blind-ported — see the 2026-06-21 pinch-anchor regression). Native suite
+    18/18 with pixel assertions (clusters verified by eye in dumped PNGs); `maplibre_flutter`
+    30 passing with the one pre-existing `"pinch zoom freezes its anchor"` failure that also
+    fails on `main`.
+
 _Append new decisions here with date and rationale._
