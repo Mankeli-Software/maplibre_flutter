@@ -235,13 +235,48 @@ FFI_PLUGIN_EXPORT int mbl_map_d3d_active(MblMap *map);
 // against fill-extrusion buildings. Expect this surface to be replaced by a real
 // model API (mesh + texture supplied by the caller) before it ships.
 
-// Add the test model — a spinning, per-face-coloured pyramid — at `lat`/`lng`.
-// `metres_per_unit` sizes it in real-world metres (the mesh spans 2 units in X,
-// 1 in Y, 1.5 in Z, so 50 gives a 100m x 50m footprint 75m tall), so it keeps its
-// ground footprint across zooms. `spin_dps` is the rotation rate in degrees per
-// second about the vertical axis (0 = static). Asynchronous: the layer is added
-// on the render thread. Call after the style has loaded — a subsequent
-// mbl_map_set_style REPLACES the style and drops the layer.
+// Load a binary glTF (.glb) from `glb_path` and draw it at `lat`/`lng` as a
+// layer named `layer_id` (re-using an id replaces the previous model).
+//
+// `scale` multiplies the model's own units, so 1.0 renders a glTF authored in
+// metres at life size; the model then keeps its ground footprint across zooms.
+// `heading_deg` yaws it clockwise from north (a glTF's -Z "forward" faces north
+// at 0); `spin_dps` adds a continuous yaw on top, in degrees per second (0 =
+// static).
+//
+// Returns 1 on success, 0 on failure, writing a NUL-terminated reason into
+// `out_error` (if non-NULL, truncated to `error_capacity`). The FILE IS PARSED
+// SYNCHRONOUSLY on the calling thread — only the GPU upload is deferred to the
+// render thread — which is what lets parse errors be reported here rather than
+// vanishing into a log. Expect it to block for the duration of a file read.
+//
+// Supported subset (bounded by what mbgl's CustomGeometryShader can draw):
+// triangles, POSITION + TEXCOORD_0, node transforms baked in, all primitives
+// merged, the first base-colour texture and factor used. No skins/animations, no
+// Draco/meshopt, no external buffers or images (GLB only), and at most 65535
+// vertices because mbgl's indices are uint16. There is no lighting, so bake it
+// into the texture. See docs/3d-models-research.md.
+//
+// Call after the style has loaded — a subsequent mbl_map_set_style REPLACES the
+// style and drops the layer.
+FFI_PLUGIN_EXPORT int mbl_map_add_model(MblMap *map, const char *layer_id,
+                                        const char *glb_path, double lat,
+                                        double lng, double scale,
+                                        double heading_deg, double spin_dps,
+                                        char *out_error,
+                                        size_t error_capacity);
+
+// Add the built-in test model — a spinning, per-face-coloured pyramid — at
+// `lat`/`lng`. `metres_per_unit` sizes it in real-world metres (the mesh spans 2
+// units in X, 1 in Y, 1.5 in Z, so 50 gives a 100m x 50m footprint 75m tall).
+// `spin_dps` is the rotation rate in degrees per second (0 = static).
+//
+// Kept as a dependency-free regression: viewed top-down it must read as a
+// four-colour pinwheel (red north, green east, blue south, yellow west), which
+// catches anchor mirroring, a flipped up-axis, inverted winding, and depth that
+// has silently degraded to painter's order.
+//
+// Asynchronous — the layer is added on the render thread.
 FFI_PLUGIN_EXPORT void mbl_map_add_test_model(MblMap *map, double lat,
                                               double lng,
                                               double metres_per_unit,

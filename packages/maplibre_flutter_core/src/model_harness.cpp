@@ -23,6 +23,11 @@
 //
 // Usage: model_harness [outDir] [lat] [lng] [zoom] [pitch] [bearing]
 //                      [metresPerUnit] [styleUri] [spinDps] [camOffsetDeg]
+//                      [glbPath] [headingDeg]
+//
+// With a glbPath, mbl_map_add_model loads that .glb instead of the built-in test
+// pyramid, and metresPerUnit becomes the model's scale multiplier (1.0 = a glTF
+// authored in metres at life size).
 #include "maplibre_flutter_core.h"
 
 #include <chrono>
@@ -141,6 +146,8 @@ int main(int argc, char **argv) {
       argc > 8 ? argv[8] : "https://demotiles.maplibre.org/style.json";
   const double spinDps = argc > 9 ? std::atof(argv[9]) : 90.0;
   const double camOffset = argc > 10 ? std::atof(argv[10]) : 0.00255;
+  const std::string glb = argc > 11 ? argv[11] : "";
+  const double headingDeg = argc > 12 ? std::atof(argv[12]) : 0.0;
 
   // Offset the camera from the model so the model projects well away from screen
   // centre (a centred model would satisfy the anchor check trivially) while still
@@ -188,7 +195,18 @@ int main(int argc, char **argv) {
   printf("baseline noise: %zu px changed\n", noise.changed);
 
   // --- 1. does the model render at all? ---
-  mbl_map_add_test_model(map, lat, lng, metresPerUnit, spinDps);
+  if (glb.empty()) {
+    mbl_map_add_test_model(map, lat, lng, metresPerUnit, spinDps);
+  } else {
+    char err[512] = {0};
+    if (mbl_map_add_model(map, "mbl-model", glb.c_str(), lat, lng, metresPerUnit,
+                          headingDeg, spinDps, err, sizeof(err)) == 0) {
+      fprintf(stderr, "model_harness: mbl_map_add_model failed: %s\n", err);
+      mbl_map_destroy(map);
+      return 5;
+    }
+    printf("loaded %s\n", glb.c_str());
+  }
   pump(map, 1200);
 
   Frame withModel;

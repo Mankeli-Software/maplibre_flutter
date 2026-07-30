@@ -189,6 +189,21 @@ Future<void> _applySubmodulePatches(
       marker: 'MBL_CUSTOM_3D_DEPTH',
       patch: 'patches/metal-custom-drawable-3d-depth.patch',
     ),
+    // Metal: let custom-geometry textures honour REPEAT wrapping. The Metal
+    // CustomGeometryShader declares `constexpr sampler` INSIDE the shader, and a
+    // Metal constexpr sampler defaults to address::clamp_to_edge, so it ignores
+    // the wrap state mbgl sets on the Texture2D. The GL and Vulkan variants
+    // sample through a sampler2D whose wrap mbgl does control, so only Metal was
+    // affected. glTF defaults to REPEAT and real models tile (the Khronos
+    // BoxTextured sample spans u=[0,6], one unit per face), so clamping collapsed
+    // them to a single edge colour that reads as "the texture never bound".
+    // Switching to address::repeat is safe: UVs inside [0,1] never sample outside
+    // the texture, so clamp and repeat are indistinguishable for them.
+    (
+      file: 'include/mbgl/shaders/mtl/custom_geometry.hpp',
+      marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
+      patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
+    ),
   ];
   for (final p in patches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));

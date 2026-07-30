@@ -343,3 +343,88 @@ Remaining before this is a feature rather than a spike:
    `markers` (three-bucket rule).
 6. The unlit-shader ceiling still stands: no normals/lighting/PBR, one texture, and no
    skeletal animation. Bake lighting into the texture.
+
+---
+
+# .glb ingest (2026-07-30, macOS/Metal)
+
+Real glTF models now load and render. `mbl_map_add_model(map, layer_id, glb_path,
+lat, lng, scale, heading_deg, spin_dps, out_error, error_capacity)` →
+`MapLibreCoreMap.addModel(...)` in Dart.
+
+## No new dependency
+
+The reader (`src/maplibre_flutter_core_gltf.{hpp,cpp}`) is hand-written against
+mbgl's **already-vendored rapidjson** (linked PUBLIC into mbgl-core, so its headers
+reach the shim) and mbgl's own `decodeImage`. So no cgltf/tinygltf vendoring, no
+FetchContent, and no build-time network access on any of the six platform arms.
+Scoping it to exactly what mbgl's `CustomGeometryShader` can draw is what makes a
+hand-written reader reasonable rather than reckless.
+
+## Supported subset
+
+Triangles, POSITION + TEXCOORD_0, node transforms baked in (explicit `matrix` or
+TRS), all primitives of all meshes merged into one buffer, first base-colour
+texture + `baseColorFactor` as the tint, sampler wrap/filter honoured. Accessors
+may be float or normalized u8/u16; indices u8/u16/u32; `byteStride` respected;
+accessor/bufferView ranges bounds-checked against the BIN chunk so a truncated or
+hostile file cannot walk off the buffer.
+
+Rejected loudly (never silently degraded): text `.gltf`, external buffers/images,
+sparse accessors, >65535 vertices, and files with no triangle geometry.
+
+Coordinate conversion: glTF (Y-up, -Z forward, right-handed) → map model space
+(X east, Y south, Z up) as `(x, y, z) -> (-x, z, y)`. Determinant +1, so winding
+survives, and a model's glTF "forward" faces map north at heading 0.
+
+## Verified
+
+| Asset | Result |
+|---|---|
+| Khronos `Duck.glb` | 2399 verts / 4212 tris, 512x512 texture. Renders textured, upright, standing on the ground; spins; anchored |
+| Khronos `BoxTextured.glb` | 24 verts / 12 tris, node rotation baked in, texture correct after the sampler fix |
+| `AnimatedCube.gltf` (text) | correctly rejected: "not a binary glTF (.glb)" |
+| Synthesized 70002-vertex GLB | correctly rejected: "model exceeds 65535 vertices (mbgl indices are uint16); decimate the mesh" |
+
+Pyramid pinwheel, projector signs, and the Empire-State-Building occlusion test
+(0 px) all still pass, so neither patch regressed the earlier work.
+
+## Second Metal-only mbgl bug found and fixed
+
+`BoxTextured.glb` rendered as a flat grey block. Its UVs legitimately span
+**u=[0,6]** — a 6-wide atlas, one unit per cube face, relying on REPEAT wrapping
+(glTF's default). It was being clamped, so every face sampled one edge column.
+
+Two layers of cause:
+1. **Mine.** The host hardcoded `TextureWrapType::Clamp` with a confident comment
+   that "a model's UVs are authored inside [0,1]". Wrong: glTF defaults to REPEAT.
+   Now read from the glTF sampler (`wrapS`/`wrapT`/`magFilter`).
+2. **mbgl's, and Metal-only.** Fixing (1) changed nothing, because the Metal
+   `CustomGeometryShader` declares its sampler INSIDE the shader —
+   `constexpr sampler sampler2d(coord::normalized, filter::linear)` — and a Metal
+   `constexpr sampler` defaults to `address::clamp_to_edge`, ignoring whatever
+   `setSamplerConfiguration` puts on the Texture2D. The GL
+   (`shaders/gl/custom_geometry.hpp`) and Vulkan
+   (`shaders/vulkan/custom_geometry.hpp`) variants sample through a `sampler2D`
+   whose wrap state mbgl does control, so **only Metal was affected** — the same
+   pattern as the depth bug.
+
+Fixed by `patches/metal-custom-geometry-sampler-repeat.patch` (marker
+`MBL_CUSTOM_GEOMETRY_REPEAT`). Repeat is a safe default: UVs inside [0,1] never
+sample outside the texture, so clamp and repeat are indistinguishable for them.
+The residual limitation is that a model explicitly wanting CLAMP_TO_EDGE *and*
+having UVs outside [0,1] will now tile — rare, and the opposite of the glTF
+default.
+
+**Both Metal patches are needed for correct 3D models on Apple platforms**, and
+both are Metal-only: GL (Linux/Android) and Vulkan (Windows) handle depth and
+sampler wrap correctly already — reasoned from source, not yet measured on those
+tiers.
+
+## Lesson
+
+Two independent bugs in this session came from the same mistake — a hardcoded
+graphics-state guess with a plausible comment (`Clamp` because "UVs are in
+[0,1]"; and earlier, uniform XYZ scale because upstream's example did that). Both
+looked right and rendered *something*. Take state from the source data or the
+spec, not from intuition about what models "usually" do.

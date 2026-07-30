@@ -225,6 +225,66 @@ class MapLibreCoreMap {
     );
   }
 
+  /// Loads a binary glTF (`.glb`) from [path] and draws it anchored at
+  /// [latitude]/[longitude] as a layer named [layerId] (re-using an id replaces
+  /// the previous model).
+  ///
+  /// [scale] multiplies the model's own units, so 1.0 renders a glTF authored in
+  /// metres at life size and the model keeps its ground footprint across zooms.
+  /// [headingDegrees] yaws it clockwise from north (a glTF's -Z "forward" faces
+  /// north at 0); [spinDegreesPerSecond] adds a continuous yaw on top.
+  ///
+  /// Throws [ArgumentError] if the file cannot be loaded, with the native
+  /// reason. The file is parsed synchronously on the calling isolate — only the
+  /// GPU upload is deferred — so expect this to block for a file read.
+  ///
+  /// Supported subset, bounded by what mbgl's built-in geometry shader can draw:
+  /// triangles, POSITION + TEXCOORD_0, node transforms baked in, all primitives
+  /// merged, the first base-colour texture and factor used. No skins or
+  /// animations, no Draco/meshopt, no external buffers or images, and at most
+  /// 65535 vertices (mbgl's indices are uint16). There is no lighting, so bake
+  /// it into the texture and animate by moving rather than deforming.
+  ///
+  /// Call after the style has loaded — changing the style drops the layer.
+  void addModel({
+    required String layerId,
+    required String path,
+    required double latitude,
+    required double longitude,
+    double scale = 1,
+    double headingDegrees = 0,
+    double spinDegreesPerSecond = 0,
+  }) {
+    _checkAlive();
+    const errorCapacity = 512;
+    final layerPtr = layerId.toNativeUtf8();
+    final pathPtr = path.toNativeUtf8();
+    final errPtr = malloc<ffi.Char>(errorCapacity);
+    try {
+      final ok = bindings.mbl_map_add_model(
+        _handle,
+        layerPtr.cast(),
+        pathPtr.cast(),
+        latitude,
+        longitude,
+        scale,
+        headingDegrees,
+        spinDegreesPerSecond,
+        errPtr,
+        errorCapacity,
+      );
+      if (ok == 0) {
+        throw ArgumentError(
+          'failed to load model "$path": ${errPtr.cast<Utf8>().toDartString()}',
+        );
+      }
+    } finally {
+      malloc.free(layerPtr);
+      malloc.free(pathPtr);
+      malloc.free(errPtr);
+    }
+  }
+
   /// Adds the 3D-model spike's test mesh — a spinning, per-face-coloured
   /// pyramid — anchored at [latitude]/[longitude].
   ///

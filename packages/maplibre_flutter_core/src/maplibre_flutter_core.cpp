@@ -820,26 +820,78 @@ void mbl_map_set_style(MblMap *m, const char *style_uri) {
   });
 }
 
+namespace {
+
+// Post a model host onto the render thread as a CustomDrawableLayer. Re-adding
+// under the same id must not throw there (an escaping exception would take the
+// render loop down), so any previous instance is removed first.
+void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh, double lat,
+                   double lng, double scale, double heading, double spinDps) {
+  // The mesh goes through a shared_ptr because post() takes a std::function,
+  // which requires a COPYABLE callable — and MblMeshData holds a
+  // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
+  // by move would make the lambda move-only and fail to convert.
+  auto meshPtr = std::make_shared<MblMeshData>(std::move(mesh));
+  m->post([m, layerId = std::move(layerId), meshPtr, lat, lng, scale, heading,
+           spinDps] {
+    if (m->map == nullptr) {
+      return;
+    }
+    if (m->map->getStyle().getLayer(layerId) != nullptr) {
+      m->map->getStyle().removeLayer(layerId);
+    }
+    m->map->getStyle().addLayer(
+        std::make_unique<mbgl::style::CustomDrawableLayer>(
+            layerId, mblMakeModelHost(std::move(*meshPtr), lat, lng, scale,
+                                      heading, spinDps)));
+    m->renderRequested = true;
+  });
+}
+
+void writeError(char *out, size_t capacity, const std::string &message) {
+  if (out == nullptr || capacity == 0) {
+    return;
+  }
+  const size_t n = std::min(message.size(), capacity - 1);
+  std::memcpy(out, message.data(), n);
+  out[n] = '\0';
+}
+
+} // namespace
+
+int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
+                      double lat, double lng, double scale, double heading_deg,
+                      double spin_dps, char *out_error, size_t error_capacity) {
+  if (out_error != nullptr && error_capacity > 0) {
+    out_error[0] = '\0';
+  }
+  if (m == nullptr || layer_id == nullptr || glb_path == nullptr) {
+    writeError(out_error, error_capacity, "null argument");
+    return 0;
+  }
+
+  // Parsed on the CALLING thread: pure file/CPU work with no mbgl Map access, so
+  // failures can be reported synchronously instead of being swallowed on the
+  // render thread.
+  MblMeshData mesh;
+  std::string error;
+  if (!mblLoadGlb(std::string(glb_path), mesh, error)) {
+    writeError(out_error, error_capacity, error);
+    return 0;
+  }
+
+  addModelLayer(m, std::string(layer_id), std::move(mesh), lat, lng, scale,
+                heading_deg, spin_dps);
+  return 1;
+}
+
 void mbl_map_add_test_model(MblMap *m, double lat, double lng,
                             double metres_per_unit, double spin_dps) {
   if (m == nullptr) {
     return;
   }
-  m->post([m, lat, lng, metres_per_unit, spin_dps] {
-    if (m->map == nullptr) {
-      return;
-    }
-    // A style reload drops custom layers, so re-adding under the same id must
-    // not throw on the render thread (an escaping exception here would take the
-    // render loop down). Remove any previous instance first.
-    static constexpr const char *kLayerId = "mbl-test-model";
-    if (m->map->getStyle().getLayer(kLayerId) != nullptr) {
-      m->map->getStyle().removeLayer(kLayerId);
-    }
-    m->map->getStyle().addLayer(std::make_unique<mbgl::style::CustomDrawableLayer>(
-        kLayerId, mblMakeTestModelHost(lat, lng, metres_per_unit, spin_dps)));
-    m->renderRequested = true;
-  });
+  addModelLayer(m, "mbl-test-model", mblMakeTestPyramid(), lat, lng,
+                metres_per_unit, /*heading=*/0.0, spin_dps);
 }
 
 void mbl_map_trigger_repaint(MblMap *m) {

@@ -608,10 +608,14 @@ elseif(WIN32)
 endif()
 
 # ---- The C ABI shim ----
-# maplibre_flutter_core_model.cpp is the 3D-model layer (mbgl CustomDrawableLayer).
-# Backend-agnostic — mbgl's own CustomGeometryShader exists for Metal, Vulkan, GL
-# and WebGPU — so it builds on every platform arm, no per-backend variant.
-set(_shim_sources maplibre_flutter_core.cpp maplibre_flutter_core_model.cpp)
+# maplibre_flutter_core_model.cpp is the 3D-model layer (mbgl CustomDrawableLayer)
+# and maplibre_flutter_core_gltf.cpp its .glb reader. Backend-agnostic — mbgl's own
+# CustomGeometryShader exists for Metal, Vulkan, GL and WebGPU — so both build on
+# every platform arm with no per-backend variant. The glTF reader needs no new
+# dependency: it uses mbgl's vendored rapidjson (linked PUBLIC into mbgl-core) and
+# mbgl's own image decoder.
+set(_shim_sources maplibre_flutter_core.cpp maplibre_flutter_core_model.cpp
+                  maplibre_flutter_core_gltf.cpp)
 if(APPLE)
   # maplibre_flutter_core_metal.mm is the ObjC++ zero-copy present helper (GPU blit
   # into an IOSurface) — Apple-only.
@@ -716,4 +720,12 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   # Directional sign check for the projection C ABI (mbl_map_pixel_for_lat_lng).
   add_executable(proj_probe proj_probe.cpp)
   target_link_libraries(proj_probe PRIVATE maplibre_flutter_core)
+
+  # Parse-level checks for the .glb reader (no rendering). It links the reader
+  # source directly rather than through the shared library, since mblLoadGlb is
+  # C++ and therefore not exported on the C ABI.
+  add_executable(gltf_probe gltf_probe.cpp maplibre_flutter_core_gltf.cpp)
+  target_include_directories(gltf_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                                                "${MLN_ROOT}/src")
+  target_link_libraries(gltf_probe PRIVATE mbgl-core mbgl-compiler-options)
 endif()
