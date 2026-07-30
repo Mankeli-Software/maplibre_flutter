@@ -888,15 +888,16 @@ void requestModelRender(MblMap *m) {
   }
 }
 
-void addModelLayer(MblMap *m, std::string layerId, MblMeshData mesh,
+void addModelLayer(MblMap *m, std::string layerId,
+                   std::shared_ptr<const MblMeshData> mesh,
                    MblModelPlacement placement) {
   // The mesh goes through a shared_ptr because post() takes a std::function,
   // which requires a COPYABLE callable — and MblMeshData holds a
   // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
   // by move would make the lambda move-only and fail to convert.
-  auto meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
   auto placementPtr = std::make_shared<MblModelPlacement>(placement);
-  m->post([m, layerId = std::move(layerId), meshPtr, placementPtr] {
+  m->post([m, layerId = std::move(layerId), meshPtr = std::move(mesh),
+           placementPtr] {
     addModelLayerNow(m, layerId, meshPtr, placementPtr);
     // Retained so transform updates can find this model and so it can be re-added
     // after a style reload.
@@ -931,14 +932,37 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
   // Parsed on the CALLING thread: pure file/CPU work with no mbgl Map access, so
   // failures can be reported synchronously instead of being swallowed on the
   // render thread.
-  MblMeshData mesh;
-  std::string error;
-  if (!mblLoadGlb(std::string(glb_path), mesh, error)) {
-    writeError(out_error, error_capacity, error);
-    return 0;
+  // Parsed meshes are cached by path and SHARED between models. Without this, a
+  // stress test spawning N copies of one vehicle re-reads and re-parses the whole
+  // .glb N times — tens of megabytes each — which would dominate any measurement
+  // and makes spawning many models impractical. The mesh is immutable, so sharing
+  // is free; only the placement differs per instance.
+  static std::mutex meshCacheMutex;
+  static std::unordered_map<std::string, std::shared_ptr<const MblMeshData>>
+      meshCache;
+
+  const std::string path(glb_path);
+  std::shared_ptr<const MblMeshData> meshPtr;
+  {
+    std::lock_guard<std::mutex> lk(meshCacheMutex);
+    const auto it = meshCache.find(path);
+    if (it != meshCache.end()) {
+      meshPtr = it->second;
+    }
+  }
+  if (!meshPtr) {
+    MblMeshData mesh;
+    std::string error;
+    if (!mblLoadGlb(path, mesh, error)) {
+      writeError(out_error, error_capacity, error);
+      return 0;
+    }
+    meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
+    std::lock_guard<std::mutex> lk(meshCacheMutex);
+    meshCache.emplace(path, meshPtr);
   }
 
-  addModelLayer(m, std::string(layer_id), std::move(mesh),
+  addModelLayer(m, std::string(layer_id), meshPtr,
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = scale,
@@ -994,7 +1018,8 @@ void mbl_map_add_test_model(MblMap *m, double lat, double lng,
   if (m == nullptr) {
     return;
   }
-  addModelLayer(m, "mbl-test-model", mblMakeTestPyramid(),
+  addModelLayer(m, "mbl-test-model",
+                std::make_shared<const MblMeshData>(mblMakeTestPyramid()),
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = metres_per_unit,

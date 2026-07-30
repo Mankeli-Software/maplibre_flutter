@@ -34,6 +34,43 @@ const _places = <(String, LatLng, double)>[
   ('New York', LatLng(40.7128, -74.0060), 10),
 ];
 
+/// One model wandering the stress field: a heading that curves, and a bounce off
+/// the field edge so they stay in view instead of dispersing.
+class _Wanderer {
+  _Wanderer({
+    required this.id,
+    required this.x,
+    required this.y,
+    required this.bearing,
+    required this.speed,
+    required this.turnRate,
+  });
+
+  final String id;
+  final double speed;
+  double x;
+  double y;
+  double bearing;
+  double turnRate;
+
+  void advance(double dt, double field) {
+    bearing = (bearing + turnRate * dt) % 360;
+    final rad = bearing * math.pi / 180;
+    // Bearing is clockwise from north: north is +y, east is +x.
+    x += math.sin(rad) * speed * dt;
+    y += math.cos(rad) * speed * dt;
+
+    final half = field / 2;
+    if (x.abs() > half || y.abs() > half) {
+      // Turn back toward the middle rather than teleporting, so motion stays
+      // continuous and the heading keeps matching the direction of travel.
+      bearing = (math.atan2(-x, -y) * 180 / math.pi) % 360;
+      x = x.clamp(-half, half);
+      y = y.clamp(-half, half);
+    }
+  }
+}
+
 class MapDemoPage extends StatefulWidget {
   const MapDemoPage({super.key});
 
@@ -71,6 +108,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
   void dispose() {
     _driveTicker?.stop();
     _driveTicker?.dispose();
+    _stressTicker?.stop();
+    _stressTicker?.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -163,6 +202,21 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // updateModel, which only touches the native placement.
   Ticker? _driveTicker;
   bool _driving = false;
+
+  // --- Stress mode -----------------------------------------------------------
+  //
+  // N models each wandering in its own direction, to see what many models cost:
+  // draw calls (this vehicle is 149 per instance), per-frame updateModel traffic,
+  // and whether the repaint pump keeps up. Reports measured frames per second
+  // rather than just looking busy — "it seems smooth" is not a measurement.
+  static const int _stressCount = 24;
+  static const double _stressFieldMetres = 120;
+  Ticker? _stressTicker;
+  bool _stressing = false;
+  final List<_Wanderer> _wanderers = <_Wanderer>[];
+  int _stressFrames = 0;
+  Duration _stressLastReport = Duration.zero;
+  double _stressFps = 0;
   LatLng _modelAnchor = _modelSite;
   // Following a circle rotates the model 360 degrees per lap — that is simply
   // what driving a roundabout is, and it is correct. But how it READS depends
@@ -349,6 +403,115 @@ class _MapDemoPageState extends State<MapDemoPage> {
     return best;
   }
 
+  Future<void> _toggleStress() async {
+    if (_stressing) {
+      _stressTicker?.stop();
+      _stressTicker?.dispose();
+      _stressTicker = null;
+      for (final w in _wanderers) {
+        // ignore: experimental_member_use
+        _controller.removeModel(w.id);
+      }
+      _wanderers.clear();
+      setState(() {
+        _stressing = false;
+        _stressFps = 0;
+      });
+      return;
+    }
+
+    final String assetPath;
+    try {
+      assetPath = await _resolveModelPath();
+    } catch (e) {
+      setState(() => _modelError = 'could not read model: $e');
+      return;
+    }
+
+    final centre = _modelAnchor;
+    // Pull back far enough that the whole field is in view, else most of the
+    // models are off-screen and the number on screen means nothing.
+    final camera = await _controller.camera.getPosition();
+    await _controller.camera.move(
+      camera.copyWith(center: centre, zoom: 17, pitch: 55),
+      duration: const Duration(milliseconds: 700),
+    );
+
+    final rng = math.Random(7); // fixed seed: runs stay comparable
+    final latPerMetre = 1 / 111320.0;
+    final lngPerMetre =
+        1 / (111320.0 * math.cos(centre.latitude * math.pi / 180));
+
+    _wanderers.clear();
+    for (var i = 0; i < _stressCount; i++) {
+      _wanderers.add(_Wanderer(
+        id: 'stress-$i',
+        // Metres from the centre, so the field is a known size regardless of zoom.
+        x: (rng.nextDouble() - 0.5) * _stressFieldMetres,
+        y: (rng.nextDouble() - 0.5) * _stressFieldMetres,
+        bearing: rng.nextDouble() * 360,
+        speed: 6 + rng.nextDouble() * 14, // 6-20 m/s
+        turnRate: (rng.nextDouble() - 0.5) * 30, // deg/s, so paths curve
+      ));
+    }
+
+    for (final w in _wanderers) {
+      try {
+        // ignore: experimental_member_use
+        _controller.addModel(MapLibreModel(
+          id: w.id,
+          assetPath: assetPath,
+          point: LatLng(centre.latitude + w.y * latPerMetre,
+              centre.longitude + w.x * lngPerMetre),
+          scale: _modelScale,
+          headingDegrees: _modelHeading + w.bearing,
+          elevationMetres: _modelElevation,
+        ));
+      } on ArgumentError catch (e) {
+        setState(() => _modelError = '${e.message}');
+        return;
+      }
+    }
+
+    _stressFrames = 0;
+    _stressLastReport = Duration.zero;
+    var last = Duration.zero;
+    _stressTicker = Ticker((elapsed) {
+      final dt = last == Duration.zero
+          ? 0.0
+          : (elapsed - last).inMicroseconds / 1e6;
+      last = elapsed;
+
+      for (final w in _wanderers) {
+        w.advance(dt, _stressFieldMetres);
+        // ignore: experimental_member_use
+        _controller.updateModel(MapLibreModel(
+          id: w.id,
+          assetPath: assetPath,
+          point: LatLng(centre.latitude + w.y * latPerMetre,
+              centre.longitude + w.x * lngPerMetre),
+          scale: _modelScale,
+          headingDegrees: _modelHeading + w.bearing,
+          elevationMetres: _modelElevation,
+        ));
+      }
+
+      _stressFrames++;
+      if (elapsed - _stressLastReport > const Duration(seconds: 1)) {
+        final secs =
+            (elapsed - _stressLastReport).inMicroseconds / 1e6;
+        setState(() => _stressFps = _stressFrames / secs);
+        _stressFrames = 0;
+        _stressLastReport = elapsed;
+      }
+    })..start();
+
+    setState(() {
+      _stressing = true;
+      _modelError = null;
+    });
+  }
+
   void _stopDriving() {
     _driveTicker?.stop();
     _driveTicker?.dispose();
@@ -471,6 +634,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
                         : null,
                     icon: Icon(_driving ? Icons.stop : Icons.play_arrow),
                     label: Text(_driving ? 'Stop driving' : 'Drive model'),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'stress',
+                    onPressed: _ready ? () => _toggleStress() : null,
+                    icon: Icon(_stressing ? Icons.stop : Icons.grid_view),
+                    label: Text(_stressing
+                        ? '$_stressCount models · ${_stressFps.toStringAsFixed(0)} fps'
+                        : 'Stress: $_stressCount models'),
                   ),
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(
