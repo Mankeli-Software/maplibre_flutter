@@ -13,6 +13,7 @@
 #include <cmath>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -38,95 +39,119 @@ public:
       return;
     }
 
-    Interface::GeometryOptions options;
-    if (mesh.baseColor.has_value()) {
-      auto image = std::make_shared<mbgl::PremultipliedImage>(
-          std::move(*mesh.baseColor));
-      mesh.baseColor.reset();
-      options.texture = interface.context.createTexture2D();
-      options.texture->setImage(std::move(image));
-      // Take wrap/filter from the glTF sampler, NOT a hardcoded guess: glTF
-      // defaults to REPEAT and models tile deliberately (BoxTextured spans
-      // u=[0,6]), so clamping collapses them to one edge colour.
-      options.texture->setSamplerConfiguration(
-          {.filter = mesh.filterLinear ? mbgl::gfx::TextureFilterType::Linear
-                                       : mbgl::gfx::TextureFilterType::Nearest,
-           .wrapU = mesh.wrapRepeatU ? mbgl::gfx::TextureWrapType::Repeat
-                                     : mbgl::gfx::TextureWrapType::Clamp,
-           .wrapV = mesh.wrapRepeatV ? mbgl::gfx::TextureWrapType::Repeat
-                                     : mbgl::gfx::TextureWrapType::Clamp});
-    }
-    // With no texture, addGeometry substitutes a white 2x2 and this tint is what
-    // shows; with one, it multiplies (glTF baseColorFactor semantics).
-    options.color =
-        mbgl::Color{mesh.baseColorFactor[0], mesh.baseColorFactor[1],
-                    mesh.baseColorFactor[2], mesh.baseColorFactor[3]};
-    interface.setGeometryOptions(options);
+    // One drawable per part, each with its own texture and tint. Parts exist
+    // because mbgl's indices are uint16 (so one drawable caps at 65536 vertices)
+    // and because a single texture per model would smear one material over a
+    // multi-material mesh — a real car model arrives as ~149 primitives across
+    // 64 materials and 20 images.
+    //
+    // Textures are uploaded once per distinct image and shared by every part that
+    // references it (Texture2DPtr is shared), so 149 parts over 20 images cost 20
+    // uploads, not 149.
+    std::vector<mbgl::gfx::Texture2DPtr> textures(mesh.images.size());
 
-    // Runs on the render thread, once per drawable per frame, inside the
-    // layer-group render. It owns the animation clock: a steady_clock read
-    // rather than a frame counter, so the spin rate is wall-clock correct
-    // regardless of how often the frontend actually renders.
+    // The animation clock is shared by every part, so they move as one rigid
+    // body rather than drifting apart.
     const auto start = std::chrono::steady_clock::now();
-    interface.setGeometryTweakerCallback(
-        [=](mbgl::gfx::Drawable &, const mbgl::PaintParameters &params,
-            Interface::GeometryOptions &current) {
-          const double seconds =
-              std::chrono::duration<double>(
-                  std::chrono::steady_clock::now() - start)
-                  .count();
-          // Map bearing is clockwise-from-north; model space is right-handed
-          // about +Z (up), so a clockwise yaw is a negative rotate_z.
-          const double angle =
-              -mbgl::util::deg2rad(heading + spinDps * seconds);
 
-          // Anchor in mercator world coordinates at the current scale — the
-          // space nearClippedProjMatrix consumes (upstream's own recipe, see
-          // platform/glfw/example_custom_drawable_style_layer.cpp:490).
-          mbgl::LatLng unwrapped = latLng.wrapped();
-          unwrapped.unwrapForShortestPath(
-              params.state.getLatLng(mbgl::LatLng::Wrapped));
-          const mbgl::Point<double> center =
-              mbgl::Projection::project(unwrapped, params.state.getScale());
+    for (const auto &part : mesh.parts) {
+      if (part.vertices.empty() || part.indices.empty()) {
+        continue;
+      }
 
-          const double metresPerPixel =
-              mbgl::Projection::getMetersPerPixelAtLatitude(
-                  latLng.latitude(), params.state.getZoom());
+      Interface::GeometryOptions options;
+      if (part.imageIndex >= 0 &&
+          static_cast<size_t>(part.imageIndex) < mesh.images.size()) {
+        auto &cached = textures[static_cast<size_t>(part.imageIndex)];
+        if (!cached && mesh.images[static_cast<size_t>(part.imageIndex)]) {
+          cached = interface.context.createTexture2D();
+          cached->setImage(mesh.images[static_cast<size_t>(part.imageIndex)]);
+          // Take wrap/filter from the glTF sampler, NOT a hardcoded guess: glTF
+          // defaults to REPEAT and models tile deliberately (BoxTextured spans
+          // u=[0,6]), so clamping collapses them to one edge colour.
+          cached->setSamplerConfiguration(
+              {.filter = part.filterLinear
+                             ? mbgl::gfx::TextureFilterType::Linear
+                             : mbgl::gfx::TextureFilterType::Nearest,
+               .wrapU = part.wrapRepeatU ? mbgl::gfx::TextureWrapType::Repeat
+                                         : mbgl::gfx::TextureWrapType::Clamp,
+               .wrapV = part.wrapRepeatV ? mbgl::gfx::TextureWrapType::Repeat
+                                         : mbgl::gfx::TextureWrapType::Clamp});
+        }
+        options.texture = cached;
+      }
+      // With no texture, addGeometry substitutes a white 2x2 and this tint is
+      // what shows; with one, it multiplies (glTF baseColorFactor semantics).
+      options.color =
+          mbgl::Color{part.baseColorFactor[0], part.baseColorFactor[1],
+                      part.baseColorFactor[2], part.baseColorFactor[3]};
+      interface.setGeometryOptions(options);
 
-          // THE AXES USE DIFFERENT UNITS. mbgl's projection matrix takes X/Y in
-          // world pixels but Z in METRES — it applies pixelsPerMeter to z itself
-          // (camera.cpp:104, "Height value (z) of renderables is in meters.
-          // Scale z coordinate by pixelsPerMeter"). Scaling all three axes
-          // uniformly, as upstream's flat-geometry example does, silently
-          // squashes the model's height by metresPerPixel — it becomes a decal.
-          const auto sxy = static_cast<float>(modelScale / metresPerPixel);
-          const auto sz = static_cast<float>(modelScale);
+      // Runs on the render thread, once per drawable per frame, inside the
+      // layer-group render. steady_clock rather than a frame counter, so the spin
+      // rate is wall-clock correct regardless of how often the frontend renders.
+      interface.setGeometryTweakerCallback(
+          [=](mbgl::gfx::Drawable &, const mbgl::PaintParameters &params,
+              Interface::GeometryOptions &current) {
+            const double seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start)
+                    .count();
+            // Map bearing is clockwise-from-north; model space is right-handed
+            // about +Z (up), so a clockwise yaw is a negative rotate_z.
+            const double angle =
+                -mbgl::util::deg2rad(heading + spinDps * seconds);
 
-          mbgl::mat4 model = mbgl::matrix::identity4();
-          mbgl::matrix::translate(model, model, center.x, center.y, 0.0);
-          mbgl::matrix::rotate_z(model, model, angle);
-          mbgl::matrix::scale(model, model, sxy, sxy, sz);
-          mbgl::matrix::multiply(current.matrix,
-                                 params.transformParams.nearClippedProjMatrix,
-                                 model);
-        });
+            // Anchor in mercator world coordinates at the current scale — the
+            // space nearClippedProjMatrix consumes (upstream's own recipe, see
+            // platform/glfw/example_custom_drawable_style_layer.cpp:490).
+            mbgl::LatLng unwrapped = latLng.wrapped();
+            unwrapped.unwrapForShortestPath(
+                params.state.getLatLng(mbgl::LatLng::Wrapped));
+            const mbgl::Point<double> center =
+                mbgl::Projection::project(unwrapped, params.state.getScale());
 
-    auto vertices = std::make_shared<VertexVector>();
-    auto indices = std::make_shared<TriangleIndexVector>();
-    for (const auto &v : mesh.vertices) {
-      vertices->emplace_back(
-          Interface::GeometryVertex{v.position, v.texcoords});
+            const double metresPerPixel =
+                mbgl::Projection::getMetersPerPixelAtLatitude(
+                    latLng.latitude(), params.state.getZoom());
+
+            // THE AXES USE DIFFERENT UNITS. mbgl's projection matrix takes X/Y
+            // in world pixels but Z in METRES — it applies pixelsPerMeter to z
+            // itself (camera.cpp:104, "Height value (z) of renderables is in
+            // meters. Scale z coordinate by pixelsPerMeter"). Scaling all three
+            // axes uniformly, as upstream's flat-geometry example does, silently
+            // squashes the model's height by metresPerPixel — it becomes a decal.
+            const auto sxy = static_cast<float>(modelScale / metresPerPixel);
+            const auto sz = static_cast<float>(modelScale);
+
+            mbgl::mat4 model = mbgl::matrix::identity4();
+            mbgl::matrix::translate(model, model, center.x, center.y, 0.0);
+            mbgl::matrix::rotate_z(model, model, angle);
+            mbgl::matrix::scale(model, model, sxy, sxy, sz);
+            mbgl::matrix::multiply(current.matrix,
+                                   params.transformParams.nearClippedProjMatrix,
+                                   model);
+          });
+
+      auto vertices = std::make_shared<VertexVector>();
+      auto indices = std::make_shared<TriangleIndexVector>();
+      vertices->reserve(part.vertices.size());
+      for (const auto &v : part.vertices) {
+        vertices->emplace_back(
+            Interface::GeometryVertex{v.position, v.texcoords});
+      }
+      for (size_t i = 0; i + 2 < part.indices.size(); i += 3) {
+        indices->emplace_back(part.indices[i], part.indices[i + 1],
+                              part.indices[i + 2]);
+      }
+
+      // is3D = true → depth ReadWrite + setIs3D, i.e. a real depth-tested mesh
+      // rather than a flat overlay (custom_drawable_layer.cpp:741). On Apple this
+      // only actually depth-tests with
+      // patches/metal-custom-drawable-3d-depth.patch.
+      interface.addGeometry(vertices, indices, /*is3D=*/true);
     }
-    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
-      indices->emplace_back(mesh.indices[i], mesh.indices[i + 1],
-                            mesh.indices[i + 2]);
-    }
 
-    // is3D = true → depth ReadWrite + setIs3D, i.e. a real depth-tested mesh
-    // rather than a flat overlay (custom_drawable_layer.cpp:741). On Apple this
-    // only actually depth-tests with
-    // patches/metal-custom-drawable-3d-depth.patch.
-    interface.addGeometry(vertices, indices, /*is3D=*/true);
     interface.finish();
   }
 
@@ -147,16 +172,16 @@ constexpr std::array<float, 2> kUvGreen = {0.75f, 0.25f};
 constexpr std::array<float, 2> kUvBlue = {0.25f, 0.75f};
 constexpr std::array<float, 2> kUvYellow = {0.75f, 0.75f};
 
-void pushTriangle(MblMeshData &mesh, const std::array<float, 3> &a,
+void pushTriangle(MblMeshData::Part &part, const std::array<float, 3> &a,
                   const std::array<float, 3> &b, const std::array<float, 3> &c,
                   const std::array<float, 2> &uv) {
-  const auto base = static_cast<uint16_t>(mesh.vertices.size());
-  mesh.vertices.push_back({a, uv});
-  mesh.vertices.push_back({b, uv});
-  mesh.vertices.push_back({c, uv});
-  mesh.indices.push_back(base);
-  mesh.indices.push_back(static_cast<uint16_t>(base + 1));
-  mesh.indices.push_back(static_cast<uint16_t>(base + 2));
+  const auto base = static_cast<uint16_t>(part.vertices.size());
+  part.vertices.push_back({a, uv});
+  part.vertices.push_back({b, uv});
+  part.vertices.push_back({c, uv});
+  part.indices.push_back(base);
+  part.indices.push_back(static_cast<uint16_t>(base + 1));
+  part.indices.push_back(static_cast<uint16_t>(base + 2));
 }
 
 } // namespace
@@ -182,17 +207,18 @@ MblMeshData mblMakeTestPyramid() {
   const std::array<float, 3> apex = {0.0f, 0.0f, h};
 
   // +Y is south in map model space, so -Y is the north-facing side.
-  pushTriangle(mesh, v0, v1, apex, kUvRed);    // north face
-  pushTriangle(mesh, v1, v2, apex, kUvGreen);  // east face
-  pushTriangle(mesh, v2, v3, apex, kUvBlue);   // south face
-  pushTriangle(mesh, v3, v0, apex, kUvYellow); // west face
+  MblMeshData::Part part;
+  pushTriangle(part, v0, v1, apex, kUvRed);    // north face
+  pushTriangle(part, v1, v2, apex, kUvGreen);  // east face
+  pushTriangle(part, v2, v3, apex, kUvBlue);   // south face
+  pushTriangle(part, v3, v0, apex, kUvYellow); // west face
 
   // Base, so the model is closed if viewed from below. NOTE: without the Metal
   // depth patch this base paints OVER all four side faces from above, because
   // custom drawables fall back to painter's order — that is the regression this
   // mesh exists to catch.
-  pushTriangle(mesh, v0, v3, v2, kUvBlue);
-  pushTriangle(mesh, v0, v2, v1, kUvBlue);
+  pushTriangle(part, v0, v3, v2, kUvBlue);
+  pushTriangle(part, v0, v2, v1, kUvBlue);
 
   mesh.minPosition = {-hx, -hy, 0.0f};
   mesh.maxPosition = {hx, hy, h};
@@ -207,12 +233,16 @@ MblMeshData mblMakeTestPyramid() {
       255, 210, 40,  255, // yellow
   };
   std::copy(texels.begin(), texels.end(), palette.data.get());
-  mesh.baseColor = std::move(palette);
+  mesh.images.push_back(
+      std::make_shared<mbgl::PremultipliedImage>(std::move(palette)));
+
+  part.imageIndex = 0;
   // Nearest + Clamp so each face reads exactly one texel and stays a flat,
   // unambiguous colour (the whole point of the pinwheel regression).
-  mesh.filterLinear = false;
-  mesh.wrapRepeatU = false;
-  mesh.wrapRepeatV = false;
+  part.filterLinear = false;
+  part.wrapRepeatU = false;
+  part.wrapRepeatV = false;
+  mesh.parts.push_back(std::move(part));
 
   return mesh;
 }

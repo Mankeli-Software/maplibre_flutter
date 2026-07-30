@@ -9,10 +9,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace {
+
+// mbgl's IndexVector is uint16-based; a part that exceeds this cannot be drawn.
+constexpr size_t kMaxVerticesPerPart = 65536;
 
 int describe(const std::string &path) {
   MblMeshData mesh;
@@ -23,95 +27,104 @@ int describe(const std::string &path) {
   }
 
   printf("OK   %s\n", path.c_str());
-  printf("       vertices=%zu indices=%zu triangles=%zu\n", mesh.vertices.size(),
-         mesh.indices.size(), mesh.indices.size() / 3);
-  printf("       texture=%s", mesh.baseColor.has_value() ? "yes" : "no");
-  if (mesh.baseColor.has_value()) {
-    printf(" (%ux%u)", mesh.baseColor->size.width, mesh.baseColor->size.height);
-  }
-  printf("  tint=[%.2f %.2f %.2f %.2f]\n", mesh.baseColorFactor[0],
-         mesh.baseColorFactor[1], mesh.baseColorFactor[2],
-         mesh.baseColorFactor[3]);
+  printf("       parts=%zu vertices=%zu triangles=%zu images=%zu\n",
+         mesh.parts.size(), mesh.totalVertices(), mesh.totalTriangles(),
+         mesh.images.size());
   printf("       bbox min=(%.3f %.3f %.3f) max=(%.3f %.3f %.3f)  [X east, Y "
          "south, Z up, metres]\n",
          mesh.minPosition[0], mesh.minPosition[1], mesh.minPosition[2],
          mesh.maxPosition[0], mesh.maxPosition[1], mesh.maxPosition[2]);
-
-  int failures = 0;
-
-  // Every index must address a real vertex — a merge/offset bug here would draw
-  // garbage triangles or read out of bounds on the GPU.
-  for (const auto idx : mesh.indices) {
-    if (idx >= mesh.vertices.size()) {
-      printf("       *** index %u >= vertex count %zu ***\n", idx,
-             mesh.vertices.size());
-      ++failures;
-      break;
-    }
-  }
-  if (mesh.indices.size() % 3 != 0) {
-    printf("       *** index count is not a multiple of 3 ***\n");
-    ++failures;
-  }
-  // A model that collapsed to a point means the node transforms were dropped.
-  const bool degenerate = mesh.minPosition[0] == mesh.maxPosition[0] &&
-                          mesh.minPosition[1] == mesh.maxPosition[1] &&
-                          mesh.minPosition[2] == mesh.maxPosition[2];
-  if (degenerate) {
-    printf("       *** bounding box is degenerate ***\n");
-    ++failures;
-  }
-  // UV spread: if every vertex samples the same texel the model renders as a flat
-  // colour even though a texture decoded fine — the failure mode that looks like
-  // "the texture is not bound".
-  float uMin = 1e9f, uMax = -1e9f, vMin = 1e9f, vMax = -1e9f;
-  for (const auto &vert : mesh.vertices) {
-    uMin = std::min(uMin, vert.texcoords[0]);
-    uMax = std::max(uMax, vert.texcoords[0]);
-    vMin = std::min(vMin, vert.texcoords[1]);
-    vMax = std::max(vMax, vert.texcoords[1]);
-  }
-  printf("       uv range u=[%.3f %.3f] v=[%.3f %.3f]\n", uMin, uMax, vMin, vMax);
-  printf("       sampler: wrapU=%s wrapV=%s filter=%s\n",
-         mesh.wrapRepeatU ? "Repeat" : "Clamp",
-         mesh.wrapRepeatV ? "Repeat" : "Clamp",
-         mesh.filterLinear ? "Linear" : "Nearest");
-  // UVs outside [0,1] REQUIRE Repeat; with Clamp the model samples one edge
-  // colour and reads as untextured.
-  if ((uMax > 1.001f || uMin < -0.001f) && !mesh.wrapRepeatU) {
-    printf("       *** u exceeds [0,1] but wrapU is Clamp ***\n");
-    ++failures;
-  }
-  if (uMax - uMin < 1e-6f && vMax - vMin < 1e-6f) {
-    printf("       *** all UVs identical - texture cannot show ***\n");
-    ++failures;
-  }
-  if (mesh.baseColor.has_value()) {
-    // Average the decoded texture, so a fully-white or fully-transparent decode
-    // is visible here rather than being mistaken for a binding problem.
-    const auto &img = *mesh.baseColor;
-    unsigned long long sum[4] = {0, 0, 0, 0};
-    const size_t px = static_cast<size_t>(img.size.width) * img.size.height;
-    for (size_t i = 0; i < px; ++i) {
-      for (int c = 0; c < 4; ++c) sum[c] += img.data.get()[i * 4 + c];
-    }
-    if (px > 0) {
-      printf("       texture mean rgba=(%.0f %.0f %.0f %.0f)\n",
-             double(sum[0]) / px, double(sum[1]) / px, double(sum[2]) / px,
-             double(sum[3]) / px);
-    }
-  }
-  const size_t dump = std::min<size_t>(mesh.vertices.size(), 8);
-  for (size_t i = 0; i < dump; ++i) {
-    const auto &vert = mesh.vertices[i];
-    printf("       v[%zu] pos=(%7.3f %7.3f %7.3f) uv=(%7.3f %7.3f)\n", i,
-           vert.position[0], vert.position[1], vert.position[2],
-           vert.texcoords[0], vert.texcoords[1]);
-  }
   printf("       extent=(%.3f %.3f %.3f)\n",
          mesh.maxPosition[0] - mesh.minPosition[0],
          mesh.maxPosition[1] - mesh.minPosition[1],
          mesh.maxPosition[2] - mesh.minPosition[2]);
+
+  int failures = 0;
+  size_t largestPart = 0;
+  size_t untextured = 0;
+  std::set<int> usedImages;
+  float uMin = 1e9f, uMax = -1e9f, vMin = 1e9f, vMax = -1e9f;
+
+  for (size_t pi = 0; pi < mesh.parts.size(); ++pi) {
+    const auto &part = mesh.parts[pi];
+    largestPart = std::max(largestPart, part.vertices.size());
+
+    // Every part must fit the uint16 ceiling on its own, or it cannot be drawn.
+    if (part.vertices.size() > kMaxVerticesPerPart) {
+      printf("       *** part %zu has %zu vertices, over the uint16 ceiling "
+             "***\n",
+             pi, part.vertices.size());
+      ++failures;
+    }
+    // Every index must address a real vertex IN ITS OWN PART — chunking
+    // re-indexes per part, so a bug here would draw garbage triangles or read
+    // out of bounds on the GPU.
+    for (const auto idx : part.indices) {
+      if (idx >= part.vertices.size()) {
+        printf("       *** part %zu: index %u >= its %zu vertices ***\n", pi,
+               idx, part.vertices.size());
+        ++failures;
+        break;
+      }
+    }
+    if (part.indices.size() % 3 != 0) {
+      printf("       *** part %zu: index count not a multiple of 3 ***\n", pi);
+      ++failures;
+    }
+    if (part.imageIndex >= 0) {
+      usedImages.insert(part.imageIndex);
+      if (static_cast<size_t>(part.imageIndex) >= mesh.images.size()) {
+        printf("       *** part %zu: imageIndex %d out of range ***\n", pi,
+               part.imageIndex);
+        ++failures;
+      }
+    } else {
+      ++untextured;
+    }
+
+    float partUMin = 1e9f, partUMax = -1e9f;
+    for (const auto &vert : part.vertices) {
+      partUMin = std::min(partUMin, vert.texcoords[0]);
+      partUMax = std::max(partUMax, vert.texcoords[0]);
+      vMin = std::min(vMin, vert.texcoords[1]);
+      vMax = std::max(vMax, vert.texcoords[1]);
+    }
+    uMin = std::min(uMin, partUMin);
+    uMax = std::max(uMax, partUMax);
+    // UVs outside [0,1] REQUIRE Repeat; with Clamp the part samples one edge
+    // colour and reads as untextured.
+    if ((partUMax > 1.001f || partUMin < -0.001f) && !part.wrapRepeatU) {
+      printf("       *** part %zu: u exceeds [0,1] but wrapU is Clamp ***\n",
+             pi);
+      ++failures;
+    }
+  }
+
+  printf("       largest part=%zu vertices (ceiling %zu)  untextured parts=%zu "
+         " distinct images used=%zu\n",
+         largestPart, kMaxVerticesPerPart, untextured, usedImages.size());
+  printf("       uv range u=[%.3f %.3f] v=[%.3f %.3f]\n", uMin, uMax, vMin,
+         vMax);
+
+  // A model that collapsed to a point means the node transforms were dropped.
+  if (mesh.minPosition[0] == mesh.maxPosition[0] &&
+      mesh.minPosition[1] == mesh.maxPosition[1] &&
+      mesh.minPosition[2] == mesh.maxPosition[2]) {
+    printf("       *** bounding box is degenerate ***\n");
+    ++failures;
+  }
+
+  for (size_t i = 0; i < mesh.images.size() && i < 4; ++i) {
+    const auto &img = mesh.images[i];
+    if (!img) {
+      printf("       image[%zu] = null\n", i);
+      continue;
+    }
+    printf("       image[%zu] %ux%u\n", i, img->size.width, img->size.height);
+  }
+  if (mesh.images.size() > 4) {
+    printf("       ... and %zu more images\n", mesh.images.size() - 4);
+  }
   return failures;
 }
 

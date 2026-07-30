@@ -428,3 +428,62 @@ graphics-state guess with a plausible comment (`Clamp` because "UVs are in
 [0,1]"; and earlier, uniform XYZ scale because upstream's example did that). Both
 looked right and rendered *something*. Take state from the source data or the
 spec, not from intuition about what models "usually" do.
+
+---
+
+# Production model: 509k-vertex car (2026-07-30)
+
+Tested against a real Sketchfab asset (2024 Maruti Suzuki Alto K10, 37 MB GLB).
+It renders correctly — body, glass, interior, mirrors, badge, licence plate — but
+it forced a real architecture change.
+
+## Merging the whole model into one buffer was wrong
+
+The model is **509,032 vertices / 728,150 triangles across 149 primitives, 64
+materials, 20 images**. The first reader merged everything into one vertex/index
+buffer and one texture, which failed immediately on the uint16 index ceiling.
+
+The ceiling is **per drawable, not per model**. So the reader now emits **parts**,
+one drawable each:
+
+* Each primitive becomes one or more parts, chunked by vertex count with
+  per-part re-indexing, so a primitive that alone exceeds 65536 vertices is split
+  rather than rejected. (This model's largest primitive is 62,298 — under the
+  ceiling — but the split makes the reader robust regardless.)
+* Each part carries **its own texture and tint**, which is real multi-material
+  support. With one texture per model, one arbitrary material would have been
+  smeared over all 149 primitives.
+* Textures are decoded and uploaded **once per distinct image** and shared by
+  every part referencing them (`Texture2DPtr` is shared), so 149 parts over 10
+  images cost 10 uploads.
+* All parts share one animation clock, so they move as one rigid body.
+
+Only 10 of the file's 20 images are decoded — the rest are normal/roughness/
+metallic maps this shader cannot use. 119 of 149 parts are untextured and rely on
+`baseColorFactor` alone (body paint, glass, trim), which is why the car is a solid
+correct red.
+
+Perf is a non-issue: 149 draw calls and 728k triangles render without trouble.
+
+## KHR_texture_transform mattered
+
+The model uses `KHR_texture_transform`, and its UV range is **u=[-34.98, 3.91]** —
+heavily tiled with negative offsets. Two things had to be right for that to
+render: the transform is now baked into the UVs at load time, and REPEAT wrapping
+had to work (see the Metal sampler patch above). Either one missing produces a
+plausible-looking but wrong model.
+
+`extensionsRequired` is now checked and any unsupported entry is refused, rather
+than silently rendering wrong geometry (Draco/meshopt/quantized attributes would
+all do that). `KHR_texture_transform` is the one allowed entry.
+
+## Two things callers need to know
+
+1. **Sketchfab models are not in metres.** This one's bounding box is 8.97 m long
+   where a real Alto K10 is 3.53 m — about 2.5x oversized. `scale: 0.394` puts it
+   at life size on a street. Always check the reported bbox against the real
+   object rather than assuming `scale: 1`.
+2. **glTF's -Z "forward" convention is not universally followed.** This model's
+   nose points +Z, so it faces south at `headingDegrees: 0` and needs
+   `headingDegrees: 180` to face north. Per-model authoring, not a bug — but it
+   means heading has to be set per asset.

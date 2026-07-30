@@ -2,9 +2,12 @@
 
 #include <mbgl/util/rapidjson.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <unordered_map>
 
 namespace {
 
@@ -295,15 +298,211 @@ std::array<double, 3> transformPoint(const Mat4 &m,
           m[2] * x + m[6] * y + m[10] * z + m[14]};
 }
 
+// Resolved base-colour material state for one primitive.
+struct Material {
+  int imageIndex = -1;
+  std::array<float, 4> factor = {1.0f, 1.0f, 1.0f, 1.0f};
+  bool wrapRepeatU = true;
+  bool wrapRepeatV = true;
+  bool filterLinear = true;
+  // KHR_texture_transform, baked into UVs at load time (see applyUvTransform).
+  bool hasUvTransform = false;
+  std::array<double, 2> uvOffset = {0.0, 0.0};
+  std::array<double, 2> uvScale = {1.0, 1.0};
+  double uvRotation = 0.0;
+};
+
+// KHR_texture_transform: matrix = translation * rotation * scale, applied to
+// vec3(uv, 1). Expanded from the extension spec's column-major mat3 form.
+std::array<float, 2> applyUvTransform(const Material &m,
+                                      const std::array<float, 2> &uv) {
+  if (!m.hasUvTransform) {
+    return uv;
+  }
+  const double c = std::cos(m.uvRotation);
+  const double s = std::sin(m.uvRotation);
+  const double u = uv[0], v = uv[1];
+  return {static_cast<float>(c * m.uvScale[0] * u + s * m.uvScale[1] * v +
+                             m.uvOffset[0]),
+          static_cast<float>(-s * m.uvScale[0] * u + c * m.uvScale[1] * v +
+                             m.uvOffset[1])};
+}
+
 struct Loader {
   const JSValue &root;
   const std::vector<uint8_t> &bin;
   MblMeshData &out;
   std::string &error;
-  bool tookTexture = false;
-  bool tookFactor = false;
+  bool boundsInitialised = false;
+  // glTF image index -> index into out.images, so an image shared by many
+  // materials is decoded exactly once.
+  std::vector<int> imageSlot;
 
-  // Append one primitive, baking `world` into its positions.
+  void growBounds(const std::array<float, 3> &p) {
+    for (size_t k = 0; k < 3; ++k) {
+      if (!boundsInitialised) {
+        out.minPosition[k] = out.maxPosition[k] = p[k];
+      } else {
+        out.minPosition[k] = std::min(out.minPosition[k], p[k]);
+        out.maxPosition[k] = std::max(out.maxPosition[k], p[k]);
+      }
+    }
+    boundsInitialised = true;
+  }
+
+  // Decode a glTF image once and return its slot in out.images, or -1.
+  int resolveImage(size_t gltfImageIndex) {
+    const auto *images = member(root, "images");
+    if (images == nullptr || !images->IsArray() ||
+        gltfImageIndex >= images->Size()) {
+      return -1;
+    }
+    if (imageSlot.empty()) {
+      imageSlot.assign(images->Size(), -2); // -2 = not yet attempted
+    }
+    if (imageSlot[gltfImageIndex] != -2) {
+      return imageSlot[gltfImageIndex];
+    }
+    imageSlot[gltfImageIndex] = -1;
+
+    const JSValue &img =
+        (*images)[static_cast<rapidjson::SizeType>(gltfImageIndex)];
+    // GLB-embedded images only; external/data-URI images are out of scope.
+    const auto *bvV = member(img, "bufferView");
+    if (bvV == nullptr || !bvV->IsUint()) {
+      return -1;
+    }
+    const auto *bufferViews = member(root, "bufferViews");
+    if (bufferViews == nullptr || !bufferViews->IsArray() ||
+        bvV->GetUint() >= bufferViews->Size()) {
+      return -1;
+    }
+    const JSValue &bv =
+        (*bufferViews)[static_cast<rapidjson::SizeType>(bvV->GetUint())];
+    const size_t off =
+        member(bv, "byteOffset") != nullptr && member(bv, "byteOffset")->IsUint()
+            ? member(bv, "byteOffset")->GetUint()
+            : 0;
+    const size_t len =
+        member(bv, "byteLength") != nullptr && member(bv, "byteLength")->IsUint()
+            ? member(bv, "byteLength")->GetUint()
+            : 0;
+    if (off > bin.size() || len > bin.size() - off || len == 0) {
+      return -1;
+    }
+
+    // Best-effort: a model with one unreadable texture still loads and renders
+    // that part with its baseColorFactor tint.
+    try {
+      auto decoded = std::make_shared<mbgl::PremultipliedImage>(
+          mbgl::decodeImage(std::string(
+              reinterpret_cast<const char *>(bin.data() + off), len)));
+      out.images.push_back(std::move(decoded));
+      imageSlot[gltfImageIndex] = static_cast<int>(out.images.size() - 1);
+    } catch (const std::exception &) {
+      imageSlot[gltfImageIndex] = -1;
+    }
+    return imageSlot[gltfImageIndex];
+  }
+
+  Material resolveMaterial(const JSValue &prim) {
+    Material mat;
+    const auto *matV = member(prim, "material");
+    if (matV == nullptr || !matV->IsUint()) {
+      return mat;
+    }
+    const auto *materials = member(root, "materials");
+    if (materials == nullptr || !materials->IsArray() ||
+        matV->GetUint() >= materials->Size()) {
+      return mat;
+    }
+    const JSValue &m =
+        (*materials)[static_cast<rapidjson::SizeType>(matV->GetUint())];
+    const auto *pbr = member(m, "pbrMetallicRoughness");
+    if (pbr == nullptr) {
+      return mat;
+    }
+
+    if (const auto *f = member(*pbr, "baseColorFactor");
+        f != nullptr && f->IsArray() && f->Size() == 4) {
+      for (rapidjson::SizeType i = 0; i < 4; ++i) {
+        mat.factor[i] = static_cast<float>((*f)[i].GetDouble());
+      }
+    }
+
+    const auto *texRef = member(*pbr, "baseColorTexture");
+    if (texRef == nullptr) {
+      return mat;
+    }
+
+    if (const auto *ext = member(*texRef, "extensions")) {
+      if (const auto *tt = member(*ext, "KHR_texture_transform")) {
+        mat.hasUvTransform = true;
+        if (const auto *o = member(*tt, "offset");
+            o != nullptr && o->IsArray() && o->Size() == 2) {
+          mat.uvOffset = {(*o)[0].GetDouble(), (*o)[1].GetDouble()};
+        }
+        if (const auto *sc = member(*tt, "scale");
+            sc != nullptr && sc->IsArray() && sc->Size() == 2) {
+          mat.uvScale = {(*sc)[0].GetDouble(), (*sc)[1].GetDouble()};
+        }
+        if (const auto *r = member(*tt, "rotation");
+            r != nullptr && r->IsNumber()) {
+          mat.uvRotation = r->GetDouble();
+        }
+      }
+    }
+
+    const auto *texIdx = member(*texRef, "index");
+    const auto *textures = member(root, "textures");
+    if (texIdx == nullptr || !texIdx->IsUint() || textures == nullptr ||
+        !textures->IsArray() || texIdx->GetUint() >= textures->Size()) {
+      return mat;
+    }
+    const JSValue &tex =
+        (*textures)[static_cast<rapidjson::SizeType>(texIdx->GetUint())];
+
+    // Honour the sampler's wrap/filter. glTF's DEFAULT wrap is REPEAT, so an
+    // absent sampler must stay repeating.
+    if (const auto *sampV = member(tex, "sampler");
+        sampV != nullptr && sampV->IsUint()) {
+      if (const auto *samplers = member(root, "samplers");
+          samplers != nullptr && samplers->IsArray() &&
+          sampV->GetUint() < samplers->Size()) {
+        const JSValue &samp =
+            (*samplers)[static_cast<rapidjson::SizeType>(sampV->GetUint())];
+        if (const auto *w = member(samp, "wrapS"); w != nullptr && w->IsInt()) {
+          mat.wrapRepeatU = w->GetInt() != kClampToEdge;
+        }
+        if (const auto *w = member(samp, "wrapT"); w != nullptr && w->IsInt()) {
+          mat.wrapRepeatV = w->GetInt() != kClampToEdge;
+        }
+        // mbgl exposes only Nearest/Linear, so any mipmapped-nearest mode maps to
+        // Nearest and everything else to Linear.
+        if (const auto *f = member(samp, "magFilter");
+            f != nullptr && f->IsInt()) {
+          const int mode = f->GetInt();
+          mat.filterLinear = mode != kNearest &&
+                             mode != kNearestMipmapNearest &&
+                             mode != kNearestMipmapLinear;
+        }
+      }
+    }
+
+    if (const auto *srcV = member(tex, "source");
+        srcV != nullptr && srcV->IsUint()) {
+      mat.imageIndex = resolveImage(srcV->GetUint());
+    }
+    return mat;
+  }
+
+  // Append one primitive as one or more parts, baking `world` into its positions.
+  //
+  // Chunked by vertex count: a triangle's three corners are copied into the
+  // current part (de-duplicated), and when the part would exceed the uint16
+  // ceiling a fresh one is started. That is what lets a 500k-vertex model load —
+  // the limit is per drawable, not per model — and it works uniformly for indexed
+  // and non-indexed primitives.
   bool addPrimitive(const JSValue &prim, const Mat4 &world) {
     const auto *modeV = member(prim, "mode");
     if (modeV != nullptr && modeV->IsInt() && modeV->GetInt() != kTriangles) {
@@ -339,49 +538,17 @@ struct Loader {
       if (!resolveAccessor(root, uvV->GetUint(), bin, a, error)) {
         return false;
       }
-      if (a.components == 2 && (a.componentType == kFloat ||
-                                a.componentType == kUnsignedByte ||
-                                a.componentType == kUnsignedShort)) {
+      if (a.components == 2 &&
+          (a.componentType == kFloat || a.componentType == kUnsignedByte ||
+           a.componentType == kUnsignedShort)) {
         uv = a;
       }
     }
 
-    const size_t base = out.vertices.size();
-    if (base + pos.count > kMaxVertices) {
-      error = "model exceeds " + std::to_string(kMaxVertices) +
-              " vertices (mbgl indices are uint16); decimate the mesh";
-      return false;
-    }
+    const Material mat = resolveMaterial(prim);
 
-    for (size_t i = 0; i < pos.count; ++i) {
-      const std::array<float, 3> raw = {readFloatComponent(pos, i, 0),
-                                        readFloatComponent(pos, i, 1),
-                                        readFloatComponent(pos, i, 2)};
-      const auto w = transformPoint(world, raw);
-
-      // glTF (Y-up, -Z forward, right-handed) -> map model space (X east,
-      // Y south, Z up): (x, y, z) -> (-x, z, y). Determinant +1, so winding
-      // survives, and glTF forward ends up facing map north. See the header.
-      MblMeshData::Vertex v{};
-      v.position = {static_cast<float>(-w[0]), static_cast<float>(w[2]),
-                    static_cast<float>(w[1])};
-      v.texcoords = uv.has_value()
-                        ? std::array<float, 2>{readFloatComponent(*uv, i, 0),
-                                               readFloatComponent(*uv, i, 1)}
-                        : std::array<float, 2>{0.5f, 0.5f};
-      out.vertices.push_back(v);
-
-      for (int c = 0; c < 3; ++c) {
-        const auto k = static_cast<size_t>(c);
-        if (out.vertices.size() == 1) {
-          out.minPosition[k] = out.maxPosition[k] = v.position[k];
-        } else {
-          out.minPosition[k] = std::min(out.minPosition[k], v.position[k]);
-          out.maxPosition[k] = std::max(out.maxPosition[k], v.position[k]);
-        }
-      }
-    }
-
+    // Triangle list of source-vertex indices.
+    std::vector<uint32_t> tri;
     if (const auto *idxV = member(prim, "indices");
         idxV != nullptr && idxV->IsUint()) {
       Accessor idx;
@@ -392,130 +559,93 @@ struct Loader {
         error = "index accessor must be SCALAR";
         return false;
       }
+      tri.reserve(idx.count);
       for (size_t i = 0; i + 2 < idx.count; i += 3) {
         for (size_t k = 0; k < 3; ++k) {
-          const uint32_t local = readIndex(idx, i + k);
-          if (base + local >= kMaxVertices) {
-            error = "index out of uint16 range after merging primitives";
+          const uint32_t v = readIndex(idx, i + k);
+          if (v >= pos.count) {
+            error = "index " + std::to_string(v) + " out of range for POSITION";
             return false;
           }
-          out.indices.push_back(static_cast<uint16_t>(base + local));
+          tri.push_back(v);
         }
       }
     } else {
-      // Non-indexed: vertices are already in triangle order.
+      tri.reserve(pos.count);
       for (size_t i = 0; i + 2 < pos.count; i += 3) {
-        out.indices.push_back(static_cast<uint16_t>(base + i));
-        out.indices.push_back(static_cast<uint16_t>(base + i + 1));
-        out.indices.push_back(static_cast<uint16_t>(base + i + 2));
+        tri.push_back(static_cast<uint32_t>(i));
+        tri.push_back(static_cast<uint32_t>(i + 1));
+        tri.push_back(static_cast<uint32_t>(i + 2));
       }
     }
+    if (tri.empty()) {
+      return true;
+    }
 
-    takeMaterial(prim);
+    const auto readVertex = [&](uint32_t src) {
+      MblMeshData::Vertex v{};
+      const std::array<float, 3> raw = {readFloatComponent(pos, src, 0),
+                                        readFloatComponent(pos, src, 1),
+                                        readFloatComponent(pos, src, 2)};
+      const auto w = transformPoint(world, raw);
+      // glTF (Y-up, -Z forward, right-handed) -> map model space (X east,
+      // Y south, Z up): (x, y, z) -> (-x, z, y). Determinant +1, so winding
+      // survives, and glTF forward ends up facing map north. See the header.
+      v.position = {static_cast<float>(-w[0]), static_cast<float>(w[2]),
+                    static_cast<float>(w[1])};
+      const std::array<float, 2> rawUv =
+          uv.has_value() ? std::array<float, 2>{readFloatComponent(*uv, src, 0),
+                                                readFloatComponent(*uv, src, 1)}
+                         : std::array<float, 2>{0.5f, 0.5f};
+      v.texcoords = applyUvTransform(mat, rawUv);
+      return v;
+    };
+
+    MblMeshData::Part part;
+    part.imageIndex = mat.imageIndex;
+    part.baseColorFactor = mat.factor;
+    part.wrapRepeatU = mat.wrapRepeatU;
+    part.wrapRepeatV = mat.wrapRepeatV;
+    part.filterLinear = mat.filterLinear;
+
+    // Source index -> index within the current part.
+    std::unordered_map<uint32_t, uint16_t> remap;
+    const auto flush = [&]() {
+      if (!part.vertices.empty()) {
+        out.parts.push_back(std::move(part));
+      }
+      part = MblMeshData::Part{};
+      part.imageIndex = mat.imageIndex;
+      part.baseColorFactor = mat.factor;
+      part.wrapRepeatU = mat.wrapRepeatU;
+      part.wrapRepeatV = mat.wrapRepeatV;
+      part.filterLinear = mat.filterLinear;
+      remap.clear();
+    };
+
+    for (size_t t = 0; t + 2 < tri.size(); t += 3) {
+      // Worst case this triangle adds three new vertices.
+      if (part.vertices.size() + 3 > kMaxVertices) {
+        flush();
+      }
+      for (size_t k = 0; k < 3; ++k) {
+        const uint32_t src = tri[t + k];
+        const auto it = remap.find(src);
+        uint16_t local;
+        if (it != remap.end()) {
+          local = it->second;
+        } else {
+          local = static_cast<uint16_t>(part.vertices.size());
+          const auto v = readVertex(src);
+          growBounds(v.position);
+          part.vertices.push_back(v);
+          remap.emplace(src, local);
+        }
+        part.indices.push_back(local);
+      }
+    }
+    flush();
     return true;
-  }
-
-  // The shader has a single sampler and a single tint, so keep the FIRST
-  // base-colour texture/factor we see and ignore the rest.
-  void takeMaterial(const JSValue &prim) {
-    const auto *matV = member(prim, "material");
-    if (matV == nullptr || !matV->IsUint()) return;
-    const auto *materials = member(root, "materials");
-    if (materials == nullptr || !materials->IsArray() ||
-        matV->GetUint() >= materials->Size()) {
-      return;
-    }
-    const JSValue &mat =
-        (*materials)[static_cast<rapidjson::SizeType>(matV->GetUint())];
-    const auto *pbr = member(mat, "pbrMetallicRoughness");
-    if (pbr == nullptr) return;
-
-    if (!tookFactor) {
-      if (const auto *f = member(*pbr, "baseColorFactor");
-          f != nullptr && f->IsArray() && f->Size() == 4) {
-        for (rapidjson::SizeType i = 0; i < 4; ++i) {
-          out.baseColorFactor[i] = static_cast<float>((*f)[i].GetDouble());
-        }
-        tookFactor = true;
-      }
-    }
-    if (tookTexture) return;
-
-    const auto *texRef = member(*pbr, "baseColorTexture");
-    if (texRef == nullptr) return;
-    const auto *texIdx = member(*texRef, "index");
-    const auto *textures = member(root, "textures");
-    if (texIdx == nullptr || !texIdx->IsUint() || textures == nullptr ||
-        !textures->IsArray() || texIdx->GetUint() >= textures->Size()) {
-      return;
-    }
-    const JSValue &tex =
-        (*textures)[static_cast<rapidjson::SizeType>(texIdx->GetUint())];
-
-    // Honour the sampler's wrap/filter. glTF's DEFAULT wrap is REPEAT, so an
-    // absent sampler must stay repeating.
-    if (const auto *sampV = member(tex, "sampler");
-        sampV != nullptr && sampV->IsUint()) {
-      if (const auto *samplers = member(root, "samplers");
-          samplers != nullptr && samplers->IsArray() &&
-          sampV->GetUint() < samplers->Size()) {
-        const JSValue &samp =
-            (*samplers)[static_cast<rapidjson::SizeType>(sampV->GetUint())];
-        if (const auto *w = member(samp, "wrapS"); w != nullptr && w->IsInt()) {
-          out.wrapRepeatU = w->GetInt() != kClampToEdge;
-        }
-        if (const auto *w = member(samp, "wrapT"); w != nullptr && w->IsInt()) {
-          out.wrapRepeatV = w->GetInt() != kClampToEdge;
-        }
-        // mbgl exposes only Nearest/Linear, so any mipmapped-nearest mode maps to
-        // Nearest and everything else to Linear.
-        if (const auto *f = member(samp, "magFilter");
-            f != nullptr && f->IsInt()) {
-          const int mode = f->GetInt();
-          out.filterLinear = mode != kNearest && mode != kNearestMipmapNearest &&
-                             mode != kNearestMipmapLinear;
-        }
-      }
-    }
-
-    const auto *srcV = member(tex, "source");
-    const auto *images = member(root, "images");
-    if (srcV == nullptr || !srcV->IsUint() || images == nullptr ||
-        !images->IsArray() || srcV->GetUint() >= images->Size()) {
-      return;
-    }
-    const JSValue &img =
-        (*images)[static_cast<rapidjson::SizeType>(srcV->GetUint())];
-
-    // GLB-embedded images only (a bufferView); external/data-URI images are out
-    // of scope. Decoding is best-effort — a model with an unreadable texture
-    // still loads and renders with its baseColorFactor tint.
-    const auto *bvV = member(img, "bufferView");
-    if (bvV == nullptr || !bvV->IsUint()) return;
-    const auto *bufferViews = member(root, "bufferViews");
-    if (bufferViews == nullptr || !bufferViews->IsArray() ||
-        bvV->GetUint() >= bufferViews->Size()) {
-      return;
-    }
-    const JSValue &bv =
-        (*bufferViews)[static_cast<rapidjson::SizeType>(bvV->GetUint())];
-    const size_t off =
-        member(bv, "byteOffset") != nullptr && member(bv, "byteOffset")->IsUint()
-            ? member(bv, "byteOffset")->GetUint()
-            : 0;
-    const size_t len =
-        member(bv, "byteLength") != nullptr && member(bv, "byteLength")->IsUint()
-            ? member(bv, "byteLength")->GetUint()
-            : 0;
-    if (off > bin.size() || len > bin.size() - off || len == 0) return;
-
-    try {
-      out.baseColor = mbgl::decodeImage(std::string(
-          reinterpret_cast<const char *>(bin.data() + off), len));
-      tookTexture = true;
-    } catch (const std::exception &) {
-      // Leave baseColor unset; the caller falls back to a white texture.
-    }
   }
 
   bool addNode(size_t index, const Mat4 &parent, int depth) {
@@ -626,6 +756,21 @@ bool mblLoadGlb(const std::string &path, MblMeshData &out,
     return false;
   }
 
+  // Anything in extensionsRequired that we do not implement would change the
+  // geometry silently (Draco/meshopt decode, quantized attributes), so refuse
+  // rather than render garbage. KHR_texture_transform is applied at load time.
+  if (const auto *req = member(doc, "extensionsRequired");
+      req != nullptr && req->IsArray()) {
+    for (rapidjson::SizeType i = 0; i < req->Size(); ++i) {
+      if (!req->operator[](i).IsString()) continue;
+      const std::string name = req->operator[](i).GetString();
+      if (name != "KHR_texture_transform") {
+        error = "required glTF extension is not supported: " + name;
+        return false;
+      }
+    }
+  }
+
   Loader loader{doc, bin, out, error};
 
   // Walk the default scene if there is one, else every node that no other node
@@ -635,7 +780,8 @@ bool mblLoadGlb(const std::string &path, MblMeshData &out,
   bool walked = false;
   if (scenes != nullptr && scenes->IsArray() && scenes->Size() > 0) {
     const rapidjson::SizeType sceneIndex =
-        sceneV != nullptr && sceneV->IsUint() && sceneV->GetUint() < scenes->Size()
+        sceneV != nullptr && sceneV->IsUint() &&
+                sceneV->GetUint() < scenes->Size()
             ? static_cast<rapidjson::SizeType>(sceneV->GetUint())
             : 0;
     if (const auto *roots = member((*scenes)[sceneIndex], "nodes");
@@ -669,7 +815,7 @@ bool mblLoadGlb(const std::string &path, MblMeshData &out,
     }
   }
 
-  if (out.vertices.empty() || out.indices.empty()) {
+  if (out.parts.empty()) {
     error = "GLB contained no triangle geometry";
     return false;
   }
