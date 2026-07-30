@@ -147,14 +147,19 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // stripped, and scale + heading baked into a wrapper node so it is life size
   // and nose-north at scale 1 / heading 0. See assets/models/README.md for
   // attribution — it is CC BY 4.0 and redistributed here.
-  static const String _demoAsset = 'assets/models/alto_k10.glb';
+  static const String _carAsset = 'assets/models/alto_k10.glb';
+  // The authored test box: 2 parts, 24 triangles. Switching to it holds instance
+  // count and updateModel traffic constant while cutting triangles ~30000x and
+  // draw calls 28x — which is what separates "geometry bound" from "draw-call
+  // bound". Same scene, one variable changed.
+  static const String _boxAsset = 'assets/models/demo_vehicle.glb';
+  String _demoAsset = _carAsset;
+  final Map<String, String> _resolvedAssets = <String, String>{};
   static const String _modelPath = String.fromEnvironment(
     'MODEL_GLB',
     defaultValue: '',
   );
 
-  // Resolved path of the bundled asset once copied out of the bundle.
-  String? _bundledModelPath;
 
   /// The engine opens a real filesystem path natively and knows nothing about
   /// Flutter's asset bundle, so the asset is copied to a temp file once and that
@@ -162,7 +167,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// which is readable without any entitlement.
   Future<String> _resolveModelPath() async {
     if (_modelPath.isNotEmpty) return _modelPath;
-    final cached = _bundledModelPath;
+    final cached = _resolvedAssets[_demoAsset];
     if (cached != null && File(cached).existsSync()) return cached;
 
     final bytes = await rootBundle.load(_demoAsset);
@@ -170,7 +175,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       '${Directory.systemTemp.path}/${_demoAsset.split('/').last}',
     );
     await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
-    _bundledModelPath = file.path;
+    _resolvedAssets[_demoAsset] = file.path;
     return file.path;
   }
   // Many models are not authored in metres (Sketchfab exports especially), and
@@ -386,7 +391,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _controller.updateModel(
         MapLibreModel(
           id: 'demo-model',
-          assetPath: _bundledModelPath ?? _modelPath,
+          assetPath: _resolvedAssets[_demoAsset] ?? _modelPath,
           point: point,
           scale: _modelScale,
           headingDegrees: _modelHeading + tangentBearing,
@@ -584,6 +589,22 @@ class _MapDemoPageState extends State<MapDemoPage> {
     }
   }
 
+  Future<void> _swapModel() async {
+    final wasStressing = _stressing;
+    final count = _wanderers.length;
+    if (wasStressing) await _toggleStress();
+    if (_modelAdded) {
+      // ignore: experimental_member_use
+      _controller.removeModel('demo-model');
+      setState(() => _modelAdded = false);
+    }
+    setState(() {
+      _demoAsset = _demoAsset == _carAsset ? _boxAsset : _carAsset;
+      _stressCount = count == 0 ? _stressCount : count;
+    });
+    if (wasStressing) await _toggleStress();
+  }
+
   Widget _stressStep(String label, int delta) => GestureDetector(
         onTap: () => _changeCars(delta),
         child: Container(
@@ -765,6 +786,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
                         : null,
                     icon: Icon(_driving ? Icons.stop : Icons.play_arrow),
                     label: Text(_driving ? 'Stop driving' : 'Drive model'),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'swap',
+                    onPressed: _ready ? () => _swapModel() : null,
+                    icon: const Icon(Icons.swap_horiz),
+                    label: Text(_demoAsset == _carAsset
+                        ? 'Model: car (728k tris)'
+                        : 'Model: box (24 tris)'),
                   ),
                   const SizedBox(height: 8),
                   FloatingActionButton.extended(
