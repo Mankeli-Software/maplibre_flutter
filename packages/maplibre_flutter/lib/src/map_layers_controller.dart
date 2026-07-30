@@ -71,9 +71,10 @@ class MapLibreLayersController {
   // the full-power escape hatch: expressions, filters, data-driven styling, any
   // layer type.
   //
-  // TODO(typed-style-api): a typed Dart layer/source API over this (CircleLayer(
-  // circleRadius: ...), expression builders) is the intended end state. JSON is
-  // the right primitive underneath, but it is stringly-typed for callers.
+  // TODO(typed-style-api): a typed, GENERATED layer/source API over this is the
+  // intended end state — see docs/typed-style-api.md. JSON stays the primitive
+  // underneath (a typed layer just serialises to it, so no C ABI change), but it
+  // is stringly-typed for callers today.
 
   /// Adds a style source under [id]. Throws [ArgumentError] on invalid JSON.
   void addSourceJson(String id, String json) =>

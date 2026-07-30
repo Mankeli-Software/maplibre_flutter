@@ -256,7 +256,8 @@ class MapLibreCoreMap {
   // maplibre-gl-js takes — so expressions, filters and data-driven styling all
   // work without extra API here.
   //
-  // TODO(typed-style-api): expose a typed Dart layer/source API
+  // TODO(typed-style-api): expose a typed Dart layer/source API, generated from
+  // the vendored style spec — see docs/typed-style-api.md
   // (CircleLayer(circleRadius: ...), Expression builders) over this. Raw JSON is
   // the right primitive underneath, but it is stringly-typed for callers; a
   // typed façade is a goal once the shape settles.
