@@ -1,0 +1,404 @@
+diff --git a/include/mbgl/shaders/custom_geometry_ubo.hpp b/include/mbgl/shaders/custom_geometry_ubo.hpp
+index 50a9f052d130..e4221daa8f69 100644
+--- a/include/mbgl/shaders/custom_geometry_ubo.hpp
++++ b/include/mbgl/shaders/custom_geometry_ubo.hpp
+@@ -8,9 +8,14 @@ namespace shaders {
+ struct alignas(16) CustomGeometryDrawableUBO {
+     /*  0 */ std::array<float, 4 * 4> matrix;
+     /* 64 */ Color color;
+-    /* 80 */
++    // MBL_CUSTOM_GEOMETRY_LIGHTING: directional light, in the drawable's own
++    // MODEL space, so a rotating model is lit consistently by a fixed world
++    // light (the caller rotates the world light into model space). xyz is the
++    // direction TOWARD the light; w is the ambient floor.
++    /* 80 */ std::array<float, 4> light;
++    /* 96 */
+ };
+-static_assert(sizeof(CustomGeometryDrawableUBO) == 5 * 16);
++static_assert(sizeof(CustomGeometryDrawableUBO) == 6 * 16);
+ 
+ } // namespace shaders
+ } // namespace mbgl
+diff --git a/include/mbgl/shaders/gl/custom_geometry.hpp b/include/mbgl/shaders/gl/custom_geometry.hpp
+index 6c1c8082febf..31b8698db754 100644
+--- a/include/mbgl/shaders/gl/custom_geometry.hpp
++++ b/include/mbgl/shaders/gl/custom_geometry.hpp
+@@ -11,28 +11,40 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::OpenGL> {
+     static constexpr const char* vertex = R"(layout (std140) uniform CustomGeometryDrawableUBO {
+     mat4 u_matrix;
+     vec4 u_color;
++    vec4 u_light;
+ };
+ 
+ layout(location = 0) in vec3 a_pos;
+ layout(location = 1) in vec2 a_uv;
++layout(location = 2) in vec3 a_normal;
+ 
+ out vec2 frag_uv;
++out float frag_shade;
+ 
+ void main() {
+     frag_uv = a_uv;
++    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space (normal and light
++    // share that space), so a rotating model stays lit by a fixed world light and
++    // no normal matrix is needed.
++    float ndotl = dot(normalize(a_normal), normalize(u_light.xyz));
++    frag_shade = mix(u_light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
+     gl_Position = u_matrix * vec4(a_pos, 1.0);
+ }
+ )";
+     static constexpr const char* fragment = R"(layout (std140) uniform CustomGeometryDrawableUBO {
+     mat4 u_matrix;
+     vec4 u_color;
++    vec4 u_light;
+ };
+ 
+ in vec2 frag_uv;
++in float frag_shade;
+ uniform sampler2D u_image;
+ 
+ void main() {
+-    fragColor = texture(u_image, frag_uv) * u_color;
++    vec4 color = texture(u_image, frag_uv) * u_color;
++    color.rgb *= frag_shade; // alpha untouched, so blended parts stay blended
++    fragColor = color;
+ }
+ )";
+ };
+diff --git a/include/mbgl/shaders/mtl/custom_geometry.hpp b/include/mbgl/shaders/mtl/custom_geometry.hpp
+index b4bc2666ca66..a10abbcf7878 100644
+--- a/include/mbgl/shaders/mtl/custom_geometry.hpp
++++ b/include/mbgl/shaders/mtl/custom_geometry.hpp
+@@ -17,9 +17,10 @@ enum {
+ struct alignas(16) CustomGeometryDrawableUBO {
+     /*  0 */ float4x4 matrix;
+     /* 64 */ float4 color;
+-    /* 80 */
++    /* 80 */ float4 light;
++    /* 96 */
+ };
+-static_assert(sizeof(CustomGeometryDrawableUBO) == 5 * 16, "wrong size");
++static_assert(sizeof(CustomGeometryDrawableUBO) == 6 * 16, "wrong size");
+ 
+ )";
+ 
+@@ -29,7 +30,7 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Metal> {
+     static constexpr auto vertexMainFunction = "vertexMain";
+     static constexpr auto fragmentMainFunction = "fragmentMain";
+ 
+-    static const std::array<AttributeInfo, 2> attributes;
++    static const std::array<AttributeInfo, 3> attributes;
+     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
+     static const std::array<TextureInfo, 1> textures;
+ 
+@@ -39,27 +40,48 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Metal> {
+ struct VertexStage {
+     float3 position [[attribute(0)]];
+     float2 uv [[attribute(1)]];
++    float3 normal [[attribute(2)]];
+ };
+ 
+ struct FragmentStage {
+     float4 position [[position, invariant]];
+     float2 uv;
++    float shade;
+ };
+ 
+ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+                                 device const CustomGeometryDrawableUBO& drawable [[buffer(idCustomGeometryDrawableUBO)]]) {
+ 
++    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert, so surfaces facing away go to
++    // the ambient floor rather than to black. Normal and light are both in model
++    // space, so no normal matrix is needed and a rotating model stays lit by a
++    // fixed world light.
++    const float ndotl = dot(normalize(vertx.normal), normalize(drawable.light.xyz));
++    const float shade = mix(drawable.light.w, 1.0, saturate(ndotl * 0.5 + 0.5));
++
+     return {
+         .position = drawable.matrix * float4(vertx.position, 1.0),
+-        .uv = vertx.uv
++        .uv = vertx.uv,
++        .shade = shade
+     };
+ }
+ 
+ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
+                             device const CustomGeometryDrawableUBO& drawable [[buffer(idCustomGeometryDrawableUBO)]],
+                             texture2d<float, access::sample> colorTexture [[texture(0)]]) {
+-    constexpr sampler sampler2d(coord::normalized, filter::linear);
+-    const float4 color = colorTexture.sample(sampler2d, in.uv) * drawable.color;
++    // MBL_CUSTOM_GEOMETRY_REPEAT: a Metal `constexpr sampler` defaults to
++    // address::clamp_to_edge, and because it is declared INSIDE the shader it
++    // ignores the sampler state mbgl configures on the Texture2D via
++    // setSamplerConfiguration. The GL and Vulkan variants of this shader sample
++    // through a sampler2D whose wrap state mbgl does control, so only Metal was
++    // affected. glTF's DEFAULT wrap is REPEAT and real models tile deliberately
++    // (the Khronos BoxTextured sample spans u=[0,6], one unit per cube face), so
++    // clamping collapsed them to a single edge colour and read as "untextured".
++    // Repeat is a safe default here: UVs inside [0,1] never sample outside the
++    // texture, so clamp and repeat are indistinguishable for them.
++    constexpr sampler sampler2d(coord::normalized, filter::linear, address::repeat);
++    float4 color = colorTexture.sample(sampler2d, in.uv) * drawable.color;
++    color.rgb *= in.shade; // alpha is untouched, so blended parts stay blended
+ 
+     return half4(color);
+ }
+diff --git a/include/mbgl/shaders/shader_defines.hpp b/include/mbgl/shaders/shader_defines.hpp
+index b51584a0d4e9..85053eacf950 100644
+--- a/include/mbgl/shaders/shader_defines.hpp
++++ b/include/mbgl/shaders/shader_defines.hpp
+@@ -421,6 +421,7 @@ enum {
+ enum {
+     idCustomGeometryPosVertexAttribute,
+     idCustomGeometryTexVertexAttribute,
++    idCustomGeometryNormalVertexAttribute, // MBL_CUSTOM_GEOMETRY_LIGHTING
+     customGeometryVertexAttributeCount
+ };
+ 
+diff --git a/include/mbgl/shaders/vulkan/custom_geometry.hpp b/include/mbgl/shaders/vulkan/custom_geometry.hpp
+index c08dd782c1c8..7eb2f7ffabe8 100644
+--- a/include/mbgl/shaders/vulkan/custom_geometry.hpp
++++ b/include/mbgl/shaders/vulkan/custom_geometry.hpp
+@@ -12,7 +12,7 @@ template <>
+ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Vulkan> {
+     static constexpr const char* name = "CustomGeometryShader";
+ 
+-    static const std::array<AttributeInfo, 2> attributes;
++    static const std::array<AttributeInfo, 3> attributes;
+     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
+     static const std::array<TextureInfo, 1> textures;
+ 
+@@ -20,17 +20,25 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Vulkan> {
+     static constexpr auto vertex = R"(
+ layout(location = 0) in vec3 in_position;
+ layout(location = 1) in vec2 in_texcoord;
++layout(location = 2) in vec3 in_normal;
+ 
+ layout(set = DRAWABLE_UBO_SET_INDEX, binding = idCustomGeometryDrawableUBO) uniform CustomDrawableDrawableUBO {
+     mat4 matrix;
+     vec4 color;
++    vec4 light;
+ } drawable;
+ 
+ layout(location = 0) out vec2 frag_uv;
++layout(location = 1) out float frag_shade;
+ 
+ void main() {
+     frag_uv = in_texcoord;
+ 
++    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space, so a rotating
++    // model stays lit by a fixed world light and needs no normal matrix.
++    float ndotl = dot(normalize(in_normal), normalize(drawable.light.xyz));
++    frag_shade = mix(drawable.light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
++
+     gl_Position = drawable.matrix * vec4(in_position, 1.0);
+     applySurfaceTransform();
+ }
+@@ -38,17 +46,21 @@ void main() {
+ 
+     static constexpr auto fragment = R"(
+ layout(location = 0) in vec2 frag_uv;
++layout(location = 1) in float frag_shade;
+ layout(location = 0) out vec4 out_color;
+ 
+ layout(set = DRAWABLE_UBO_SET_INDEX, binding = idCustomGeometryDrawableUBO) uniform CustomDrawableDrawableUBO {
+     mat4 matrix;
+     vec4 color;
++    vec4 light;
+ } drawable;
+ 
+ layout(set = DRAWABLE_IMAGE_SET_INDEX, binding = 0) uniform sampler2D image_sampler;
+ 
+ void main() {
+-    out_color = texture(image_sampler, frag_uv) * drawable.color;
++    vec4 color = texture(image_sampler, frag_uv) * drawable.color;
++    color.rgb *= frag_shade; // alpha untouched, so blended parts stay blended
++    out_color = color;
+ }
+ )";
+ };
+diff --git a/include/mbgl/shaders/webgpu/custom_geometry.hpp b/include/mbgl/shaders/webgpu/custom_geometry.hpp
+index 6752dd132d31..012372c7e889 100644
+--- a/include/mbgl/shaders/webgpu/custom_geometry.hpp
++++ b/include/mbgl/shaders/webgpu/custom_geometry.hpp
+@@ -10,7 +10,7 @@ namespace shaders {
+ template <>
+ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::WebGPU> {
+     static constexpr const char* name = "CustomGeometryShader";
+-    static const std::array<AttributeInfo, 2> attributes;
++    static const std::array<AttributeInfo, 3> attributes;
+     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
+     static const std::array<TextureInfo, 1> textures;
+ 
+@@ -18,16 +18,19 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::WebGPU> {
+ struct VertexInput {
+     @location(3) position: vec3<f32>,
+     @location(4) texcoord: vec2<f32>,
++    @location(5) normal: vec3<f32>,
+ };
+ 
+ struct VertexOutput {
+     @builtin(position) position: vec4<f32>,
+     @location(0) uv: vec2<f32>,
++    @location(1) shade: f32,
+ };
+ 
+ struct CustomDrawableUBO {
+     matrix: mat4x4<f32>,
+     color: vec4<f32>,
++    light: vec4<f32>,
+ };
+ 
+ @group(0) @binding(0) var<uniform> drawable: CustomDrawableUBO;
+@@ -36,6 +39,10 @@ struct CustomDrawableUBO {
+ fn main(in: VertexInput) -> VertexOutput {
+     var out: VertexOutput;
+     out.uv = in.texcoord;
++    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space, so a rotating
++    // model stays lit by a fixed world light and needs no normal matrix.
++    let ndotl = dot(normalize(in.normal), normalize(drawable.light.xyz));
++    out.shade = mix(drawable.light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
+     out.position = drawable.matrix * vec4<f32>(in.position, 1.0);
+     return out;
+ }
+@@ -44,11 +51,13 @@ fn main(in: VertexInput) -> VertexOutput {
+     static constexpr auto fragment = R"(
+ struct FragmentInput {
+     @location(0) uv: vec2<f32>,
++    @location(1) shade: f32,
+ };
+ 
+ struct CustomDrawableUBO {
+     matrix: mat4x4<f32>,
+     color: vec4<f32>,
++    light: vec4<f32>,
+ };
+ 
+ @group(0) @binding(0) var<uniform> drawable: CustomDrawableUBO;
+@@ -57,7 +66,9 @@ struct CustomDrawableUBO {
+ 
+ @fragment
+ fn main(in: FragmentInput) -> @location(0) vec4<f32> {
+-    return textureSample(texture_image, texture_sampler, in.uv) * drawable.color;
++    var color = textureSample(texture_image, texture_sampler, in.uv) * drawable.color;
++    // alpha untouched, so blended parts stay blended
++    return vec4<f32>(color.rgb * in.shade, color.a);
+ }
+ )";
+ };
+diff --git a/include/mbgl/style/layers/custom_drawable_layer.hpp b/include/mbgl/style/layers/custom_drawable_layer.hpp
+index ec7c602a71fa..4052e229f3c7 100644
+--- a/include/mbgl/style/layers/custom_drawable_layer.hpp
++++ b/include/mbgl/style/layers/custom_drawable_layer.hpp
+@@ -66,12 +66,21 @@ public:
+     struct GeometryVertex {
+         std::array<float, 3> position;
+         std::array<float, 2> texcoords;
++        // MBL_CUSTOM_GEOMETRY_LIGHTING. Zero is legal and yields flat ambient
++        // shading, so meshes without normals still render.
++        std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
+     };
+ 
+     struct GeometryOptions {
+         mat4 matrix = matrix::identity4();
+         Color color = Color::white();
+         gfx::Texture2DPtr texture;
++        // MBL_CUSTOM_GEOMETRY_LIGHTING: direction TOWARD the light in the
++        // drawable's own MODEL space (rotate the world light into model space so
++        // a turning model stays consistently lit), plus an ambient floor in w.
++        // The default is straight down from above with a high floor, which is
++        // close to the previous unlit look.
++        std::array<float, 4> light{0.0f, 0.0f, 1.0f, 0.85f};
+     };
+ 
+     template <typename T>
+diff --git a/src/mbgl/shaders/gl/shader_info.cpp b/src/mbgl/shaders/gl/shader_info.cpp
+index 8a4df03d2721..e584a335c603 100644
+--- a/src/mbgl/shaders/gl/shader_info.cpp
++++ b/src/mbgl/shaders/gl/shader_info.cpp
+@@ -103,6 +103,7 @@ const std::vector<UniformBlockInfo> CustomGeometryInfo::uniformBlocks = {
+ };
+ const std::vector<AttributeInfo> CustomGeometryInfo::attributes = {
+     AttributeInfo{"a_pos", idCustomGeometryPosVertexAttribute},
++    AttributeInfo{"a_normal", idCustomGeometryNormalVertexAttribute},
+     AttributeInfo{"a_uv", idCustomGeometryTexVertexAttribute},
+ };
+ const std::vector<TextureInfo> CustomGeometryInfo::textures = {
+diff --git a/src/mbgl/shaders/mtl/custom_geometry.cpp b/src/mbgl/shaders/mtl/custom_geometry.cpp
+index 57f5593efa81..ffa720a56a20 100644
+--- a/src/mbgl/shaders/mtl/custom_geometry.cpp
++++ b/src/mbgl/shaders/mtl/custom_geometry.cpp
+@@ -6,9 +6,10 @@ namespace shaders {
+ 
+ using CustomGeometryShaderSource = ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Metal>;
+ 
+-const std::array<AttributeInfo, 2> CustomGeometryShaderSource::attributes = {
++const std::array<AttributeInfo, 3> CustomGeometryShaderSource::attributes = {
+     AttributeInfo{0, gfx::AttributeDataType::Float3, customGeometryUBOCount + 0, idCustomGeometryPosVertexAttribute},
+     AttributeInfo{1, gfx::AttributeDataType::Float2, customGeometryUBOCount + 0, idCustomGeometryTexVertexAttribute},
++    AttributeInfo{2, gfx::AttributeDataType::Float3, customGeometryUBOCount + 0, idCustomGeometryNormalVertexAttribute},
+ };
+ 
+ const std::array<TextureInfo, 1> CustomGeometryShaderSource::textures = {TextureInfo{0, idCustomGeometryTexture}};
+diff --git a/src/mbgl/shaders/vulkan/custom_geometry.cpp b/src/mbgl/shaders/vulkan/custom_geometry.cpp
+index d224402fe6ce..852e7baecb53 100644
+--- a/src/mbgl/shaders/vulkan/custom_geometry.cpp
++++ b/src/mbgl/shaders/vulkan/custom_geometry.cpp
+@@ -7,9 +7,10 @@ namespace shaders {
+ 
+ using CustomGeometryShaderSource = ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Vulkan>;
+ 
+-const std::array<AttributeInfo, 2> CustomGeometryShaderSource::attributes = {
++const std::array<AttributeInfo, 3> CustomGeometryShaderSource::attributes = {
+     AttributeInfo{0, gfx::AttributeDataType::Float3, idCustomGeometryPosVertexAttribute},
+     AttributeInfo{1, gfx::AttributeDataType::Float2, idCustomGeometryTexVertexAttribute},
++    AttributeInfo{2, gfx::AttributeDataType::Float3, idCustomGeometryNormalVertexAttribute},
+ };
+ 
+ const std::array<TextureInfo, 1> CustomGeometryShaderSource::textures = {
+diff --git a/src/mbgl/shaders/webgpu/custom_geometry.cpp b/src/mbgl/shaders/webgpu/custom_geometry.cpp
+index c4aa476a0419..ac83749ef91f 100644
+--- a/src/mbgl/shaders/webgpu/custom_geometry.cpp
++++ b/src/mbgl/shaders/webgpu/custom_geometry.cpp
+@@ -7,9 +7,10 @@ namespace shaders {
+ 
+ using CustomGeometryShaderSource = ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::WebGPU>;
+ 
+-const std::array<AttributeInfo, 2> CustomGeometryShaderSource::attributes = {
++const std::array<AttributeInfo, 3> CustomGeometryShaderSource::attributes = {
+     AttributeInfo{3, gfx::AttributeDataType::Float3, idCustomGeometryPosVertexAttribute},
+     AttributeInfo{4, gfx::AttributeDataType::Float2, idCustomGeometryTexVertexAttribute},
++    AttributeInfo{5, gfx::AttributeDataType::Float3, idCustomGeometryNormalVertexAttribute},
+ };
+ const std::array<TextureInfo, 1> CustomGeometryShaderSource::textures = {
+     TextureInfo{0, idCustomGeometryTexture},
+diff --git a/src/mbgl/style/layers/custom_drawable_layer.cpp b/src/mbgl/style/layers/custom_drawable_layer.cpp
+index c4d9a7399c78..503d7b81abd5 100644
+--- a/src/mbgl/style/layers/custom_drawable_layer.cpp
++++ b/src/mbgl/style/layers/custom_drawable_layer.cpp
+@@ -433,7 +433,8 @@ public:
+         }
+ 
+         CustomGeometryDrawableUBO drawableUBO = {/* .matrix = */ .matrix = util::cast<float>(options.matrix),
+-                                                 /* .color = */ .color = options.color};
++                                                 /* .color = */ .color = options.color,
++                                                 /* .light = */ .light = options.light};
+ 
+         auto& drawableUniforms = drawable.mutableUniformBuffers();
+         drawableUniforms.createOrUpdate(idCustomGeometryDrawableUBO, &drawableUBO, parameters.context);
+@@ -734,6 +735,15 @@ util::SimpleIdentity CustomDrawableLayerHost::Interface::addGeometry(
+                                gfx::AttributeDataType::Float2);
+     }
+ 
++    // MBL_CUSTOM_GEOMETRY_LIGHTING
++    if (const auto& attr = attrs->set(idCustomGeometryNormalVertexAttribute)) {
++        attr->setSharedRawData(vertices,
++                               offsetof(GeometryVertex, normal),
++                               /*vertexOffset=*/0,
++                               sizeof(GeometryVertex),
++                               gfx::AttributeDataType::Float3);
++    }
++
+     builder->setVertexAttributes(std::move(attrs));
+     builder->setRawVertices({}, vertices->elements(), gfx::AttributeDataType::Float3);
+     builder->setSegments(gfx::Triangles(), indices, triangleSegments.data(), triangleSegments.size());

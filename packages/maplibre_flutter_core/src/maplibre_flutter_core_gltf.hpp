@@ -21,8 +21,9 @@
 // Scope, and why — the shader is `gl_Position = u_matrix * vec4(a_pos,1)` and
 // `color = texture(u_image, uv) * u_color`, so anything it cannot express is
 // dropped on purpose rather than half-supported:
-//   * POSITION + TEXCOORD_0 only. NORMAL/TANGENT/COLOR_n are ignored (no
-//     lighting exists to consume them), as are metallic/roughness/normal maps.
+//   * POSITION + TEXCOORD_0 + NORMAL. TANGENT/COLOR_n are ignored, as are
+//     metallic/roughness/normal maps — there is one directional light, not a PBR
+//     pipeline.
 //   * Triangles only (glTF mode 4).
 //   * No skins/animations. mbgl's shader cannot skin. Animate with the model
 //     matrix instead.
@@ -48,6 +49,9 @@ struct MblMeshData {
   struct Vertex {
     std::array<float, 3> position;
     std::array<float, 2> texcoords;
+    // Unit normal in the same model space as `position`. Zero when the source
+    // mesh had no NORMAL, which the shader treats as flat ambient shading.
+    std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
   };
 
   // One drawable's worth of geometry plus the material state it draws with.

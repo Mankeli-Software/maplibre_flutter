@@ -145,6 +145,17 @@ public:
             mbgl::matrix::multiply(current.matrix,
                                    params.transformParams.nearClippedProjMatrix,
                                    model);
+
+            // The shader lights in MODEL space, so rotate the fixed world light
+            // (from the north-west and above, a conventional map key light) by
+            // the model's own yaw. Without this a turning model would carry its
+            // lighting around with it.
+            constexpr double kLx = -0.4, kLy = -0.45, kLz = 0.8;
+            const double c = std::cos(-angle), s2 = std::sin(-angle);
+            current.light = {static_cast<float>(kLx * c - kLy * s2),
+                             static_cast<float>(kLx * s2 + kLy * c),
+                             static_cast<float>(kLz),
+                             0.55f};
           });
 
       auto vertices = std::make_shared<VertexVector>();
@@ -152,7 +163,7 @@ public:
       vertices->reserve(part.vertices.size());
       for (const auto &v : part.vertices) {
         vertices->emplace_back(
-            Interface::GeometryVertex{v.position, v.texcoords});
+            Interface::GeometryVertex{v.position, v.texcoords, v.normal});
       }
       for (size_t i = 0; i + 2 < part.indices.size(); i += 3) {
         indices->emplace_back(part.indices[i], part.indices[i + 1],

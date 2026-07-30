@@ -539,6 +539,17 @@ struct Loader {
       return false;
     }
 
+    std::optional<Accessor> nrm;
+    if (const auto *nV = member(*attrs, "NORMAL"); nV != nullptr && nV->IsUint()) {
+      Accessor a;
+      if (!resolveAccessor(root, nV->GetUint(), bin, a, error)) {
+        return false;
+      }
+      if (a.components == 3 && a.componentType == kFloat) {
+        nrm = a;
+      }
+    }
+
     std::optional<Accessor> uv;
     if (const auto *uvV = member(*attrs, "TEXCOORD_0");
         uvV != nullptr && uvV->IsUint()) {
@@ -606,6 +617,28 @@ struct Loader {
                                                 readFloatComponent(*uv, src, 1)}
                          : std::array<float, 2>{0.5f, 0.5f};
       v.texcoords = applyUvTransform(mat, rawUv);
+
+      if (nrm.has_value()) {
+        // Rotate (do NOT translate) the normal by the node transform, then apply
+        // the same glTF -> map axis change as the position. Non-uniform scale
+        // would strictly need the inverse-transpose; renormalising afterwards is
+        // close enough for a single diffuse term and much cheaper.
+        const std::array<float, 3> rawN = {readFloatComponent(*nrm, src, 0),
+                                           readFloatComponent(*nrm, src, 1),
+                                           readFloatComponent(*nrm, src, 2)};
+        const double nx = world[0] * rawN[0] + world[4] * rawN[1] + world[8] * rawN[2];
+        const double ny = world[1] * rawN[0] + world[5] * rawN[1] + world[9] * rawN[2];
+        const double nz = world[2] * rawN[0] + world[6] * rawN[1] + world[10] * rawN[2];
+        double mx = -nx, my = nz, mz = ny;
+        const double len = std::sqrt(mx * mx + my * my + mz * mz);
+        if (len > 1e-9) {
+          mx /= len;
+          my /= len;
+          mz /= len;
+        }
+        v.normal = {static_cast<float>(mx), static_cast<float>(my),
+                    static_cast<float>(mz)};
+      }
       return v;
     };
 

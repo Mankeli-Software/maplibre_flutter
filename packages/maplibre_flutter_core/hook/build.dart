@@ -204,6 +204,27 @@ Future<void> _applySubmodulePatches(
       marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
       patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
     ),
+    // Directional lighting for custom geometry, across all four backends.
+    //
+    // mbgl's CustomGeometryShader is texture x tint with no normals, so 3D models
+    // render completely flat — the single biggest thing between a model and
+    // looking placed in the scene. This adds a NORMAL vertex attribute and a light
+    // vec4 to the drawable UBO, plus a half-lambert term in the shader.
+    //
+    // The light is in the drawable's own MODEL space rather than world space, so
+    // no normal matrix is needed and callers rotate the world light by the model's
+    // yaw — which is what keeps a turning model consistently lit. Alpha is left
+    // untouched so blended parts stay blended.
+    //
+    // Touches shader_defines, the shared UBO, all four backend shaders and their
+    // attribute tables, plus Interface::GeometryVertex and the attribute wiring.
+    // VERIFIED ON METAL ONLY; the GL, Vulkan and WebGPU edits are mechanical
+    // mirrors and unverified on hardware.
+    (
+      file: 'include/mbgl/shaders/custom_geometry_ubo.hpp',
+      marker: 'MBL_CUSTOM_GEOMETRY_LIGHTING',
+      patch: 'patches/custom-geometry-lighting.patch',
+    ),
   ];
   for (final p in patches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));
