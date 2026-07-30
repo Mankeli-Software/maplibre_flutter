@@ -10,6 +10,15 @@ native SDKs); cells reflect what is actually wired in this repo today.
 
 _Last updated: 2026-06-19_
 
+> **⚠️ STALE as of 2026-07-30 — do not trust the cells below without checking.** This matrix
+> predates both the 2026-06-21 core-primary inversion (it still describes Android and iOS as
+> rendering through the native SDKs, which are now opt-in) and the annotation / typed-style / 3D
+> work of 2026-07-29–30. In particular its "only camera + style are wired" bottom line is no longer
+> true: widget markers, engine sources/layers/images, `queryRenderedFeatures`, a generated typed
+> style API covering the whole style spec, and 3D `.glb` models have all landed on the `mbgl-core`
+> tiers. For the current state, what is verified where, and the per-platform backlog, see
+> **`docs/cross-platform-continuation.md`**. This file needs a full pass to catch up.
+
 ---
 
 ## Legend

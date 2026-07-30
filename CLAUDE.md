@@ -583,6 +583,10 @@ Flutter's SPM support is still maturing and off by default, and plugins are expe
 - `experimental-web-core-wasm.md` — mbgl-core → WASM status, build steps, remaining work.
 - `core-primary-inversion-plan.md` / `core-primary-inversion-validation.md` — the 2026-06-21
   inversion and its on-device validation matrix.
+- `cross-platform-continuation.md` — **read this before picking the work back up.** What the
+  annotation / typed-style / 3D work has landed, which capability is wired on which platform,
+  and exactly what is left to implement and verify per platform. Everything in it is macOS-verified
+  only unless stated.
 
 ---
 
