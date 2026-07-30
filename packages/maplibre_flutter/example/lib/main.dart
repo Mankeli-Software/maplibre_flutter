@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 import 'package:pointer_interceptor/pointer_interceptor.dart';
 
@@ -61,7 +63,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       setState(() => _ready = true);
       // If a model was supplied on the command line, place it straight away so
       // `flutter run --dart-define=MODEL_GLB=...` is all it takes to see one.
-      if (_modelPath.isNotEmpty) _toggleModel();
+      _toggleModel();
     });
   }
 
@@ -94,13 +96,40 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // widget pushes the new style to the native map (CLAUDE.md §3).
   // --- 3D model (EXPERIMENTAL) ----------------------------------------------
   //
-  // The path is read natively, so it must be a real file on disk — not a Flutter
-  // asset key. Override with:
+  // A bundled demo vehicle is used by default, so `flutter run` shows a model
+  // with no setup. Point at your own with:
   //   flutter run -d macos --dart-define=MODEL_GLB=/abs/path/to/model.glb
+  //
+  // Note MODEL_GLB must be a real path on disk. Under the macOS/iOS sandbox an
+  // app can only read its own container, so a path in ~/Downloads additionally
+  // needs an entitlement (this example's DebugProfile has one) — which is exactly
+  // why the default ships as an asset instead.
+  static const String _demoAsset = 'assets/models/demo_vehicle.glb';
   static const String _modelPath = String.fromEnvironment(
     'MODEL_GLB',
     defaultValue: '',
   );
+
+  // Resolved path of the bundled asset once copied out of the bundle.
+  String? _bundledModelPath;
+
+  /// The engine opens a real filesystem path natively and knows nothing about
+  /// Flutter's asset bundle, so the asset is copied to a temp file once and that
+  /// path is handed over. Under the sandbox this lands inside the app container,
+  /// which is readable without any entitlement.
+  Future<String> _resolveModelPath() async {
+    if (_modelPath.isNotEmpty) return _modelPath;
+    final cached = _bundledModelPath;
+    if (cached != null && File(cached).existsSync()) return cached;
+
+    final bytes = await rootBundle.load(_demoAsset);
+    final file = File(
+      '${Directory.systemTemp.path}/${_demoAsset.split('/').last}',
+    );
+    await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+    _bundledModelPath = file.path;
+    return file.path;
+  }
   // Many models are not authored in metres (Sketchfab exports especially), and
   // glTF's -Z-forward convention is widely ignored, so both are overridable.
   // Dart only has bool/int/String fromEnvironment, so these come in as strings.
@@ -160,10 +189,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _stopDriving();
       return;
     }
-    if (_modelPath.isEmpty) {
-      setState(() {
-        _modelError = 'Pass --dart-define=MODEL_GLB=/abs/path/model.glb';
-      });
+    final String assetPath;
+    try {
+      assetPath = await _resolveModelPath();
+    } catch (e) {
+      setState(() => _modelError = 'could not read model: $e');
       return;
     }
 
@@ -188,7 +218,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _controller.addModel(
         MapLibreModel(
           id: 'demo-model',
-          assetPath: _modelPath,
+          assetPath: assetPath,
           point: site,
           scale: _modelScale,
           headingDegrees: _modelHeading,
@@ -196,7 +226,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
         ),
       );
       _modelAnchor = site;
-      debugPrint('[model] added $_modelPath at $site '
+      debugPrint('[model] added $assetPath at $site '
           'scale=$_modelScale heading=$_modelHeading');
       setState(() {
         _modelAdded = true;
@@ -284,7 +314,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _controller.updateModel(
         MapLibreModel(
           id: 'demo-model',
-          assetPath: _modelPath,
+          assetPath: _bundledModelPath ?? _modelPath,
           point: point,
           scale: _modelScale,
           headingDegrees: _modelHeading + tangentBearing,
