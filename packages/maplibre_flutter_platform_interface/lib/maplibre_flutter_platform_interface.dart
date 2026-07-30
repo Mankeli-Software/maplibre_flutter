@@ -10,3 +10,4 @@ export 'src/maplibre_map_controller.dart';
 export 'src/map_options.dart';
 export 'src/projector.dart';
 export 'src/render_handle.dart';
+export 'src/style_layers.dart';

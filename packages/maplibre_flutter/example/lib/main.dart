@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -94,6 +95,81 @@ class _MapDemoPageState extends State<MapDemoPage> {
     });
   }
 
+  // Engine-drawn dataset (controller.layers): orders of magnitude more points
+  // than widget markers can carry, clustered inside mbgl. Cycled by a button.
+  int _engineIndex = 0;
+  bool _engineIcons = false; // draw with a Flutter-widget icon instead of dots
+
+  /// How many engine-drawn points to load. 50k is deliberately absurd for
+  /// widget markers and unremarkable for a style layer — that contrast is the
+  /// point of the demo.
+  static const _engineCounts = <int>[0, 5000, 50000];
+
+  /// Scatters [count] points across Finland, deterministically.
+  static List<LatLng> _finland(int count) {
+    final rnd = math.Random(7);
+    return List<LatLng>.generate(count, (_) {
+      return LatLng(
+        59.9 + rnd.nextDouble() * 10.0, // ~59.9..69.9 N
+        21.0 + rnd.nextDouble() * 10.0, // ~21..31 E
+      );
+    });
+  }
+
+  Future<void> _cycleEnginepoints() async {
+    _engineIndex = (_engineIndex + 1) % _engineCounts.length;
+    final count = _engineCounts[_engineIndex];
+    setState(() {});
+
+    final layers = _controller.layers;
+    layers.removePoints('bulk');
+    if (count == 0) return;
+
+    if (_engineIcons) {
+      // A Flutter widget, painted once and then drawn by the ENGINE at every
+      // point — the bridge between the two annotation styles.
+      await layers.addWidgetIcon(
+        'bulk-pin',
+        const _FancyMarker(),
+        size: const Size(28, 20),
+      );
+      layers
+        ..addSourceJson(
+          'bulk',
+          jsonEncode({
+            'type': 'geojson',
+            'cluster': true,
+            'clusterRadius': 50,
+            'data': {
+              'type': 'FeatureCollection',
+              'features': [
+                for (final p in _finland(count))
+                  {
+                    'type': 'Feature',
+                    'geometry': {
+                      'type': 'Point',
+                      'coordinates': [p.longitude, p.latitude],
+                    },
+                    'properties': const <String, Object?>{},
+                  },
+              ],
+            },
+          }),
+        )
+        ..addLayerJson(
+          jsonEncode({
+            'id': 'bulk-points',
+            'type': 'symbol',
+            'source': 'bulk',
+            'layout': {'icon-image': 'bulk-pin', 'icon-allow-overlap': true},
+          }),
+        );
+      return;
+    }
+
+    layers.addPoints('bulk', _finland(count), cluster: true, radius: 4);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -159,10 +235,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       // at PAINT time (no rebuild), so a child with its own ticker keeps
       // animating smoothly while the map pans/zooms — this is the check that
       // markers really are live widgets, not baked pictures.
-      const MapLibreMarker(
-        point: _stockholm,
-        child: _PulsingMarker(),
-      ),
+      const MapLibreMarker(point: _stockholm, child: _PulsingMarker()),
       // Pins dropped by tapping the map.
       for (final p in _dropped)
         MapLibreMarker(
@@ -245,12 +318,42 @@ class _MapDemoPageState extends State<MapDemoPage> {
                     label: Text('Turku ×${_stressCounts[_stressIndex]}'),
                   ),
                   const SizedBox(height: 8),
+                  // Engine-drawn + clustered: the scalable path. Compare its
+                  // frame times at 50k against the widget markers at 2k.
+                  FloatingActionButton.extended(
+                    heroTag: 'engine',
+                    backgroundColor: Colors.teal,
+                    foregroundColor: Colors.white,
+                    onPressed: _ready ? _cycleEnginepoints : null,
+                    icon: const Icon(Icons.blur_on),
+                    label: Text('Engine ×${_engineCounts[_engineIndex]}'),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.extended(
+                    heroTag: 'engine_icons',
+                    backgroundColor: _engineIcons ? Colors.teal : Colors.grey,
+                    foregroundColor: Colors.white,
+                    onPressed: _ready
+                        ? () async {
+                            setState(() => _engineIcons = !_engineIcons);
+                            // Rebuild the dataset with the new representation.
+                            _engineIndex =
+                                (_engineIndex - 1) % _engineCounts.length;
+                            if (_engineIndex < 0) {
+                              _engineIndex += _engineCounts.length;
+                            }
+                            await _cycleEnginepoints();
+                          }
+                        : null,
+                    icon: const Icon(Icons.image_outlined),
+                    label: Text('Icons ${_engineIcons ? 'on' : 'off'}'),
+                  ),
+                  const SizedBox(height: 8),
                   FloatingActionButton.extended(
                     heroTag: 'boundary',
                     backgroundColor: _stressBoundaries ? null : Colors.grey,
-                    onPressed: () => setState(
-                      () => _stressBoundaries = !_stressBoundaries,
-                    ),
+                    onPressed: () =>
+                        setState(() => _stressBoundaries = !_stressBoundaries),
                     icon: const Icon(Icons.layers_outlined),
                     label: Text('Layers ${_stressBoundaries ? 'on' : 'off'}'),
                   ),

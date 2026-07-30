@@ -30,7 +30,8 @@ class MapLibreFlutterMacosController
     implements
         MapLibreMapPlatformController,
         MapLibreGestureHandler,
-        MapLibreMapProjector {
+        MapLibreMapProjector,
+        MapLibreStyleLayers {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _pollReady();
   }
@@ -207,6 +208,68 @@ class MapLibreFlutterMacosController
     _animToken++; // a gesture supersedes any running fly-to
     _coreMap.scaleBy(scale, anchorX, anchorY);
     notifyCameraChanged(); // reproject glued widget overlays
+  }
+
+  // --- MapLibreStyleLayers ----------------------------------------------------
+  // Straight pass-through to the core: mbgl owns the style, and the shim already
+  // validates the JSON synchronously and marshals the mutation onto the render
+  // thread. Silently ignored after dispose (matches the rest of this controller,
+  // where late calls from a torn-down widget are a no-op rather than a throw).
+
+  @override
+  void addSourceJson(String id, String json) {
+    if (_disposed) return;
+    _coreMap.addSourceJson(id, json);
+  }
+
+  @override
+  void addLayerJson(String json, {String? beforeId}) {
+    if (_disposed) return;
+    _coreMap.addLayerJson(json, beforeId: beforeId);
+  }
+
+  @override
+  void setGeoJsonData(String sourceId, String geoJson) {
+    if (_disposed) return;
+    _coreMap.setGeoJsonData(sourceId, geoJson);
+  }
+
+  @override
+  void removeLayer(String id) {
+    if (_disposed) return;
+    _coreMap.removeLayer(id);
+  }
+
+  @override
+  void removeSource(String id) {
+    if (_disposed) return;
+    _coreMap.removeSource(id);
+  }
+
+  @override
+  void addImage(
+    String id,
+    Uint8List rgba,
+    int width,
+    int height, {
+    double pixelRatio = 1.0,
+    bool sdf = false,
+  }) {
+    if (_disposed) return;
+    _coreMap.addImage(
+      id,
+      rgba,
+      width,
+      height,
+      pixelRatio: pixelRatio,
+      sdf: sdf,
+    );
+  }
+
+  @override
+  void removeImage(String id) {
+    if (_disposed) return;
+    _coreMap.removeImage(id);
   }
 
   // --- MapLibreMapProjector ---------------------------------------------------

@@ -4,6 +4,8 @@ import 'dart:ui' show Size;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
+import 'map_layers_controller.dart';
+
 /// Imperative handle to a [MapLibreMap].
 ///
 /// Construct one, hand it to [MapLibreMap.controller], then drive the map once
@@ -49,6 +51,12 @@ class MapLibreMapController {
   /// sub-domains, e.g. Mapbox's annotation/style managers).
   late final MapLibreCameraController camera = MapLibreCameraController._(this);
 
+  /// Engine-drawn sources, layers and icons — the scalable annotation path for
+  /// datasets past what widget markers can carry, with clustering built in. See
+  /// [MapLibreLayersController]; `layers.isSupported` is false on renderers that
+  /// cannot do it, and every call is then a no-op.
+  final MapLibreLayersController layers = MapLibreLayersController();
+
   /// Whether a native map is currently bound (true between [attach] and
   /// [detach]/[dispose]).
   bool get isAttached => _platform != null;
@@ -71,6 +79,7 @@ class MapLibreMapController {
     final platform = _platform;
     _platform = null;
     _attached = false;
+    layers.attachTo(null);
     await platform?.dispose();
   }
 
@@ -107,6 +116,7 @@ class MapLibreMapController {
       return;
     }
     _platform = platform;
+    layers.attachTo(platform);
     platform.onReady.then((_) {
       if (!_ready.isCompleted) _ready.complete();
     });
@@ -120,6 +130,7 @@ class MapLibreMapController {
     final platform = _platform;
     _platform = null;
     _attached = false;
+    layers.attachTo(null);
     await platform?.dispose();
   }
 
