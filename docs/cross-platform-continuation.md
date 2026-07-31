@@ -130,6 +130,25 @@ regenerate it against a pristine submodule and re-check the order.**
 
 ## 3. Known-unverified and open items
 
+- **TODO — open the upstream MapLibre PRs for the text-centring fix.** We carry
+  `patches/text-centre-anchor-on-ink.patch`: both MapLibre engines centre text on a hardcoded
+  baseline constant (`Shaping::yOffset = -17`, and the identical `SHAPING_DEFAULT_OFFSET` in
+  maplibre-gl-js) instead of on font metrics, so centre-anchored text is not centred. Verified,
+  measured and written up with evidence images in **`docs/upstream-text-centring/`**; the
+  decision-log entry is 2026-07-31. Three things are outstanding:
+  1. **Issue on `maplibre/maplibre-native`** — none exists today (org-wide search for
+     `SHAPING_DEFAULT_OFFSET` returns zero). Cite mapbox/mapbox-gl-js#154 and #191, open since
+     2013, as prior art; #154 proposes this exact approach.
+  2. **PR on `maplibre/maplibre-native`** — must also fix the *second* hardcoded site,
+     `const float baselineOffset = 7.0f;` in `src/mbgl/layout/symbol_layout.cpp`, which feeds
+     radial offsets and collision boxes. Lead with "yes, this moves labels for fonts whose metrics
+     differ from the old assumption" — that is the maintainer's first question.
+  3. **PR on `maplibre/maplibre-gl-js`** — the mirror patch exists
+     (`carta-polaris/patches/maplibre-gl-js-text-centre-on-ink.patch`) but is **untested**; it needs
+     the gl-js render-test suite run before it is proposable.
+  Licence hazard: Mapbox's own fix (mapbox-gl-js#8781, 2021) is post-fork and proprietary. It was
+  deliberately **not** consulted, and must not be — MapLibre's PR checklist requires confirming no
+  Mapbox backports.
 - **`"pinch zoom freezes its anchor and does not pan from focal drift"` fails** in
   `maplibre_flutter/test/maplibre_map_test.dart`, and fails on `main` too. Pre-existing,
   unrelated to any of today's work, still needs a look.

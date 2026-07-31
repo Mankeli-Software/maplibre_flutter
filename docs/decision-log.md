@@ -1542,4 +1542,48 @@ default" and `mbgl-core` is "experimental / opt-in", that was true when written 
     convention from the source data or the spec and **verify it with an asymmetric fixture**;
     do not infer it from what usually works.
 
+## 2026-07-31 — mbgl centres text on a hardcoded baseline, not on font metrics (patched)
+
+Found while building the first real third-party consumer of this plugin (Carta Polaris, a
+Finnish nautical chart). Its swept-depth labels use `symbol-placement: line-center` +
+`text-anchor: center` and should straddle the fairway line; they sat ~4 px above it.
+
+- **Root cause, upstream and shared with the web.** Both engines position text vertically from a
+  hardcoded constant instead of the font's baseline metrics — `Shaping::yOffset = -17`
+  (`include/mbgl/text/glyph.hpp`, whose own comment says "The y offset *should* be part of the
+  font metadata") and the identical `SHAPING_DEFAULT_OFFSET = -17` in maplibre-gl-js
+  `src/symbol/shaping.ts`. `ONE_EM` is 24, so it is a fixed -0.708 em assumption, calibrated by
+  Mapbox against DIN Pro. Any font with different metrics renders centre-anchored text off-centre.
+  **Not a native-tier divergence** — the web app shows it too.
+- **Patched:** `patches/text-centre-anchor-on-ink.patch` (marker `MBL_TEXT_CENTRE_ON_INK`), one
+  function in `src/mbgl/text/shaping.cpp`. Centre on the shaped glyphs' actual ink extent rather
+  than the constant: the quad builder already places each glyph at `y - metrics.top * scale`
+  spanning `metrics.height * scale`, and `PositionedGlyph` carries those metrics, so `align()` can
+  measure the ink and centre it. Only centre anchors touched. Measured over 24 orientations at 15
+  degree increments: ink went from -9.80..+1.74 px (4.03 px off) to -5.75..+5.73 px (within
+  0.25 px). Real-chart regression check clean — hundreds of point labels unmoved.
+- **The style cannot fix it**, both ruled out by measurement, which is why patching the engine was
+  the only route: `text-offset` is applied in the glyph's own frame, which flips with the line's
+  digitisation direction (a value centring bearings 0-180 drives 195-345 twice as far out);
+  `text-translate` has no effect at all on line-placed labels (12.9 px of requested shift produced
+  under 0.3 px of movement).
+- **Known gap:** mbgl hardcodes the same assumption a second time as
+  `const float baselineOffset = 7.0f;` in `src/mbgl/layout/symbol_layout.cpp`, used at eight sites
+  for radial offsets and collision boxes. Untouched, so with collision enabled a corrected label's
+  box sits ~4 px off its ink. Must be closed before upstreaming.
+- **Prior art:** no MapLibre issue exists (`SHAPING_DEFAULT_OFFSET` and `yOffset baseline` return
+  zero results org-wide). mapbox/mapbox-gl-js#154 and #191 have been open since **2013**; #154 even
+  proposes this exact approach ("or the shaped text bbox?"). Mapbox fixed their own side in GL JS
+  v2 (#8781, 2021) — post-fork and proprietary, so MapLibre cannot take it and **that diff was
+  deliberately not consulted**.
+- **Outstanding:** open the upstream issue + PRs (native and web). Tracked in
+  `docs/cross-platform-continuation.md` and written up with evidence images in
+  `docs/upstream-text-centring/`.
+- **LESSON (again, §11):** the first three verdicts this produced were all wrong, and every one was
+  the *instrument*, not the renderer — window traffic-light buttons counted as data, transparent
+  rounded corners read as black ink, and an arbitrary SVD sign that made a constant offset look
+  like it flipped with angle. The fixture places lines on an exact 15 degree grid specifically so
+  the measurement can self-test: if a fitted angle is not a multiple of 15, the tool refuses to
+  report a verdict. Build the self-check before trusting the measurement.
+
 _Append new decisions here with date and rationale._

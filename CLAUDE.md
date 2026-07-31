@@ -60,6 +60,12 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   (ffigen, typed style API) never actually run. Uncommenting those triggers is the single
   highest-value CI action available.
 - **Native-feel A/B** (gesture inertia/fling) against the SDKs before tagging anything stable.
+- **Upstream PRs not opened** for the text-centring patch we carry
+  (`patches/text-centre-anchor-on-ink.patch`). It fixes a real MapLibre defect — centre-anchored
+  text is centred on a hardcoded baseline constant, not on font metrics — that affects the web
+  engine identically. Needs an issue + PR on `maplibre-native` (also fixing the second hardcoded
+  site in `symbol_layout.cpp`) and a PR on `maplibre-gl-js` (mirror written, untested).
+  → `docs/upstream-text-centring/`.
 - Known failing test: `"pinch zoom freezes its anchor…"` in `maplibre_map_test.dart` — fails on
   `main` too, pre-existing, unrelated to recent work.
 
@@ -420,6 +426,7 @@ into `maplibre_flutter_core.dll`, so there are no runtime DLLs to bundle.
 | `docs/cross-platform-continuation.md` | What to do next, per platform. Read before picking the work back up. |
 | `FEATURE_MATRIX.md` | Per-feature × per-platform parity backlog. |
 | `docs/building-from-source.md` | How consumers build the engine today, and why prebuilts aren't live yet. |
+| `docs/upstream-text-centring/` | An upstream MapLibre defect we patch: centre-anchored text is not centred. Evidence images, measurements, and the **TODO to open the upstream PRs**. |
 | `docs/typed-style-api.md` | Design of the generated typed style API (built). |
 | `docs/experimental-web-core-wasm.md` | mbgl-core → WASM: status, build steps, what's left. |
 | `docs/3d-models-research.md` | How 3D models work in MapLibre; the implementation plan. |

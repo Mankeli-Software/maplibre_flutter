@@ -1,0 +1,54 @@
+diff --git a/src/mbgl/text/shaping.cpp b/src/mbgl/text/shaping.cpp
+index 066795f5b5bd..019f952899a2 100644
+--- a/src/mbgl/text/shaping.cpp
++++ b/src/mbgl/text/shaping.cpp
+@@ -187,6 +187,49 @@ void align(Shaping& shaping,
+         shiftY = (-verticalAlign * static_cast<float>(lineCount) + 0.5f) * lineHeight;
+     }
+ 
++    // MBL_TEXT_CENTRE_ON_INK
++    // Vertically centre on the glyphs' actual ink rather than on Shaping::yOffset.
++    //
++    // yOffset (-17/24 em) is a hardcoded stand-in for the font's baseline
++    // metrics — its own declaration says "The y offset *should* be part of the
++    // font metadata". For a font whose real metrics differ from that assumption,
++    // centre-anchored text lands visibly off-centre; it is most obvious on
++    // line-placed labels, which should straddle the line but sit above it.
++    //
++    // The glyphs already carry the metrics needed to do this properly: the quad
++    // builder places each one at `y - metrics.top * scale`, spanning
++    // `metrics.height * scale`. So measure the shaped ink and centre that.
++    // Only centre anchors are touched — top/bottom anchors mean "align this
++    // edge", and are already correct.
++    if (verticalAlign == 0.5f) {
++        bool measured = false;
++        float inkTop = 0.0f;
++        float inkBottom = 0.0f;
++        for (const auto& line : shaping.positionedLines) {
++            for (const auto& positionedGlyph : line.positionedGlyphs) {
++                // Whitespace carries no ink and would drag the extent to the
++                // baseline.
++                if (positionedGlyph.metrics.height == 0) {
++                    continue;
++                }
++                const float top = positionedGlyph.y + shiftY -
++                                  static_cast<float>(positionedGlyph.metrics.top) * positionedGlyph.scale;
++                const float bottom = top + static_cast<float>(positionedGlyph.metrics.height) * positionedGlyph.scale;
++                if (!measured) {
++                    inkTop = top;
++                    inkBottom = bottom;
++                    measured = true;
++                } else {
++                    inkTop = std::min(inkTop, top);
++                    inkBottom = std::max(inkBottom, bottom);
++                }
++            }
++        }
++        if (measured) {
++            shiftY -= (inkTop + inkBottom) / 2.0f;
++        }
++    }
++
+     for (auto& line : shaping.positionedLines) {
+         for (auto& positionedGlyph : line.positionedGlyphs) {
+             positionedGlyph.x += shiftX;

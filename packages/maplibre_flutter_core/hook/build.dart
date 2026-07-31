@@ -161,6 +161,31 @@ Future<void> _applySubmodulePatches(
       marker: 'resolveHostViaOS',
       patch: 'patches/windows-dns-os-resolve.patch',
     ),
+    // Centre-anchored text is centred on its actual ink, not on Shaping::yOffset.
+    //
+    // mbgl positions text vertically from a hardcoded constant — `Shaping::yOffset
+    // = -17` (of ONE_EM = 24), whose own declaration says "The y offset *should*
+    // be part of the font metadata". It stands in for the font's baseline metrics,
+    // so any font whose real metrics differ renders centre-anchored text
+    // off-centre. maplibre-gl-js carries the identical constant
+    // (SHAPING_DEFAULT_OFFSET in src/symbol/shaping.ts), so this is upstream
+    // behaviour, not a native-tier divergence.
+    //
+    // It is most visible on line-placed labels, which should straddle the line but
+    // sit above it. Measured with Liberation Sans NLSFI at text-size 15: the ink
+    // spanned -9.80..+1.74 px across the line (4.0 px high) at every one of 24
+    // orientations; with this patch it spans -5.75..+5.73 px, centred to within
+    // 0.25 px. See carta-polaris/flutter-poc/lib/dev/line_anchor_probe.dart.
+    //
+    // The glyphs already carry what is needed: the quad builder places each at
+    // `y - metrics.top * scale` spanning `metrics.height * scale`, so align() can
+    // measure the shaped ink and centre that instead. Only centre anchors are
+    // touched — top/bottom anchors mean "align this edge" and were already right.
+    (
+      file: 'src/mbgl/text/shaping.cpp',
+      marker: 'MBL_TEXT_CENTRE_ON_INK',
+      patch: 'patches/text-centre-anchor-on-ink.patch',
+    ),
     // Windows Vulkan zero-copy: enable the D3D11<->Vulkan external-memory extensions
     // (and the instance Properties2 extension for the device-LUID query) so the
     // Vulkan->D3D11 shared-texture present can import mbgl's rendered image. The added
