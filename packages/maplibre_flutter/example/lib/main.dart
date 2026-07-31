@@ -1,11 +1,17 @@
 import 'dart:async';
-import 'dart:io' show Directory, File;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre_flutter/maplibre_flutter.dart';
+
+// Conditional: the engine reads a real filesystem path, which web does not
+// have. Without this split the unconditional `dart:io` import made the whole
+// example unbuildable for web — so the one app that demonstrates the plugin
+// could not demonstrate the default web renderer at all.
+import 'model_asset_io.dart'
+    if (dart.library.js_interop) 'model_asset_web.dart';
 import 'package:pointer_interceptor/pointer_interceptor.dart';
 
 void main() {
@@ -706,29 +712,37 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// Flutter's asset bundle, so the asset is copied to a temp file once and that
   /// path is handed over. Under the sandbox this lands inside the app container,
   /// which is readable without any entitlement.
-  Future<String> _resolveModelPath() async {
+  /// Null on web, which has no filesystem — the caller reports that rather
+  /// than trying a path the engine could never open.
+  Future<String?> _resolveModelPath() async {
     if (_modelPath.isNotEmpty) return _modelPath;
     final cached = _resolvedAssets[_demoAsset];
-    if (cached != null && File(cached).existsSync()) return cached;
+    if (cached != null && modelFileExists(cached)) return cached;
 
     final bytes = await rootBundle.load(_demoAsset);
-    final file = File(
-      '${Directory.systemTemp.path}/${_demoAsset.split('/').last}',
-    );
-    await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
-    _resolvedAssets[_demoAsset] = file.path;
-    return file.path;
+    final path = await writeModelToTemp(_demoAsset, bytes.buffer.asUint8List());
+    if (path == null) return null;
+    _resolvedAssets[_demoAsset] = path;
+    return path;
   }
 
   /// Places the demo model and frames it: a car-sized object needs street-level
   /// zoom and some pitch before it reads as 3D at all.
   Future<void> _placeModel() async {
     if (_modelAdded) return;
-    final String assetPath;
+    final String? assetPath;
     try {
       assetPath = await _resolveModelPath();
     } catch (e) {
       setState(() => _modelError = 'could not read model: $e');
+      return;
+    }
+    if (assetPath == null) {
+      setState(
+        () => _modelError =
+            '3D models need a filesystem path the engine can open, which the '
+            'web tier does not have (see docs/decision-log.md)',
+      );
       return;
     }
 
@@ -840,13 +854,24 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// reporting what it costs.
   Future<void> _startStress() async {
     if (_stressing) return;
-    final String assetPath;
+    final String? assetPath;
     try {
       assetPath = await _resolveModelPath();
     } catch (e) {
       setState(() => _modelError = 'could not read model: $e');
       return;
     }
+    if (assetPath == null) {
+      setState(
+        () => _modelError =
+            '3D models need a filesystem path the engine can open, which the '
+            'web tier does not have (see docs/decision-log.md)',
+      );
+      return;
+    }
+    // Bound to a non-nullable local: the null promotion above does not reach
+    // inside the setState closure below.
+    final glbPath = assetPath;
 
     final centre = _modelAnchor;
     // Pull back far enough that the whole field is in view, else most of the
@@ -889,7 +914,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
         _controller.updateModel(
           MapLibreModel(
             id: w.id,
-            assetPath: assetPath,
+            assetPath: glbPath,
             point: LatLng(
               centreNow.latitude + w.y * latPerMetre,
               centreNow.longitude + w.x * lngPerMetre,
@@ -926,7 +951,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       // Parts per model comes from the core's own count, so the draw-call figure
       // reflects what is actually submitted rather than a guess.
       // ignore: experimental_member_use
-      _partsPerModel = _controller.modelPartCount(assetPath) ?? 0;
+      _partsPerModel = _controller.modelPartCount(glbPath) ?? 0;
     });
   }
 
