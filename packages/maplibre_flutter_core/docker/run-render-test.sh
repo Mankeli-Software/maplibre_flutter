@@ -41,25 +41,53 @@ ls -l "$OUT"
 # lighting shader edits were only ever verified there. GL is the one other
 # backend reachable from a Mac (Mesa llvmpipe in this container), so this is where
 # "GL needs no patches" and "the GL lighting shader is right" stop being claims.
-MODEL=/work/packages/maplibre_flutter/example/assets/models/alto_k10.glb
-if [ -f "$MODEL" ]; then
-  echo "=== glb parse (GL build) ==="
-  "$BUILD/gltf_probe" "$MODEL"
+ASSETS=/work/packages/maplibre_flutter/example/assets/models
 
-  echo "=== model render (GL) ==="
-  mkdir -p /out/model
-  # Camera framed as on Metal so the two are directly comparable.
-  if EGL_PLATFORM=surfaceless "$BUILD/model_harness" /out/model \
-      51.50735 -0.12776 21 55 0 1 \
-      "https://demotiles.maplibre.org/style.json" 0 0.00003 "$MODEL" 0 0.15; then
-    echo "=== model OK (surfaceless) ==="
+# The procedural pyramid first: no asset, no texture decode, ~instant, and it is
+# the mesh the colour/lighting assertions are written against (four faces each
+# sampling one texel of a 2x2 palette, so a UV/normal attribute mix-up shows up
+# as a broken pinwheel rather than "some pixels changed").
+echo "=== model render, procedural pyramid (GL) ==="
+mkdir -p /out/model-pyramid
+run_model_harness() {
+  local out=$1; shift
+  if EGL_PLATFORM=surfaceless "$BUILD/model_harness" "$out" "$@"; then
+    echo "=== OK (surfaceless) ==="
   else
     echo "=== surfaceless failed; retry under Xvfb ==="
-    xvfb-run -a -s "-screen 0 1280x960x24" "$BUILD/model_harness" /out/model \
-      51.50735 -0.12776 21 55 0 1 \
-      "https://demotiles.maplibre.org/style.json" 0 0.00003 "$MODEL" 0 0.15
+    xvfb-run -a -s "-screen 0 1280x960x24" "$BUILD/model_harness" "$out" "$@"
+    echo "=== OK (xvfb) ==="
   fi
-  ls -l /out/model
-else
-  echo "=== model asset not found at $MODEL; skipping model checks ==="
-fi
+}
+# Positional args: lat lng zoom pitch bearing metresPerUnit style spinDps
+#                  camOffsetDeg [glb] [headingDeg] [elevationM]
+# spinDps MUST be non-zero for the animation assertion to mean anything; passing
+# 0 made model_harness fail unconditionally, which under `set -e` aborted this
+# whole script — so the GL model checks could never report green, with or
+# without a working backend.
+run_model_harness /out/model-pyramid \
+  51.50735 -0.12776 21 55 0 1 \
+  "https://demotiles.maplibre.org/style.json" 90 0.00255
+
+MODEL_SMOKE="$ASSETS/demo_vehicle.glb"
+MODEL="$ASSETS/alto_k10.glb"
+
+# demo_vehicle.glb is ~4 KB and alto_k10.glb ~30 MB; run the cheap one first so a
+# parse/upload regression fails in seconds rather than after the big decode.
+for m in "$MODEL_SMOKE" "$MODEL"; do
+  if [ ! -f "$m" ]; then
+    echo "=== model asset not found at $m; skipping ==="
+    continue
+  fi
+  echo "=== glb parse (GL build): $(basename "$m") ==="
+  "$BUILD/gltf_probe" "$m"
+
+  echo "=== model render (GL): $(basename "$m") ==="
+  out=/out/model-$(basename "$m" .glb)
+  mkdir -p "$out"
+  # Camera framed as on Metal so the two are directly comparable.
+  run_model_harness "$out" \
+    51.50735 -0.12776 21 55 0 1 \
+    "https://demotiles.maplibre.org/style.json" 90 0.00003 "$m" 0 0.15
+  ls -l "$out"
+done

@@ -227,7 +227,8 @@ int main(int argc, char **argv) {
   // --- 2. is it anchored where the LatLng projects? ---
   double px = 0, py = 0;
   int visible = 0;
-  const int projected = mbl_map_pixel_for_lat_lng(map, lat, lng, &px, &py, &visible);
+  const int projected = mbl_map_pixel_for_lat_lng(map, lat, lng, &px, &py, &visible,
+                                                  /*generation=*/0);
   printf("projected anchor: ok=%d visible=%d at (%.1f, %.1f)\n", projected,
          visible, px, py);
 
@@ -348,7 +349,14 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (spun.changed < kMinModelPixels) {
+  // Only meaningful when the model was actually asked to spin. Asserting it
+  // unconditionally made the check fail for every caller that passed spinDps=0
+  // — which the Docker GL runner did, so under `set -e` the whole GL model
+  // verification aborted before and after any fix alike, and read as "GL is
+  // broken" rather than "the arguments are wrong".
+  if (spinDps == 0.0) {
+    printf("SKIP: animation check (spinDps=0, model is static by request)\n");
+  } else if (spun.changed < kMinModelPixels) {
     printf("FAIL: frame did not change while spinning (%zu px) — repaint does "
            "not drive the animation\n",
            spun.changed);

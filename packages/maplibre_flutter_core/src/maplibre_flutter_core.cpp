@@ -240,6 +240,21 @@ struct MblMap {
   };
   std::unordered_map<std::string, ModelEntry> models;
 
+  // Uploaded textures per .glb path, SHARED by every model this map draws from
+  // that mesh (24 instances of one vehicle upload its 10 images once, not 240
+  // times).
+  //
+  // Per-map, unlike the parsed mesh, and that distinction is load-bearing twice
+  // over. A Texture2D belongs to ONE map's gfx context, so sharing it between
+  // two maps hands the second map textures from a context it does not own; and
+  // destroying one after its context is gone aborts with "mutex lock failed".
+  // Both used to happen: the textures hung off the global mesh cache, so they
+  // outlived every map and were released at static-destruction time — which
+  // aborted (SIGABRT, exit 134) any process that had drawn a model, after all
+  // its work was done. Cleared on the render thread inside a BackendScope
+  // before the map and frontend go away; see renderThreadMain*.
+  std::unordered_map<std::string, std::shared_ptr<MblMeshGpu>> gpuByPath;
+
   // Current render-target size in device pixels (render thread only), used to size
   // the GL presenter's ring to match each frame.
   uint32_t renderWidth = 0;
@@ -673,6 +688,20 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
     }
   }
 
+  // Release model GPU resources HERE: on the render thread, with the map and
+  // frontend still alive so a BackendScope can make the context current.
+  //
+  // A Texture2D is bound to this map's gfx context. These used to hang off the
+  // global mesh cache, so they outlived every map and were destroyed during
+  // static destruction — long after the context and mbgl's own globals were
+  // gone — which aborted the process with "mutex lock failed: Invalid argument"
+  // AFTER all its work was done (SIGABRT / exit 134). Any app that had drawn a
+  // model crashed on exit, and the model harness could never report green.
+  if (m->frontend != nullptr && (!m->models.empty() || !m->gpuByPath.empty())) {
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    m->models.clear();
+    m->gpuByPath.clear();
+  }
 #if defined(_WIN32)
   if (m->vkPresenter != nullptr) {
     {
@@ -912,6 +941,20 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
   loop.run();
 
   m->renderLoop = nullptr;
+  // Release model GPU resources HERE: on the render thread, with the map and
+  // frontend still alive so a BackendScope can make the context current.
+  //
+  // A Texture2D is bound to this map's gfx context. These used to hang off the
+  // global mesh cache, so they outlived every map and were destroyed during
+  // static destruction — long after the context and mbgl's own globals were
+  // gone — which aborted the process with "mutex lock failed: Invalid argument"
+  // AFTER all its work was done (SIGABRT / exit 134). Any app that had drawn a
+  // model crashed on exit, and the model harness could never report green.
+  if (m->frontend != nullptr && (!m->models.empty() || !m->gpuByPath.empty())) {
+    mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
+    m->models.clear();
+    m->gpuByPath.clear();
+  }
 #if defined(_WIN32)
   if (m->vkPresenter != nullptr) {
     {
@@ -1028,15 +1071,22 @@ void requestModelRender(MblMap *m) {
 
 void addModelLayer(MblMap *m, std::string layerId,
                    std::shared_ptr<const MblMeshData> mesh,
-                   std::shared_ptr<MblMeshGpu> gpu,
-                   MblModelPlacement placement) {
+                   std::string meshKey, MblModelPlacement placement) {
   // The mesh goes through a shared_ptr because post() takes a std::function,
   // which requires a COPYABLE callable — and MblMeshData holds a
   // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
   // by move would make the lambda move-only and fail to convert.
   auto placementPtr = std::make_shared<MblModelPlacement>(placement);
   m->post([m, layerId = std::move(layerId), meshPtr = std::move(mesh),
-           gpuPtr = std::move(gpu), placementPtr] {
+           meshKey = std::move(meshKey), placementPtr] {
+    // Resolve the shared texture set HERE, on the render thread: gpuByPath is
+    // render-thread-confined like models, and the caller runs on whatever thread
+    // called the C ABI.
+    auto &slot = m->gpuByPath[meshKey];
+    if (!slot) {
+      slot = std::make_shared<MblMeshGpu>();
+    }
+    const auto gpuPtr = slot;
     addModelLayerNow(m, layerId, meshPtr, gpuPtr, placementPtr);
     // Retained so transform updates can find this model and so it can be re-added
     // after a style reload.
@@ -1045,14 +1095,14 @@ void addModelLayer(MblMap *m, std::string layerId,
   });
 }
 
-// Parsed meshes, shared between every model loaded from the same path. See
-// mbl_map_add_model for why this exists.
-struct MeshCacheEntry {
-  std::shared_ptr<const MblMeshData> mesh;
-  std::shared_ptr<MblMeshGpu> gpu;
-};
+// Parsed meshes, shared between every model loaded from the same path and across
+// maps. See mbl_map_add_model for why this exists.
+//
+// CPU data only. The uploaded textures deliberately live on MblMap::gpuByPath
+// instead: they are context-bound, so caching them here made them outlive every
+// map and abort at static destruction.
 std::mutex meshCacheMutex;
-std::unordered_map<std::string, MeshCacheEntry> meshCache;
+std::unordered_map<std::string, std::shared_ptr<const MblMeshData>> meshCache;
 
 void writeError(char *out, size_t capacity, const std::string &message) {
   if (out == nullptr || capacity == 0) {
@@ -1087,13 +1137,11 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
   // is free; only the placement differs per instance.
   const std::string path(glb_path);
   std::shared_ptr<const MblMeshData> meshPtr;
-  std::shared_ptr<MblMeshGpu> gpuPtr;
   {
     std::lock_guard<std::mutex> lk(meshCacheMutex);
     const auto it = meshCache.find(path);
     if (it != meshCache.end()) {
-      meshPtr = it->second.mesh;
-      gpuPtr = it->second.gpu;
+      meshPtr = it->second;
     }
   }
   if (!meshPtr) {
@@ -1104,12 +1152,14 @@ int mbl_map_add_model(MblMap *m, const char *layer_id, const char *glb_path,
       return 0;
     }
     meshPtr = std::make_shared<const MblMeshData>(std::move(mesh));
-    gpuPtr = std::make_shared<MblMeshGpu>();
     std::lock_guard<std::mutex> lk(meshCacheMutex);
-    meshCache.emplace(path, MeshCacheEntry{meshPtr, gpuPtr});
+    meshCache.emplace(path, meshPtr);
   }
 
-  addModelLayer(m, std::string(layer_id), meshPtr, gpuPtr,
+  // The texture set is resolved on the render thread inside addModelLayer (it is
+  // per-map and render-thread-confined); the path is the key it uses.
+
+  addModelLayer(m, std::string(layer_id), meshPtr, path,
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = scale,
@@ -1157,10 +1207,10 @@ uint32_t mbl_model_part_count(const char *glb_path) {
   }
   std::lock_guard<std::mutex> lk(meshCacheMutex);
   const auto it = meshCache.find(std::string(glb_path));
-  if (it == meshCache.end() || !it->second.mesh) {
+  if (it == meshCache.end() || !it->second) {
     return 0;
   }
-  return static_cast<uint32_t>(it->second.mesh->parts.size());
+  return static_cast<uint32_t>(it->second->parts.size());
 }
 
 void mbl_map_remove_model(MblMap *m, const char *layer_id) {
@@ -1187,7 +1237,7 @@ void mbl_map_add_test_model(MblMap *m, double lat, double lng,
   }
   addModelLayer(m, "mbl-test-model",
                 std::make_shared<const MblMeshData>(mblMakeTestPyramid()),
-                std::make_shared<MblMeshGpu>(),
+                "<test-pyramid>",
                 MblModelPlacement{.lat = lat,
                                   .lng = lng,
                                   .scale = metres_per_unit,

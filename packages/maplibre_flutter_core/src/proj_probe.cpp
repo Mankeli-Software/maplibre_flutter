@@ -24,6 +24,51 @@ namespace {
 constexpr uint32_t kWidth = 800;
 constexpr uint32_t kHeight = 600;
 
+// Project against the newest transform. The probe drives the map itself and
+// waits for each frame, so there is no presented-vs-newest skew to correct for;
+// the app tiers pass mbl_map_presented_generation() instead.
+constexpr uint64_t kNewest = 0;
+
+// Block until the render thread has applied a posted command, or give up.
+//
+// Take `before` from mbl_map_proj_generation() before issuing the command. The
+// generation is bumped by updateProjState, which runs inside the posted lambda
+// after the transform is mutated, so an advance means a new transform has been
+// published.
+//
+// Neither obvious alternative works. mbl_map_await_frame returns as soon as ANY
+// frame exists, including one rendered before the command landed. And polling
+// mbl_map_get_camera is worse than useless: mbl_map_set_camera writes the camera
+// cache SYNCHRONOUSLY on the calling thread and only then posts the jumpTo, so
+// the getter reports the requested camera immediately and a wait on it returns
+// at once, having proved nothing. That version failed ~40% of runs.
+//
+// One bump is not enough either, which is the subtle part: updateProjState is
+// also called by the initial style load and by resize, so the first bump after
+// `before` is often one of those and the wait returns with the jumpTo still
+// queued. That failed about 1 run in 8 — rare enough to read as a real
+// intermittent projection bug, in the one tool whose job is to adjudicate
+// projection bugs. Hence QUIESCENCE: at least one bump, and then the generation
+// must hold still, meaning every posted command has landed.
+bool waitForApplied(MblMap *map, uint64_t before) {
+  constexpr int kQuietPolls = 10; // 200 ms of no transform updates
+  uint64_t last = before;
+  int quiet = 0;
+  for (int i = 0; i < 500; ++i) {
+    const uint64_t now = mbl_map_proj_generation(map);
+    if (now == last && now > before) {
+      if (++quiet >= kQuietPolls) {
+        return true;
+      }
+    } else {
+      quiet = 0;
+      last = now;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return false;
+}
+
 int checkSign(const char *label, double got, double centre, bool expectGreater) {
   const bool ok = expectGreater ? (got > centre) : (got < centre);
   printf("  %-22s %8.1f  (expected %s %.0f)  %s\n", label, got,
@@ -46,9 +91,15 @@ int main() {
     fprintf(stderr, "proj_probe: mbl_map_create failed\n");
     return 1;
   }
+  const uint64_t genBeforeCamera = mbl_map_proj_generation(map);
   mbl_map_set_camera(map, lat, lng, zoom, 0.0, 0.0);
   if (mbl_map_await_frame(map, 30000) == 0) {
     fprintf(stderr, "proj_probe: no frame\n");
+    mbl_map_destroy(map);
+    return 2;
+  }
+  if (!waitForApplied(map, genBeforeCamera)) {
+    fprintf(stderr, "proj_probe: camera never applied on the render thread\n");
     mbl_map_destroy(map);
     return 2;
   }
@@ -57,12 +108,7 @@ int main() {
   double x = 0, y = 0;
   int visible = 0;
 
-  // The transform snapshot is published on the render thread, so it can lag the
-  // first frame; poll rather than racing it.
-  for (int i = 0; i < 100 && mbl_map_pixel_for_lat_lng(map, lat, lng, &x, &y,
-                                                       &visible) == 0; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  mbl_map_pixel_for_lat_lng(map, lat, lng, &x, &y, &visible, kNewest);
   printf("centre -> (%.1f, %.1f) [expect (%.1f, %.1f)]\n", x, y, kWidth / 2.0,
          kHeight / 2.0);
   if (std::abs(x - kWidth / 2.0) > 1.0 || std::abs(y - kHeight / 2.0) > 1.0) {
@@ -71,20 +117,20 @@ int main() {
   }
 
   printf("directional signs (top-left origin):\n");
-  mbl_map_pixel_for_lat_lng(map, lat + delta, lng, &x, &y, &visible);
+  mbl_map_pixel_for_lat_lng(map, lat + delta, lng, &x, &y, &visible, kNewest);
   failures += checkSign("north  -> y", y, kHeight / 2.0, /*expectGreater=*/false);
-  mbl_map_pixel_for_lat_lng(map, lat - delta, lng, &x, &y, &visible);
+  mbl_map_pixel_for_lat_lng(map, lat - delta, lng, &x, &y, &visible, kNewest);
   failures += checkSign("south  -> y", y, kHeight / 2.0, /*expectGreater=*/true);
-  mbl_map_pixel_for_lat_lng(map, lat, lng + delta, &x, &y, &visible);
+  mbl_map_pixel_for_lat_lng(map, lat, lng + delta, &x, &y, &visible, kNewest);
   failures += checkSign("east   -> x", x, kWidth / 2.0, /*expectGreater=*/true);
-  mbl_map_pixel_for_lat_lng(map, lat, lng - delta, &x, &y, &visible);
+  mbl_map_pixel_for_lat_lng(map, lat, lng - delta, &x, &y, &visible, kNewest);
   failures += checkSign("west   -> x", x, kWidth / 2.0, /*expectGreater=*/false);
 
   // Round-trip: unprojecting a screen point above centre must give a latitude
   // NORTH of the camera.
   double rlat = 0, rlng = 0;
   if (mbl_map_lat_lng_for_pixel(map, kWidth / 2.0, kHeight / 2.0 - 200.0, &rlat,
-                                &rlng) == 1) {
+                                &rlng, kNewest) == 1) {
     printf("unproject 200px above centre -> lat %.5f (camera %.5f) %s\n", rlat,
            lat, rlat > lat ? "OK" : "*** WRONG SIGN ***");
     if (rlat <= lat) {
@@ -97,12 +143,12 @@ int main() {
   // convention down independently instead of assuming. Zooming in about the
   // TOP-LEFT of the viewport must pull the camera centre toward the north-west —
   // latitude up, longitude down — if anchors are top-left origin.
+  const uint64_t genBeforeReset = mbl_map_proj_generation(map);
   mbl_map_set_camera(map, lat, lng, zoom, 0.0, 0.0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  waitForApplied(map, genBeforeReset);
+  const uint64_t genBeforeScale = mbl_map_proj_generation(map);
   mbl_map_scale_by(map, 2.0, 0.0, 0.0);
-  // mbl_map_await_frame returns immediately once ANY frame exists, so it cannot
-  // be used to wait for a posted command to land.
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  waitForApplied(map, genBeforeScale);
 
   double alat = 0, alng = 0, azoom = 0, abearing = 0, apitch = 0;
   mbl_map_get_camera(map, &alat, &alng, &azoom, &abearing, &apitch);
