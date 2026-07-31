@@ -44,6 +44,11 @@ melos:
       conventionalCommits: true
       updateDependentsConstraints: true
       linkToCommits: true
+      hooks:
+        # melos bumps pubspecs and CHANGELOGs and knows nothing about podspecs,
+        # so the two drift silently — they already had. Nothing catches it until
+        # `pod lib lint` at release time.
+        post: dart run tool/sync_podspec_versions.dart
 
   scripts:
     analyze:
@@ -117,6 +122,13 @@ melos:
         The subset of the native harness needing no GPU, no network and no
         fonts (shaping_probe, gltf_probe) — safe on any CI runner.
       run: packages/maplibre_flutter_core/tool/run_harness.sh hermetic
+
+    verify:podspecs:
+      description: >-
+        Fail if any Apple podspec's version has drifted from its pubspec.
+        Rewritten automatically by the `melos version` post-hook; this is the
+        CI-side check.
+      run: dart run tool/sync_podspec_versions.dart --check
 
     publish:dry-run:
       description: >-

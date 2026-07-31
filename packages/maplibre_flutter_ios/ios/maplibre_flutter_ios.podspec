@@ -9,7 +9,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'maplibre_flutter_ios'
-  s.version          = '0.0.2'
+  s.version          = '0.0.3'
   s.summary          = 'The default iOS implementation of maplibre_flutter.'
   s.description      = <<-DESC
 Native MapLibre vector maps for Flutter on iOS (mbgl-core via Metal + a Flutter Texture).
