@@ -87,10 +87,10 @@ void main() {
       models: true,
       resizeMask: false,
     ),
-    // `models` records what each tier supports TODAY, not what it should. Only
-    // macOS implements MapLibreModelHost; the other four are being brought to
-    // parity, and flipping one of these to true is what proves that port landed
-    // rather than merely compiling.
+    // `models` records what each tier supports TODAY, not what it should. All
+    // five now implement MapLibreModelHost; flipping one of these back to false
+    // is what a lost capability looks like, and the group below is skipped
+    // rather than silently absent for any tier that lacks it.
     (
       name: 'iOS',
       build: MapLibreFlutterIosCoreController.forTesting,
@@ -106,7 +106,7 @@ void main() {
     (
       name: 'Windows',
       build: MapLibreFlutterWindowsController.forTesting,
-      models: false,
+      models: true,
       resizeMask: true,
     ),
     (

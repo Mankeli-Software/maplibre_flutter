@@ -1,6 +1,6 @@
 name: maplibre_flutter_windows
 description: >-
-  The Windows implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, ANGLE/GPU-surface texture).
+  The Windows implementation of maplibre_flutter (mbgl-core via maplibre_flutter_core, Vulkan + D3D11 texture).
 version: 0.0.3
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
@@ -29,6 +29,7 @@ flutter:
         # Hybrid (dartPluginClass + pluginClass): the Dart class registers the
         # implementation; the native C++ plugin owns the texture registrar bridge
         # (CLAUDE.md §3). Windows renders mbgl-core via maplibre_flutter_core's
-        # ANGLE/OpenGL-ES + EGL arm and presents through a PixelBufferTexture.
+        # Vulkan arm and presents through a D3D11 shared texture, falling back
+        # to a PixelBufferTexture readback.
         dartPluginClass: MapLibreFlutterWindows
         pluginClass: MaplibreFlutterWindowsPlugin

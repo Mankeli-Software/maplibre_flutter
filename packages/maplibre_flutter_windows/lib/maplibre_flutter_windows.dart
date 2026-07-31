@@ -14,8 +14,9 @@ export 'src/maplibre_flutter_windows_controller.dart';
 ///
 /// Registered automatically via `dartPluginClass` in pubspec.yaml. Windows is
 /// part of the desktop tier (CLAUDE.md §3): it renders MapLibre Native
-/// (`mbgl-core`, via `maplibre_flutter_core`'s ANGLE/OpenGL-ES + EGL arm)
-/// off-screen and composites through a Flutter `Texture`. The native half
+/// (`mbgl-core`, via `maplibre_flutter_core`'s **Vulkan** arm) off-screen and
+/// composites through a Flutter `Texture` — a D3D11 shared texture where the
+/// driver allows it, a CPU pixel-buffer readback otherwise. The native half
 /// (`MaplibreFlutterWindowsPlugin`) owns the texture registrar; [createMap]
 /// delegates to [MapLibreFlutterWindowsController].
 ///
