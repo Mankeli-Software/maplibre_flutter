@@ -12,6 +12,33 @@ import 'package:test/test.dart';
 /// this fails at the build step by design (the build is deferred, §8 M1).
 ///
 /// Also needs network access to fetch the demo style + tiles.
+///
+/// Waits until every posted command has been applied on the render thread.
+///
+/// Neither obvious alternative works. `awaitFrame` returns as soon as ANY frame
+/// exists, including one rendered before the command landed. And `getCamera`
+/// reads a cache that `setCamera` writes SYNCHRONOUSLY on the calling thread
+/// before posting the jumpTo, so polling it returns immediately having proved
+/// nothing. `projectionGeneration` is bumped inside the posted lambda after the
+/// transform is mutated, so wait for it to advance AND then hold still — the
+/// style load and resize bump it too, so a single advance can be someone
+/// else's. (The same mistake made src/proj_probe.cpp fail ~1 run in 8.)
+Future<void> settle(MapLibreCoreMap map) async {
+  final before = map.projectionGeneration;
+  var last = before;
+  var quiet = 0;
+  for (var i = 0; i < 400 && quiet < 6; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    final now = map.projectionGeneration;
+    if (now == last && now > before) {
+      quiet++;
+    } else {
+      quiet = 0;
+      last = now;
+    }
+  }
+}
+
 void main() {
   test('renders a non-blank frame from a style', () {
     final map = MapLibreCoreMap.create(
@@ -755,5 +782,161 @@ void main() {
     }
 
     expect(map.getCamera().zoom, greaterThan(before));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Convention guards.
+  //
+  // CLAUDE.md §11 opens by naming this project's recurring failure mode: every
+  // coordinate bug so far looked right and rendered something, because it hid
+  // behind a symmetry — a static model, a heading of 180, a round trip, the map
+  // centre. The tests below deliberately break the symmetry that would hide
+  // each convention error, and each one guards a convention that four platforms
+  // are about to inherit without anyone being able to run them.
+  // ---------------------------------------------------------------------------
+
+  // SYMMETRY BROKEN: pixel ratio. mbgl allocates its framebuffer as
+  // `Size * pixelRatio`, so `Size` must be LOGICAL POINTS. At DPR 1 the logical
+  // and device spaces coincide exactly, so a tier that passes device pixels
+  // renders an identical picture — and DPR 1 is every CI runner and every
+  // desktop screenshot taken so far. At DPR 3 it puts every marker at 3x its
+  // coordinates and makes gestures move 3x too fast.
+  test('mbgl Size is logical points: projection is pixelRatio-invariant', () {
+    ({double x, double y}) centreOf(double pixelRatio) {
+      final map = MapLibreCoreMap.create(
+        width: 512,
+        height: 512,
+        pixelRatio: pixelRatio,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+      );
+      addTearDown(map.dispose);
+      map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      final p = map.project(0, 0)!;
+      return (x: p.x, y: p.y);
+    }
+
+    final atOne = centreOf(1);
+    final atThree = centreOf(3);
+
+    expect(atOne.x, closeTo(256, 1));
+    expect(atOne.y, closeTo(256, 1));
+    expect(
+      atThree.x,
+      closeTo(256, 1),
+      reason:
+          'the camera centre must project to the middle of the LOGICAL '
+          'viewport at any density; 768 here would mean Size was fed device '
+          'pixels and multiplied by the ratio a second time',
+    );
+    expect(atThree.y, closeTo(256, 1));
+  });
+
+  // SYMMETRY BROKEN: the anchor point. Gesture anchors are TOP-LEFT origin and
+  // pass to mbgl unflipped — the OPPOSITE of the projection rule, which is
+  // exactly why it gets "fixed" wrongly (a flip shipped once and mirrored the
+  // Windows pinch anchor). Every existing test zooms about the viewport centre,
+  // where a flip, a wrong sign and an anchor that is ignored outright all look
+  // identical. Anchor in the corners instead, and check an absolute compass
+  // direction rather than a round trip.
+  test('zoom anchors are top-left origin, proven from the corners', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    Future<CoreCamera> zoomAbout(double ax, double ay) async {
+      map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+      await settle(map);
+      map.scaleBy(2, ax, ay);
+      await settle(map);
+      return map.getCamera();
+    }
+
+    // Top-left corner: the point under the anchor stays put while everything
+    // magnifies about it, so the centre is pulled toward it — north and west.
+    final topLeft = await zoomAbout(0, 0);
+    expect(
+      topLeft.latitude,
+      greaterThan(0),
+      reason:
+          'anchoring at the TOP-left must move the centre NORTH; if the '
+          'shim flipped y this would go south, and a centre-anchored test '
+          'could not tell',
+    );
+    expect(topLeft.longitude, lessThan(0), reason: 'and WEST');
+
+    // Top-right: north again, but east — which a pure y-flip would not change,
+    // so this pins the x axis independently.
+    final topRight = await zoomAbout(512, 0);
+    expect(topRight.latitude, greaterThan(0));
+    expect(topRight.longitude, greaterThan(0), reason: 'top-RIGHT is EAST');
+
+    // Bottom-left: south and west. Taken together the three corners pin both
+    // axes and rule out the anchor being dropped entirely, which would leave
+    // the centre at (0, 0) in all three.
+    final bottomLeft = await zoomAbout(0, 512);
+    expect(bottomLeft.latitude, lessThan(0), reason: 'BOTTOM-left is SOUTH');
+    expect(bottomLeft.longitude, lessThan(0));
+  });
+
+  // SYMMETRY BROKEN: pitch. `visible` is false for points behind the camera on
+  // a pitched view. The marker overlay pre-fills its flags with `true`, so a
+  // tier that never writes them behaves identically to a correct one — at pitch
+  // 0, which is MapCamera's default, every example scenario's initial camera,
+  // and every other test in this file. Above pitch 0 the failure is not a
+  // missing marker but a WRONG one: mbgl mirrors points behind the camera
+  // across the horizon, so a marker on the far side of the world paints at a
+  // plausible on-screen position and reads as a data bug.
+  test('visible is false behind a pitched camera, with finite coordinates', () {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 0, longitude: 0, zoom: 14, pitch: 60);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    expect(
+      map.project(0, 0)!.visible,
+      isTrue,
+      reason: 'the camera centre is visible',
+    );
+
+    // Pitching tilts the camera back, so it sits SOUTH of and above the centre
+    // looking north. The half-space with w <= 0 is therefore behind the viewer
+    // — far SOUTH — not past the horizon to the north. (Web mercator is a flat
+    // plane, so at pitch 60 every point to the north is still in front, however
+    // distant.)
+    final ahead = map.project(1, 0)!; // 1 degree north, in front
+    final behind = map.project(-1, 0)!; // 1 degree south, behind the camera
+
+    expect(ahead.visible, isTrue);
+    expect(
+      behind.visible,
+      isFalse,
+      reason: 'a point behind a pitched camera must report NOT visible',
+    );
+
+    // This is the whole point of the flag, and why culling on NaN or on
+    // "off-screen" is not a substitute: mbgl MIRRORS points behind the camera
+    // across the horizon, so the two land within ~35px of each other, both
+    // above the viewport, both perfectly finite. Nothing about the coordinate
+    // says one of them is on the wrong side of the world.
+    expect(behind.x.isFinite && behind.y.isFinite, isTrue);
+    expect(
+      (behind.y - ahead.y).abs(),
+      lessThan(100),
+      reason:
+          'the mirrored point is indistinguishable BY POSITION from the '
+          'real one — only the flag separates them, which is why a tier that '
+          'never writes it paints markers from the far side of the world',
+    );
   });
 }

@@ -18,7 +18,6 @@
 /// in every screenshot (see the comments on each).
 library;
 
-
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_android/maplibre_flutter_android.dart';
