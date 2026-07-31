@@ -94,7 +94,7 @@ void main() {
     (
       name: 'iOS',
       build: MapLibreFlutterIosCoreController.forTesting,
-      models: false,
+      models: true,
       resizeMask: false,
     ),
     (
@@ -396,6 +396,87 @@ void main() {
           );
           expect(core.disposed, isTrue);
         },
+      );
+
+      // Only for tiers that claim the capability. `skip` rather than an `if`,
+      // so the tiers still lacking it are visible in the test output as
+      // outstanding parity work rather than silently absent.
+      group(
+        'model host',
+        () {
+          const model = MapLibreModel(
+            id: 'car',
+            assetPath: '/tmp/car.glb',
+            point: LatLng(51.5, -0.12),
+            scale: 2,
+            headingDegrees: 90,
+            elevationMetres: 0.15,
+          );
+
+          test('addModel forwards the whole placement', () {
+            (controller as MapLibreModelHost).addModel(model);
+            expect(core.addedModels, hasLength(1));
+            final m = core.addedModels.single;
+            expect(m.layerId, 'car');
+            expect(m.path, '/tmp/car.glb');
+            expect(m.latitude, 51.5);
+            expect(m.longitude, -0.12);
+            expect(m.scale, 2);
+            expect(m.headingDegrees, 90);
+            expect(m.elevationMetres, 0.15);
+          });
+
+          // The point of updateModel: moving a model must NOT re-upload its mesh.
+          // A real asset is tens of MB, so a tier that routed this through
+          // addModel would re-parse and re-upload it every animation frame — and
+          // would still look correct, just unusably slow.
+          test('updateModel moves in place without re-adding', () {
+            final host = controller as MapLibreModelHost
+              ..addModel(model)
+              ..updateModel(model);
+            expect(core.modelTransforms, hasLength(1));
+            expect(
+              core.addedModels,
+              hasLength(1),
+              reason: 'moving must not re-upload the mesh',
+            );
+            host.removeModel('car');
+            expect(core.removedModels, ['car']);
+          });
+
+          test('updateModel ignores an id that was never added', () {
+            (controller as MapLibreModelHost).updateModel(model);
+            expect(core.modelTransforms, isEmpty);
+          });
+
+          test(
+            'renderedFrameCount reports the engine, and null once disposed',
+            () async {
+              core.frameCount = 123;
+              expect((controller as MapLibreModelHost).renderedFrameCount, 123);
+              await controller.dispose();
+              expect(
+                (controller as MapLibreModelHost).renderedFrameCount,
+                isNull,
+                reason:
+                    'the caller uses null to mean "cannot report", and reading '
+                    'a disposed core throws',
+              );
+            },
+          );
+
+          test('model calls are inert after dispose', () async {
+            await controller.dispose();
+            (controller as MapLibreModelHost)
+              ..addModel(model)
+              ..updateModel(model)
+              ..removeModel('car');
+            expect(core.addedModels, isEmpty);
+            expect(core.modelTransforms, isEmpty);
+            expect(core.removedModels, isEmpty);
+          });
+        },
+        skip: tier.models ? null : '${tier.name} has no MapLibreModelHost yet',
       );
 
       test('every capability is inert after dispose', () async {
