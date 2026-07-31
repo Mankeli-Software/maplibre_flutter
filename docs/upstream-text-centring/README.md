@@ -88,20 +88,22 @@ server-side route (shipping ascender/descender in the PBF) has been blocked for
 years on [mapbox/node-fontnik#160](https://github.com/mapbox/node-fontnik/pull/160),
 unmerged since 2019.
 
-### Known gap — must be closed before upstreaming
+### The collision box follows the ink
 
-mbgl hardcodes the same assumption a **second** time, in
-`src/mbgl/layout/symbol_layout.cpp`:
+`align()` also adds the same correction to `shaping.top`. This is not cosmetic:
+`CollisionFeature` is built from `shapedText.top`/`bottom`
+(`src/mbgl/text/collision_feature.cpp:21`), not from the glyph positions, so
+moving the glyphs alone would leave the collision box where the old baseline
+assumption put it. Verified: glyph placement is byte-identical with and without
+this line (ink −5.75…+5.73 px, max 0.25 px either way), so it moves the box and
+nothing else.
 
-```cpp
-// We don't actually load baseline data, but we assume an offset of ONE_EM - 17
-const float baselineOffset = 7.0f;
-```
-
-used at eight sites for radial offsets and **collision boxes**. Our patch does not
-touch it, so with collision enabled a corrected label's collision box sits ~4 px off
-its ink. Not visible in the chart because those layers use
-`text-allow-overlap: true`.
+**`symbol_layout.cpp`'s `baselineOffset = 7.0f` is *not* a conflict.** It is used
+only by `evaluateRadialOffset` / `evaluateVariableOffset`, i.e. `text-radial-offset`
+and `text-variable-anchor` placement, and all three of its call sites explicitly
+`break;` without applying it for `SymbolAnchorType::Center` (and `Left`/`Right`).
+Those are exactly the anchors with `verticalAlign == 0.5`, which is the only case
+this patch touches. The two are disjoint.
 
 ## Prior art
 
@@ -135,8 +137,7 @@ is Mapbox-era and still open:
 
 1. **Issue** on `maplibre/maplibre-native` describing the defect, citing
    mapbox-gl-js#154 and #191 as prior art, with the demo screenshots here.
-2. **PR on `maplibre/maplibre-native`** — our patch, plus the
-   `symbol_layout.cpp` `baselineOffset` site above, plus tests. Expect the maintainer
+2. **PR on `maplibre/maplibre-native`** — our patch plus tests. Expect the maintainer
    question to be *"does this change existing maps?"* — it does, for any font whose
    metrics differ from the −17 assumption. font-maker#20's thread shows that concern
    raised (wipfli: *"Is there a way to settle on one convention and then stick to

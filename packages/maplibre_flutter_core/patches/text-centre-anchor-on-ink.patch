@@ -1,8 +1,8 @@
 diff --git a/src/mbgl/text/shaping.cpp b/src/mbgl/text/shaping.cpp
-index 066795f5b5bd..019f952899a2 100644
+index 066795f5b5bd..2a5a20e955f9 100644
 --- a/src/mbgl/text/shaping.cpp
 +++ b/src/mbgl/text/shaping.cpp
-@@ -187,6 +187,49 @@ void align(Shaping& shaping,
+@@ -187,6 +187,57 @@ void align(Shaping& shaping,
          shiftY = (-verticalAlign * static_cast<float>(lineCount) + 0.5f) * lineHeight;
      }
  
@@ -45,7 +45,15 @@ index 066795f5b5bd..019f952899a2 100644
 +            }
 +        }
 +        if (measured) {
-+            shiftY -= (inkTop + inkBottom) / 2.0f;
++            const float correction = -(inkTop + inkBottom) / 2.0f;
++            shiftY += correction;
++
++            // Move the shaping box with the glyphs. shapeLines accumulates onto
++            // `shaping.top` after this returns and derives `bottom` from it, and
++            // CollisionFeature is built from top/bottom (collision_feature.cpp)
++            // — so without this the collision box would stay where the old
++            // baseline assumption put it while the visible ink moved away.
++            shaping.top += correction;
 +        }
 +    }
 +

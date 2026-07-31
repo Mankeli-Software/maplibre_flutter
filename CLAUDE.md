@@ -63,8 +63,8 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
 - **Upstream PRs not opened** for the text-centring patch we carry
   (`patches/text-centre-anchor-on-ink.patch`). It fixes a real MapLibre defect — centre-anchored
   text is centred on a hardcoded baseline constant, not on font metrics — that affects the web
-  engine identically. Needs an issue + PR on `maplibre-native` (also fixing the second hardcoded
-  site in `symbol_layout.cpp`) and a PR on `maplibre-gl-js` (mirror written, untested).
+  engine identically. Needs an issue + PR on `maplibre-native` and a PR on `maplibre-gl-js`
+  (mirror written, untested).
   → `docs/upstream-text-centring/`.
 - Known failing test: `"pinch zoom freezes its anchor…"` in `maplibre_map_test.dart` — fails on
   `main` too, pre-existing, unrelated to recent work.

@@ -139,10 +139,9 @@ regenerate it against a pristine submodule and re-check the order.**
   1. **Issue on `maplibre/maplibre-native`** — none exists today (org-wide search for
      `SHAPING_DEFAULT_OFFSET` returns zero). Cite mapbox/mapbox-gl-js#154 and #191, open since
      2013, as prior art; #154 proposes this exact approach.
-  2. **PR on `maplibre/maplibre-native`** — must also fix the *second* hardcoded site,
-     `const float baselineOffset = 7.0f;` in `src/mbgl/layout/symbol_layout.cpp`, which feeds
-     radial offsets and collision boxes. Lead with "yes, this moves labels for fonts whose metrics
-     differ from the old assumption" — that is the maintainer's first question.
+  2. **PR on `maplibre/maplibre-native`** — the patch is complete (it moves `shaping.top` too, so
+     the collision box follows the ink). Needs render tests. Lead with "yes, this moves labels for
+     fonts whose metrics differ from the old assumption" — that is the maintainer's first question.
   3. **PR on `maplibre/maplibre-gl-js`** — the mirror patch exists
      (`carta-polaris/patches/maplibre-gl-js-text-centre-on-ink.patch`) but is **untested**; it needs
      the gl-js render-test suite run before it is proposable.

@@ -1567,10 +1567,16 @@ Finnish nautical chart). Its swept-depth labels use `symbol-placement: line-cent
   digitisation direction (a value centring bearings 0-180 drives 195-345 twice as far out);
   `text-translate` has no effect at all on line-placed labels (12.9 px of requested shift produced
   under 0.3 px of movement).
-- **Known gap:** mbgl hardcodes the same assumption a second time as
-  `const float baselineOffset = 7.0f;` in `src/mbgl/layout/symbol_layout.cpp`, used at eight sites
-  for radial offsets and collision boxes. Untouched, so with collision enabled a corrected label's
-  box sits ~4 px off its ink. Must be closed before upstreaming.
+- **The collision box follows too.** `align()` applies the correction to `shaping.top` as well,
+  because `CollisionFeature` is built from `shapedText.top`/`bottom`, not from glyph positions —
+  moving the glyphs alone would strand the box. Glyph placement is identical with and without that
+  line, so it moves the box and nothing else.
+- **A wrong claim, corrected:** `symbol_layout.cpp`'s second hardcoded `baselineOffset = 7.0f` was
+  initially flagged as a conflicting site and an upstreaming blocker. It is not. Reading it: it
+  serves only `evaluateRadialOffset`/`evaluateVariableOffset` (`text-radial-offset` /
+  `text-variable-anchor`), and every call site explicitly skips it for `Center`/`Left`/`Right`
+  anchors — precisely the `verticalAlign == 0.5` set this patch touches. Disjoint. The claim came
+  from a search summary that was never checked against the source.
 - **Prior art:** no MapLibre issue exists (`SHAPING_DEFAULT_OFFSET` and `yOffset baseline` return
   zero results org-wide). mapbox/mapbox-gl-js#154 and #191 have been open since **2013**; #154 even
   proposes this exact approach ("or the shaped text bbox?"). Mapbox fixed their own side in GL JS
