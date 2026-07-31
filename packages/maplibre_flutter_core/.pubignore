@@ -1,5 +1,6 @@
 # The mbgl-core source submodule is vendored for development / CI source builds
 # but must NOT ship in the published archive (it is multi-GB). Published app
 # consumers obtain a prebuilt per-(os,arch) binary via the build hook
-# (CLAUDE.md §12 distribution decision).
+# (docs/decision-log.md, the 2026-06-18 distribution decision). NOTE: prebuilt
+# binaries are not published yet — see docs/building-from-source.md.
 third_party/

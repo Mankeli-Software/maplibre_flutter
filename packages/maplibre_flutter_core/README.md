@@ -70,12 +70,19 @@ dart run tool/ffigen.dart
 
 `mbgl-core` is large and slow to compile, so the build hook resolves the native library two ways:
 
+- **Developers / CI** (this repo, submodule vendored) — the hook builds from the pinned source.
+  Set `MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE=1` to force this path even without a submodule.
 - **App consumers** (no submodule, as published on pub.dev) — the hook downloads a prebuilt
   per-`(os, arch)` binary from the GitHub release matching the package version
   (`maplibre_flutter_core-v<version>`). No C++ toolchain or multi-minute first build required.
-- **Developers / CI** (this repo, submodule vendored) — the hook builds from the pinned source.
-  Set `MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE=1` to force this path even without a submodule.
 
-`third_party/` is `.pubignore`d, so the published archive stays small; the prebuilt download fills
-the gap for consumers. Both paths resolve to the same ffigen asset id, so the Dart side is
-identical either way.
+`third_party/` is `.pubignore`d, so the published archive stays small; the prebuilt download is
+what fills the gap for consumers. Both paths resolve to the same ffigen asset id, so the Dart
+side is identical either way.
+
+> ⚠️ **The prebuilt half is not live yet.** No release currently carries engine binaries — the
+> workflow that produces them (`.github/workflows/build-core.yml`) still has its
+> `maplibre_flutter_core-v*` tag trigger commented out. With no submodule *and* no prebuilt, the
+> hook logs a warning, **skips the native build entirely**, and FFI calls fail at runtime. Until
+> that workflow is enabled, consuming this package means building from source — see
+> [docs/building-from-source.md](../../docs/building-from-source.md).

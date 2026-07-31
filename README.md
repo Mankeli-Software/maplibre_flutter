@@ -56,6 +56,22 @@ The mature native SDKs / maplibre-gl-js remain available as opt-in packages — 
 
 ## Install
 
+> ⚠️ **You must build the native engine from source today — a plain pub.dev dependency will
+> not give you a working map.** The MapLibre Native C++ engine (`mbgl-core`) is vendored as a
+> multi-gigabyte git submodule and is deliberately excluded from the published archive.
+> Prebuilt binaries are the intended fix and the build hook already knows how to fetch them,
+> but **they are not published yet** — so with no submodule and no prebuilt, the native build
+> is skipped and calls into the engine fail at runtime. A `git:` dependency does not help
+> either, because pub clones without submodules.
+>
+> **→ [How to build from source](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/docs/building-from-source.md)** — clone with
+> `--recursive`, depend by path, build. Takes a C++ toolchain and a few minutes on the first
+> build of each platform.
+>
+> Once prebuilt binaries ship, the snippet below works on its own with no submodule, no C++
+> toolchain, and no long first build. Nothing about your Dart code changes — only where the
+> compiled engine comes from.
+
 ```yaml
 dependencies:
   maplibre_flutter: any   # pre-release — pin an exact version once published
@@ -63,6 +79,9 @@ dependencies:
 
 You depend only on `maplibre_flutter`. It endorses the per-platform implementations, which are
 pulled in transitively; never depend on a platform package directly.
+
+Web is the exception: the opt-in [`maplibre_flutter_web_gljs`](#renderers) renderer uses
+maplibre-gl-js and needs **no native build at all**.
 
 ## Usage
 

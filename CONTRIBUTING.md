@@ -52,6 +52,11 @@ Vendor the native engine once before building any desktop platform from this rep
 git submodule update --init --recursive
 ```
 
+This step is **not optional**: prebuilt engine binaries are not published yet, so without the
+submodule the build hook skips the native build and the map fails at runtime. See
+[docs/building-from-source.md](docs/building-from-source.md) for the full picture, including
+what consuming the package from another app looks like today.
+
 ---
 
 ## Workspace setup

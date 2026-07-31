@@ -419,6 +419,7 @@ into `maplibre_flutter_core.dll`, so there are no runtime DLLs to bundle.
 | `docs/decision-log.md` | **The archive.** Every decision, root cause and gotcha, in date order. |
 | `docs/cross-platform-continuation.md` | What to do next, per platform. Read before picking the work back up. |
 | `FEATURE_MATRIX.md` | Per-feature × per-platform parity backlog. |
+| `docs/building-from-source.md` | How consumers build the engine today, and why prebuilts aren't live yet. |
 | `docs/typed-style-api.md` | Design of the generated typed style API (built). |
 | `docs/experimental-web-core-wasm.md` | mbgl-core → WASM: status, build steps, what's left. |
 | `docs/3d-models-research.md` | How 3D models work in MapLibre; the implementation plan. |
