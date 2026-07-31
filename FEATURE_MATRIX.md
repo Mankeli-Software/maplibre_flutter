@@ -8,7 +8,8 @@ it is deliberately exhaustive so the gap between "what the engine can do" and "w
 is always visible. Rows come from the canonical MapLibre feature surface (style-spec, gl-js, and the
 native SDKs); cells reflect what is actually wired in this repo today.
 
-_Last updated: 2026-07-30._ Engines in play: **`mbgl-core`** (pinned by
+_Last updated: 2026-07-31_ (cross-platform parity push: `MapLibreModelHost` on all five native
+tiers, rotate/tilt gestures, iOS verified on a Simulator)._ Engines in play: **`mbgl-core`** (pinned by
 `MBGL_CORE_VERSION`) is the default renderer on **every** platform since the 2026-06-21
 core-primary inversion; the MapLibre Android SDK 11.11.0, Apple SDK 6.27.0 and
 maplibre-gl-js 5.24.0 are **opt-in** packages (`maplibre_flutter_{android,ios}_sdk`,
@@ -76,10 +77,12 @@ inversion every platform runs `mbgl-core`, so this splits by **binding tier**, n
 Flutter `Texture`, driven by one shared Dart tier:
 
 - **Camera**: `getCamera` / `moveCamera` (jump or eased), a Dart-side fly arc, `resize`, `onReady`,
-  `dispose`. Bearing and pitch are settable and exercised (the example has rotate/tilt buttons —
-  there is still no rotate or pitch *gesture*).
+  `dispose`. Bearing and pitch are settable, and since 2026-07-31 there ARE rotate and pitch
+  gestures: a two-finger twist, a two-finger vertical shove for tilt, and a secondary-button /
+  ctrl drag. The example keeps its rotate/tilt buttons as the keyboardless path.
 - **Gestures**: pan (with inertia/fling ported from the native SDK model) and zoom-about-anchor,
-  implemented once in Dart over the engine. No rotate, pitch, double-tap or quick-zoom gestures.
+  implemented once in Dart over the engine. Rotate and pitch landed 2026-07-31; double-tap and
+quick-zoom are still missing.
 - **Widget markers**: real Flutter widgets glued to a `LatLng` (`MapLibreMap.markers`) — tappable,
   draggable, animatable — positioned from a synchronous projection snapshot that is correlated to
   the frame actually on screen, so they do not swim during movement.
@@ -111,7 +114,8 @@ opt-in package binds anything beyond camera + style today.
 
 > Bottom line: camera, style, gestures, **widget markers, engine sources/layers/images, the typed
 > style API, queries and transitions** are wired on the native tier — verified on macOS, 🧪 on the
-> other four. Web has none of it. 3D models are macOS-only.
+> other four. Web has none of it. 3D models are wired on all five native tiers (verified on
+> macOS and iOS, both Metal; GL and Vulkan unrun) and remain unavailable on web.
 
 ---
 
@@ -295,8 +299,8 @@ This is the **most-implemented** domain — camera control is the wired surface 
 | `zoomIn` (increment zoom) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Example app does this by reading + incrementing camera. |
 | `zoomOut` (decrement zoom) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `rotateTo` (animate to bearing) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Reachable via moveCamera(bearing). |
-| `rotateBy` (gesture delta) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only** primitive. |
-| `pitchBy` (relative pitch) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only** primitive. |
+| `rotateBy` (gesture delta) | ✅ | ✅ | ✅ | ✅ | ✅ | ➖ | `mbl_map_rotate_by` + `MapLibreRotateHandler`. NOT built on mbgl's `Map::rotateBy`, which is broken upstream (`pow(2,x)+pow(2,y)`). |
+| `pitchBy` (relative pitch) | ✅ | ✅ | ✅ | ✅ | ✅ | ➖ | `mbl_map_pitch_by`. NOT mbgl's `Map::pitchBy`, which SUBTRACTS its argument. |
 | `scaleBy` (relative zoom around anchor) | ❌ | ❌ | ✅ | ✅ | ✅ | ➖ | **native_only** primitive; macOS wires it as the zoom gesture. |
 | `resetNorth` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
 | `resetNorthPitch` | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only** (gl-js). |
@@ -350,13 +354,21 @@ This is the **most-implemented** domain — camera control is the wired surface 
 **Corrected for the core-primary inversion.** Android and iOS no longer get the native SDK's
 gesture stack by default — they run `mbgl-core` and the same shared Dart gesture tier as the
 desktop platforms. That tier implements **pan (with inertia/fling) and zoom-about-anchor**, and
-nothing else: there is no rotate, pitch, double-tap or quick-zoom gesture on any native platform
-today. Adding `maplibre_flutter_android_sdk` / `_ios_sdk` restores the SDK's full native gesture
-set on that platform.
+**pan (with inertia/fling)**, **zoom-about-anchor**, **rotate** and **tilt**. Double-tap and
+quick-zoom are still missing. Adding `maplibre_flutter_android_sdk` / `_ios_sdk` restores the SDK's
+full native gesture set on that platform.
 
-Bearing and pitch are still reachable imperatively (`moveCamera`), which is what the example's
-rotate/tilt buttons use. What is ❌ below is either a missing gesture or the per-gesture
-configuration API (enable/disable, sensitivity, inertia tuning), none of which is exposed.
+Rotate and tilt landed 2026-07-31 (`MapLibreRotateHandler` over `mbl_map_rotate_by` /
+`mbl_map_pitch_by`): a two-finger twist past an 8° deadzone, a two-finger vertical shove for tilt,
+a secondary-button / ctrl drag for both, and trackpad twist through the overlay-blocked route.
+Enable/disable is `MapLibreMap.rotateGesturesEnabled` / `.tiltGesturesEnabled`. Covered by 11
+device-free widget tests; the FEEL is unverified on hardware, and rotate INERTIA is deliberately
+not implemented (it needs `TickerProviderStateMixin`, and the single-ticker constraint in the
+gesture state is load-bearing).
+
+Bearing and pitch remain reachable imperatively (`moveCamera`), which is what the example's
+rotate/tilt buttons use — kept as the keyboardless path. What is still ❌ below is either a missing
+gesture or per-gesture tuning (sensitivity, inertia), which is not exposed.
 
 | Feature | Android | iOS | macOS | Windows | Linux | Web | Notes |
 | ------- | :-----: | :-: | :---: | :-----: | :---: | :-: | ----- |
@@ -372,13 +384,13 @@ configuration API (enable/disable, sensitivity, inertia tuning), none of which i
 | Double-click-zoom gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion: was an SDK gesture on Android/iOS. The Dart tier has no double-tap. Restored by the opt-in `_sdk` packages. |
 | Double-click-zoom enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | Quick-zoom gesture (double-tap-hold-drag) | ❌ | ❌ | ❌ | ❌ | ❌ | ➖ | **native_only** SDK gesture; only via the opt-in `_sdk` packages now. |
-| Touch zoom-rotate (pinch) gesture | 🟡 | 🟡 | 🟡 | 🟡 | 🟡 | ✅ | Pinch ZOOM works on all five via the Dart tier (anchor frozen at pinch onset — see the focal-drift fix); pinch ROTATE does not exist there. |
-| Touch zoom-rotate enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
+| Touch zoom-rotate (pinch) gesture | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Pinch zoom AND twist-to-rotate, past an 8° deadzone, about one frozen anchor. Unrun on hardware for all but macOS/iOS. |
+| Touch zoom-rotate enable/disable toggle | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `MapLibreMap.rotateGesturesEnabled` (widget prop — bucket 2, not `MapOptions`). |
 | Touch zoom-rotate: rotation sub-toggle | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | Touch zoom-rotate around-center option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
-| Touch-pitch gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion; no pitch gesture in the Dart tier. Pitch is settable via `moveCamera` (example has a Tilt button). |
-| Touch-pitch enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
-| Drag-rotate gesture | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | REGRESSED by the inversion; no rotate gesture in the Dart tier. Bearing is settable via `moveCamera` (example has rotate buttons). |
+| Touch-pitch gesture | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Two-finger vertical "shove", detected from raw pointer positions — `ScaleUpdateDetails` carries no per-pointer data, and a shove is otherwise indistinguishable from a two-finger pan. |
+| Touch-pitch enable/disable toggle | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `MapLibreMap.tiltGesturesEnabled`. |
+| Drag-rotate gesture | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Secondary-button or ctrl+primary drag: horizontal turns, vertical tilts (gl-js's DragRotateHandler). On the raw `Listener`, since `onScaleStart` fires for secondary drags too. |
 | Drag-rotate enable/disable toggle | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | |
 | `pitchWithRotate` option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
 | `rollEnabled` option | ➖ | ➖ | ➖ | ➖ | ➖ | ❌ | **web_only**. |
