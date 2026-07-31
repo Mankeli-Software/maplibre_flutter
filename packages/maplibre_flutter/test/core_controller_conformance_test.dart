@@ -100,7 +100,7 @@ void main() {
     (
       name: 'Android',
       build: MapLibreFlutterAndroidCoreController.forTesting,
-      models: false,
+      models: true,
       resizeMask: false,
     ),
     (
@@ -112,7 +112,7 @@ void main() {
     (
       name: 'Linux',
       build: MapLibreFlutterLinuxController.forTesting,
-      models: false,
+      models: true,
       resizeMask: true,
     ),
   ];
