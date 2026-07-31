@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# The Emscripten core artifact is installed here by
+# packages/maplibre_flutter_web/tool/install_web_core.sh — built, not committed.
+web/maplibre_flutter_core.js
+web/maplibre_flutter_core.wasm

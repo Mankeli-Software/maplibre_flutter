@@ -18,13 +18,22 @@ void main() {
     expect(MapLibreFlutterPlatform.instance, isA<MapLibreFlutterWeb>());
   });
 
-  test('core module URL defaults to the bundled plugin asset path', () {
-    // The WASM artifact ships as a maplibre_flutter_core web asset; the default
-    // loader URL must resolve there (override with MAPLIBRE_WEB_CORE_URL).
+  test('core module URL defaults to a path an app can actually serve', () {
+    // It must be a RELATIVE url resolving against the app's web root, because
+    // the artifact belongs next to index.html. The previous default,
+    // `assets/packages/maplibre_flutter_core/web/...`, was unreachable by
+    // construction: maplibre_flutter_core is a pure-Dart package with no
+    // `flutter:` section, so it cannot declare Flutter assets at all.
+    expect(coreModuleUrl, endsWith('.js'));
     expect(
       coreModuleUrl,
-      startsWith('assets/packages/maplibre_flutter_core/web/'),
+      isNot(startsWith('assets/packages/maplibre_flutter_core/')),
+      reason: 'a pure-Dart package cannot serve Flutter assets',
     );
-    expect(coreModuleUrl, endsWith('.js'));
+    expect(
+      Uri.parse(coreModuleUrl).isAbsolute,
+      isFalse,
+      reason: 'relative to the app web root, so any host/base path works',
+    );
   });
 }

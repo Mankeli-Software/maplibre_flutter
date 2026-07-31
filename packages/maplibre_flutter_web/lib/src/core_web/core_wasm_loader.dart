@@ -16,13 +16,23 @@ import 'package:web/web.dart' as web;
 
 import 'core_wasm_interop.dart';
 
-/// Where the Emscripten `.js` glue is served from. Override at build time with
-/// `--dart-define=MAPLIBRE_WEB_CORE_URL=...`. The default assumes the artifact is
-/// copied into the app's web assets for this plugin.
+/// Where the Emscripten `.js` glue is served from, relative to the app's web
+/// root. Override at build time with `--dart-define=MAPLIBRE_WEB_CORE_URL=...`.
+///
+/// The default is a plain relative URL because the artifact belongs in the
+/// APP's `web/` directory, next to `index.html`. It used to default to
+/// `assets/packages/maplibre_flutter_core/web/...`, which could never resolve:
+/// `maplibre_flutter_core` is a pure-Dart package with no `flutter:` section, so
+/// it cannot declare Flutter assets at all — the URL was unreachable by
+/// construction and the only way to run this tier was to already know to pass
+/// the dart-define.
+///
+/// Serving it from `web/` also keeps a multi-megabyte binary out of the pub
+/// package, and lets the app control the COOP/COEP headers the threaded build
+/// requires. See `packages/maplibre_flutter_web/tool/install_web_core.sh`.
 const String coreModuleUrl = String.fromEnvironment(
   'MAPLIBRE_WEB_CORE_URL',
-  defaultValue:
-      'assets/packages/maplibre_flutter_core/web/maplibre_flutter_core.js',
+  defaultValue: 'maplibre_flutter_core.js',
 );
 
 Future<CoreModule>? _moduleFuture;
@@ -41,11 +51,19 @@ Future<CoreModule> _load() async {
   if (!globalContext.has('MaplibreFlutterCore')) {
     throw StateError(
       'The native-core web renderer (the default) needs its Emscripten module, '
-      'but it was not found at "$coreModuleUrl". Build the WASM artifact and serve '
-      'it with the required COOP/COEP headers (or set '
-      '--dart-define=MAPLIBRE_WEB_CORE_URL), per docs/experimental-web-core-wasm.md. '
-      'To render with maplibre-gl-js instead (no build step, no special headers), '
-      'add the maplibre_flutter_web_gljs package to your app.',
+      'but it was not found at "$coreModuleUrl".\n'
+      '\n'
+      'Put maplibre_flutter_core.js and maplibre_flutter_core.wasm in your app\'s '
+      'web/ directory (next to index.html) — '
+      'packages/maplibre_flutter_web/tool/install_web_core.sh copies them from a '
+      'local Emscripten build or a CI artifact — and serve them with the '
+      'COOP/COEP headers the threaded build needs:\n'
+      '  Cross-Origin-Opener-Policy: same-origin\n'
+      '  Cross-Origin-Embedder-Policy: require-corp\n'
+      'Or point elsewhere with --dart-define=MAPLIBRE_WEB_CORE_URL=...\n'
+      '\n'
+      'To render with maplibre-gl-js instead (no build step, no special '
+      'headers), add the maplibre_flutter_web_gljs package to your app.',
     );
   }
 
