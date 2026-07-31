@@ -1705,4 +1705,58 @@ RGBA when `mbl_map_copy_frame` emits **BGRA**, which silently matched only green
 symmetric under an R/B swap. Verify the instrument against a known-good and a known-bad case
 before trusting its verdict.
 
+## 2026-07-31 — Two design questions the parity audit deadlocked on, settled
+
+Two items came back from the audit with two auditors proposing opposite things. Both are public-API
+decisions rather than defects, so recording the call here per §3/§12.
+
+### 1. A style load drops app-added layers. Add an EVENT; do not silently re-add them.
+
+mbgl replaces the layer list on every style load, so every source and layer an app added is gone.
+The shim already re-asserts transition options and re-adds *models* from
+`onDidFinishLoadingStyle` — models are our own abstraction over `CustomDrawableLayer`, so we own
+their lifetime — but app-added layers are the app's, and there is **no signal** that they vanished.
+The example papers over it with a hardcoded `Future.delayed(700ms)`, and the new iOS integration
+test hit the same race: adding a layer right after `onReady` loses it, because `onReady` fires on
+the first FRAME, which can precede the style completing.
+
+One auditor proposed re-injecting app layers in C++ from `onDidFinishLoadingStyle`. **Rejected.**
+It would make the five native tiers diverge from both web tiers *and* from upstream
+maplibre-gl-js, whose `setStyle` drops runtime layers identically — so it would break parity rather
+than restore it — and it would resurrect layers an app deliberately removed before a style swap.
+There is also no correct answer for ordering: `beforeId` may name a layer the new style does not
+have.
+
+**Decision: extend the contract with a style-loaded event** (a `MapLibreStyleEvents` capability,
+feature-detected like the others), so an app can re-apply its own layers deterministically instead
+of guessing with a delay. That keeps every tier on the same semantics as gl-js. NOT YET
+IMPLEMENTED — it is a contract addition touching all seven tiers, and CLAUDE.md is explicit that
+interface churn is the most expensive kind, so it wants its own change rather than being smuggled
+into a parity push. Until then the workaround is documented where it bites: the iOS integration
+test explains the race at the call site.
+
+### 2. `PointerInterceptor` for markers over a DOM map. Keep the existing decision.
+
+Filed three times with three different scopes, and one version proposed reversing the 2026-06
+decision above (`pointer_interceptor` is for OVERLAYS, not the map; it was deliberately added to
+the *example*, not the app-facing package).
+
+**Decision: keep it.** Widget markers are drawn in the Flutter overlay above the platform view, so
+on the DOM-backed tiers they are subject to the same rule as any other control drawn over the map —
+which is the app's concern and is already demonstrated in the example. Pulling
+`pointer_interceptor` into `maplibre_flutter` would add a dependency every native tier pays for and
+never uses, to solve a problem only two web tiers have, and only for apps that put interactive
+widgets over the map. Revisit if and when web markers are actually wired (they are not: neither web
+tier implements `MapLibreMapProjector`, so there is no marker overlay on web at all today) — at
+which point it can be measured rather than predicted.
+
+### 3. 3D models on web: deferred, with the reason recorded rather than a bare ❌.
+
+`MapLibreModel.assetPath` is documented as a real filesystem path — the engine opens it natively —
+and web has no filesystem. The Emscripten arm also compiles neither the glTF reader nor the model
+layer (`web/CMakeLists.txt` builds one translation unit). Giving web models a route needs a
+bytes-based model API on the contract *plus* those sources in the WASM build; it is not a wiring
+gap. The example now says so at the point of failure instead of handing over a path that could
+never be opened.
+
 _Append new decisions here with date and rationale._
