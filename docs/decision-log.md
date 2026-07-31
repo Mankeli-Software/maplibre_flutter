@@ -1567,16 +1567,22 @@ Finnish nautical chart). Its swept-depth labels use `symbol-placement: line-cent
   digitisation direction (a value centring bearings 0-180 drives 195-345 twice as far out);
   `text-translate` has no effect at all on line-placed labels (12.9 px of requested shift produced
   under 0.3 px of movement).
-- **The collision box follows too.** `align()` applies the correction to `shaping.top` as well,
-  because `CollisionFeature` is built from `shapedText.top`/`bottom`, not from glyph positions —
-  moving the glyphs alone would strand the box. Glyph placement is identical with and without that
-  line, so it moves the box and nothing else.
-- **A wrong claim, corrected:** `symbol_layout.cpp`'s second hardcoded `baselineOffset = 7.0f` was
-  initially flagged as a conflicting site and an upstreaming blocker. It is not. Reading it: it
-  serves only `evaluateRadialOffset`/`evaluateVariableOffset` (`text-radial-offset` /
-  `text-variable-anchor`), and every call site explicitly skips it for `Center`/`Left`/`Right`
-  anchors — precisely the `verticalAlign == 0.5` set this patch touches. Disjoint. The claim came
-  from a search summary that was never checked against the source.
+- **The collision box is deliberately left alone**, after getting this backwards twice. It is built
+  from `shaping.top`/`bottom`, which is *already* symmetric about the anchor (the existing shaping
+  tests assert -36/+36, -24/+24, ...); the ink was the thing off-centre inside it. Centring the ink
+  brings the two into agreement, so shifting the box as well would move it back off the ink and
+  break those assertions. `symbol_layout.cpp`'s second hardcoded `baselineOffset = 7.0f` is not a
+  conflict either: it serves only `evaluateRadialOffset`/`evaluateVariableOffset` and every call
+  site skips it for `Center`/`Left`/`Right` — exactly the `verticalAlign == 0.5` set this touches.
+- **Tested, and the test was verified to fail without the fix:** `src/shaping_probe.cpp` (behind
+  `MAPLIBRE_FLUTTER_BUILD_HARNESS=ON`) drives `mbgl::getShaping` directly with synthetic glyph
+  metrics — no map, no GPU, no fonts. 4 failures unpatched, 0 patched, with the box and
+  edge-anchor assertions holding in *both*, which is what shows the change is confined to centre
+  anchors. `patches/text-centre-anchor-on-ink-tests.patch` carries the same cases as gtest cases
+  for mbgl's own suite, for the upstream PR.
+- **Edge anchors keep the old behaviour and are still skewed** by the same constant (`text-anchor:
+  top` with ink 11 above the baseline lands at -16..-5 where it should hang at 0..+11). Fixing them
+  would move every top/bottom-anchored label in every style, so it is a deliberate follow-up.
 - **Prior art:** no MapLibre issue exists (`SHAPING_DEFAULT_OFFSET` and `yOffset baseline` return
   zero results org-wide). mapbox/mapbox-gl-js#154 and #191 have been open since **2013**; #154 even
   proposes this exact approach ("or the shaped text bbox?"). Mapbox fixed their own side in GL JS

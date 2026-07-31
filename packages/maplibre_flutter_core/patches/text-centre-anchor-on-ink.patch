@@ -1,5 +1,5 @@
 diff --git a/src/mbgl/text/shaping.cpp b/src/mbgl/text/shaping.cpp
-index 066795f5b5bd..2a5a20e955f9 100644
+index 066795f5b5bd..343964279fa5 100644
 --- a/src/mbgl/text/shaping.cpp
 +++ b/src/mbgl/text/shaping.cpp
 @@ -187,6 +187,57 @@ void align(Shaping& shaping,
@@ -45,16 +45,16 @@ index 066795f5b5bd..2a5a20e955f9 100644
 +            }
 +        }
 +        if (measured) {
-+            const float correction = -(inkTop + inkBottom) / 2.0f;
-+            shiftY += correction;
-+
-+            // Move the shaping box with the glyphs. shapeLines accumulates onto
-+            // `shaping.top` after this returns and derives `bottom` from it, and
-+            // CollisionFeature is built from top/bottom (collision_feature.cpp)
-+            // — so without this the collision box would stay where the old
-+            // baseline assumption put it while the visible ink moved away.
-+            shaping.top += correction;
++            shiftY -= (inkTop + inkBottom) / 2.0f;
 +        }
++
++        // Deliberately does NOT touch shaping.top/bottom. That box — which is
++        // what CollisionFeature is built from — is already symmetric about the
++        // anchor (shapeLines sets top = -verticalAlign * height, and the existing
++        // shaping tests assert -36/+36, -24/+24, …); the ink was the thing
++        // sitting off-centre inside it. Centring the ink therefore brings the two
++        // into agreement, whereas shifting the box as well would move it back off
++        // the ink and break those assertions.
 +    }
 +
      for (auto& line : shaping.positionedLines) {

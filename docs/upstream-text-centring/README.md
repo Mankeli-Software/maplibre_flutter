@@ -88,22 +88,46 @@ server-side route (shipping ascender/descender in the PBF) has been blocked for
 years on [mapbox/node-fontnik#160](https://github.com/mapbox/node-fontnik/pull/160),
 unmerged since 2019.
 
-### The collision box follows the ink
+### The collision box is left alone — deliberately
 
-`align()` also adds the same correction to `shaping.top`. This is not cosmetic:
 `CollisionFeature` is built from `shapedText.top`/`bottom`
-(`src/mbgl/text/collision_feature.cpp:21`), not from the glyph positions, so
-moving the glyphs alone would leave the collision box where the old baseline
-assumption put it. Verified: glyph placement is byte-identical with and without
-this line (ink −5.75…+5.73 px, max 0.25 px either way), so it moves the box and
-nothing else.
+(`src/mbgl/text/collision_feature.cpp:21`), and that box is **already symmetric
+about the anchor** — `shapeLines` sets `top = -verticalAlign * height`, and mbgl's
+own shaping tests assert exactly that (`-36/+36`, `-24/+24`, …). The ink was the
+thing sitting off-centre *inside* the box. So centring the ink brings the two into
+agreement, and moving the box as well would push them apart again and break those
+assertions. The patch therefore does not touch `top`/`bottom`, and
+`shaping_probe` asserts that it stays symmetric.
 
-**`symbol_layout.cpp`'s `baselineOffset = 7.0f` is *not* a conflict.** It is used
-only by `evaluateRadialOffset` / `evaluateVariableOffset`, i.e. `text-radial-offset`
-and `text-variable-anchor` placement, and all three of its call sites explicitly
+`symbol_layout.cpp`'s second hardcoded `baselineOffset = 7.0f` is **not** a
+conflict either, despite the similar comment. It serves only
+`evaluateRadialOffset` / `evaluateVariableOffset` — `text-radial-offset` and
+`text-variable-anchor` placement — and all three of its call sites explicitly
 `break;` without applying it for `SymbolAnchorType::Center` (and `Left`/`Right`).
-Those are exactly the anchors with `verticalAlign == 0.5`, which is the only case
-this patch touches. The two are disjoint.
+Those are exactly the anchors with `verticalAlign == 0.5`, the only case this
+patch touches. Disjoint.
+
+### Edge anchors keep the old behaviour
+
+`top`/`bottom` anchors mean "align this edge", so they stay on the existing code
+path. Worth knowing for the upstream discussion: they are **also** skewed by the
+same constant. With ink rising 11 units above the baseline, `text-anchor: top`
+ought to hang the text below the anchor (roughly `0..+11`) and instead puts it at
+`-16..-5`. Fixing that too would move every top/bottom-anchored label in every
+style, so it is left as a follow-up rather than folded in.
+
+### Tests
+
+- `packages/maplibre_flutter_core/src/shaping_probe.cpp` — runs here, against the
+  real `mbgl::getShaping`, no map and no GPU. Build with
+  `-DMAPLIBRE_FLUTTER_BUILD_HARNESS=ON`. **Verified to fail without the patch (4
+  failures) and pass with it**, while the box and edge-anchor assertions hold in
+  both — which is what demonstrates the change is confined to centre anchors.
+- `patches/text-centre-anchor-on-ink-tests.patch` — the same cases as gtest cases
+  in mbgl's own suite (`test/text/shaping.test.cpp`), for the upstream PR.
+
+Synthetic glyph metrics throughout, so the assertions hold for any font and a
+failure means the algorithm changed rather than that a font did.
 
 ## Prior art
 
@@ -137,7 +161,8 @@ is Mapbox-era and still open:
 
 1. **Issue** on `maplibre/maplibre-native` describing the defect, citing
    mapbox-gl-js#154 and #191 as prior art, with the demo screenshots here.
-2. **PR on `maplibre/maplibre-native`** — our patch plus tests. Expect the maintainer
+2. **PR on `maplibre/maplibre-native`** — our patch plus
+   `text-centre-anchor-on-ink-tests.patch`. Expect the maintainer
    question to be *"does this change existing maps?"* — it does, for any font whose
    metrics differ from the −17 assumption. font-maker#20's thread shows that concern
    raised (wipfli: *"Is there a way to settle on one convention and then stick to

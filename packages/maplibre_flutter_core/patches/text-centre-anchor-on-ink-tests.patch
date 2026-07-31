@@ -1,0 +1,152 @@
+diff --git a/test/text/shaping.test.cpp b/test/text/shaping.test.cpp
+index 654f8de19b82..2878e8b94949 100644
+--- a/test/text/shaping.test.cpp
++++ b/test/text/shaping.test.cpp
+@@ -6,6 +6,10 @@
+ #include <mbgl/text/shaping.hpp>
+ #include <mbgl/util/constants.hpp>
+ 
++#include <algorithm>
++#include <limits>
++#include <utility>
++
+ using namespace mbgl;
+ using namespace util;
+ 
+@@ -225,3 +229,136 @@ TEST(Shaping, applyTextFit) {
+         }
+     }
+ }
++
++// Centre-anchored text must be centred on the glyphs' actual ink, not on the
++// hardcoded Shaping::yOffset baseline assumption.
++//
++// yOffset (-17 of ONE_EM = 24) stands in for font metrics that the glyph PBF
++// does not carry — its own declaration says "The y offset *should* be part of
++// the font metadata". Fonts whose real metrics differ from that assumption
++// therefore rendered centre-anchored text off-centre, most visibly on
++// line-placed labels, which should straddle the line but sat above it.
++namespace {
++
++// A glyph whose ink sits ABOVE the baseline, like a Latin capital or digit:
++// `top` is the rise above the baseline, `height` the ink height. Chosen so the
++// old constant and the true centre disagree measurably.
++GlyphPosition inkGlyph(int32_t top, uint32_t height) {
++    GlyphPosition position;
++    position.metrics.width = 18;
++    position.metrics.height = height;
++    position.metrics.left = 2;
++    position.metrics.top = top;
++    position.metrics.advance = 21;
++    return position;
++}
++
++// Vertical extent of the shaped ink, relative to the anchor, exactly as the
++// quad builder derives it (quads.cpp: y1 = -metrics.top * scale + glyph.y,
++// spanning metrics.height * scale).
++std::pair<float, float> inkExtent(const Shaping& shaping) {
++    float top = std::numeric_limits<float>::max();
++    float bottom = std::numeric_limits<float>::lowest();
++    for (const auto& line : shaping.positionedLines) {
++        for (const auto& glyph : line.positionedGlyphs) {
++            if (glyph.metrics.height == 0) continue;
++            const float glyphTop = glyph.y - static_cast<float>(glyph.metrics.top) * glyph.scale;
++            top = std::min(top, glyphTop);
++            bottom = std::max(bottom, glyphTop + static_cast<float>(glyph.metrics.height) * glyph.scale);
++        }
++    }
++    return {top, bottom};
++}
++
++Shaping shapeOneLine(style::SymbolAnchorType anchor, GlyphPosition glyphPosition) {
++    Glyph glyph;
++    glyph.id = u'A';
++    glyph.metrics = glyphPosition.metrics;
++
++    BiDi bidi;
++    const std::vector<std::string> fontStack{{"font-stack"}};
++    const SectionOptions sectionOptions(1.0f, fontStack, GlyphIDType::FontPBF, 0);
++    auto immutableGlyph = Immutable<Glyph>(makeMutable<Glyph>(std::move(glyph)));
++    GlyphMap glyphs = {{FontStackHasher()(fontStack), {{u'A', std::move(immutableGlyph)}}}};
++    GlyphPositions glyphPositions = {{FontStackHasher()(fontStack), {{u'A', std::move(glyphPosition)}}}};
++    ImagePositions imagePositions;
++
++    TaggedString string(u"AA", sectionOptions);
++    return getShaping(string,
++                      5 * ONE_EM,
++                      ONE_EM, // lineHeight
++                      anchor,
++                      style::TextJustifyType::Center,
++                      0,              // spacing
++                      {{0.0f, 0.0f}}, // translate
++                      WritingModeType::Horizontal,
++                      bidi,
++                      glyphs,
++                      glyphPositions,
++                      imagePositions,
++                      16.0f, // layoutTextSize
++                      16.0f, // layoutTextSizeAtBucketZoomLevel
++                      /*allowVerticalPlacement*/ false);
++}
++
++} // namespace
++
++TEST(Shaping, CentreAnchorCentresInk) {
++    // Ink rising 17 units above the baseline, 17 tall: symmetric about the
++    // baseline only by coincidence of the old constant, so a naive
++    // implementation can pass this one by accident.
++    {
++        const auto shaping = shapeOneLine(style::SymbolAnchorType::Center, inkGlyph(17, 17));
++        const auto [top, bottom] = inkExtent(shaping);
++        EXPECT_NEAR(top + bottom, 0.0f, 0.01f) << "ink not centred on the anchor";
++        EXPECT_NEAR(bottom - top, 17.0f, 0.01f) << "ink height changed";
++    }
++
++    // The asymmetric case, which is the one that actually catches the bug: ink
++    // that is neither the old constant's height nor symmetric about it.
++    {
++        const auto shaping = shapeOneLine(style::SymbolAnchorType::Center, inkGlyph(11, 11));
++        const auto [top, bottom] = inkExtent(shaping);
++        EXPECT_NEAR(top + bottom, 0.0f, 0.01f) << "ink not centred on the anchor";
++        EXPECT_NEAR(top, -5.5f, 0.01f);
++        EXPECT_NEAR(bottom, 5.5f, 0.01f);
++    }
++
++    // A tall glyph, to show the centring tracks the ink rather than a constant.
++    {
++        const auto shaping = shapeOneLine(style::SymbolAnchorType::Center, inkGlyph(22, 30));
++        const auto [top, bottom] = inkExtent(shaping);
++        EXPECT_NEAR(top + bottom, 0.0f, 0.01f) << "ink not centred on the anchor";
++        EXPECT_NEAR(bottom - top, 30.0f, 0.01f);
++    }
++}
++
++TEST(Shaping, CentreAnchorLeavesBoxSymmetric) {
++    // The collision box is built from top/bottom (collision_feature.cpp) and is
++    // symmetric about the anchor. Centring the ink must bring the ink INTO that
++    // box's centre, not move the box — shifting both would leave them disagreeing
++    // exactly as before.
++    const auto shaping = shapeOneLine(style::SymbolAnchorType::Center, inkGlyph(11, 11));
++    EXPECT_NEAR(shaping.top + shaping.bottom, 0.0f, 0.01f) << "box no longer centred on the anchor";
++    EXPECT_NEAR(shaping.top, -ONE_EM / 2.0f, 0.01f);
++}
++
++TEST(Shaping, EdgeAnchorsAreNotRecentred) {
++    // Top/bottom anchors mean "align this edge", so they keep the existing code
++    // path. Assert their stock values exactly, as a guard that the re-centring
++    // does not leak into them.
++    //
++    // Those stock values are themselves skewed by the same -17 constant: with ink
++    // rising 11 above the baseline, `text-anchor: top` ought to hang the text
++    // BELOW the anchor (roughly 0..+11) and instead puts it at -16..-5. Fixing
++    // edge anchors too would move every top/bottom-anchored label in every style,
++    // so it is deliberately left out of this change.
++    //
++    // shiftY = (-verticalAlign * lineCount + 0.5) * lineHeight, with the baseline
++    // starting at Shaping::yOffset: top -> +12, bottom -> -12.
++    const auto top = shapeOneLine(style::SymbolAnchorType::Top, inkGlyph(11, 11));
++    const auto bottom = shapeOneLine(style::SymbolAnchorType::Bottom, inkGlyph(11, 11));
++
++    EXPECT_NEAR(inkExtent(top).first, -16.0f, 0.01f);
++    EXPECT_NEAR(inkExtent(bottom).first, -40.0f, 0.01f);
++}

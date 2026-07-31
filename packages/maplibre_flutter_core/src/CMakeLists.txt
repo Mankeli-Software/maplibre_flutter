@@ -721,6 +721,13 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   add_executable(proj_probe proj_probe.cpp)
   target_link_libraries(proj_probe PRIVATE maplibre_flutter_core)
 
+  # Text centring: asserts patches/text-centre-anchor-on-ink.patch against mbgl's
+  # shaping directly — no map, no GPU, no fonts. Needs mbgl's private headers
+  # (src/mbgl/text/shaping.hpp), which are not part of the public include set.
+  add_executable(shaping_probe shaping_probe.cpp)
+  target_link_libraries(shaping_probe PRIVATE maplibre_flutter_core mbgl-core)
+  target_include_directories(shaping_probe PRIVATE "${MLN_ROOT}/src" "${MLN_ROOT}/include")
+
   # Renders a model at four points around a circular path, to check its facing
   # against its direction of travel.
   add_executable(drive_probe drive_probe.cpp)
