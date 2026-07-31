@@ -117,9 +117,23 @@ void main(List<String> args) async {
     // The hooks runner caches build outputs keyed on the hook + config, not the
     // native sources; declare them so edits to the shim or CMake config trigger
     // a rebuild. (mbgl-core itself is pinned by the submodule revision.)
+    //
+    // Anything omitted here is silently stale: the build reports success and
+    // reuses the previous dylib, so the edit appears not to work. The model /
+    // glTF sources and the patches were both missing for exactly that reason —
+    // and a patch is doubly deceptive, because even a forced rebuild skips one
+    // whose marker is already in the tree, so a patch edit also needs
+    // `git -C third_party/maplibre-native checkout -- .` to take effect.
     output.dependencies.addAll([
       src.resolve('maplibre_flutter_core.cpp'),
       src.resolve('maplibre_flutter_core.h'),
+      // Compiled into EVERY arm by src/CMakeLists.txt (_shim_sources), not just
+      // the Metal one — the 3D model layer and its .glb reader are
+      // backend-agnostic.
+      src.resolve('maplibre_flutter_core_model.cpp'),
+      src.resolve('maplibre_flutter_core_model.hpp'),
+      src.resolve('maplibre_flutter_core_gltf.cpp'),
+      src.resolve('maplibre_flutter_core_gltf.hpp'),
       src.resolve('maplibre_flutter_core_metal.h'),
       src.resolve('maplibre_flutter_core_metal.mm'),
       src.resolve('maplibre_flutter_core_sim_stubs.mm'),
@@ -133,16 +147,19 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core_android_present.h'),
       src.resolve('maplibre_flutter_core_android_present.cpp'),
       src.resolve('CMakeLists.txt'),
+      // Derived from the same list the applier walks, so a new patch cannot be
+      // added without becoming a build input.
+      for (final p in _submodulePatches) packageRoot.resolve(p.patch),
     ]);
   });
 }
 
-/// Applies our committed patches to the vendored mbgl-native submodule.
+/// The patches applied to the vendored mbgl-native submodule, in the order they
+/// must be applied — order is load-bearing, see the sampler-repeat entry.
 ///
-/// Idempotent: each patch is skipped when its marker string is already present
-/// (so re-builds and a dev's already-patched tree are no-ops). Fails loudly if a
-/// patch is missing or cannot be applied, so a source build never silently
-/// produces a core without the fix.
+/// Top-level so `output.dependencies` can be derived from it: a patch that is
+/// not a declared build input can be edited without triggering a rebuild, and
+/// the change then silently never reaches the dylib.
 ///
 /// `windows-dns-os-resolve.patch`: curl's asynchronous DNS resolvers do not work
 /// under our libuv-driven curl multi-socket loop on Windows (the threaded
@@ -150,117 +167,129 @@ void main(List<String> args) async {
 /// nameservers), so tile/style requests never resolve and the map stays blank.
 /// The patch resolves through the OS resolver and pre-seeds curl's address cache
 /// via CURLOPT_RESOLVE (Windows-only `#ifdef`, a no-op on other platforms).
+const _submodulePatches = [
+  (
+    file: 'platform/default/src/mbgl/storage/http_file_source.cpp',
+    marker: 'resolveHostViaOS',
+    patch: 'patches/windows-dns-os-resolve.patch',
+  ),
+  // Centre-anchored text is centred on its actual ink, not on Shaping::yOffset.
+  //
+  // mbgl positions text vertically from a hardcoded constant — `Shaping::yOffset
+  // = -17` (of ONE_EM = 24), whose own declaration says "The y offset *should*
+  // be part of the font metadata". It stands in for the font's baseline metrics,
+  // so any font whose real metrics differ renders centre-anchored text
+  // off-centre. maplibre-gl-js carries the identical constant
+  // (SHAPING_DEFAULT_OFFSET in src/symbol/shaping.ts), so this is upstream
+  // behaviour, not a native-tier divergence.
+  //
+  // It is most visible on line-placed labels, which should straddle the line but
+  // sit above it. Measured with Liberation Sans NLSFI at text-size 15: the ink
+  // spanned -9.80..+1.74 px across the line (4.0 px high) at every one of 24
+  // orientations; with this patch it spans -5.75..+5.73 px, centred to within
+  // 0.25 px. See carta-polaris/flutter-poc/lib/dev/line_anchor_probe.dart.
+  //
+  // The glyphs already carry what is needed: the quad builder places each at
+  // `y - metrics.top * scale` spanning `metrics.height * scale`, so align() can
+  // measure the shaped ink and centre that instead. Only centre anchors are
+  // touched — top/bottom anchors mean "align this edge" and were already right.
+  (
+    file: 'src/mbgl/text/shaping.cpp',
+    marker: 'MBL_TEXT_CENTRE_ON_INK',
+    patch: 'patches/text-centre-anchor-on-ink.patch',
+  ),
+  // Windows Vulkan zero-copy: enable the D3D11<->Vulkan external-memory extensions
+  // (and the instance Properties2 extension for the device-LUID query) so the
+  // Vulkan->D3D11 shared-texture present can import mbgl's rendered image. The added
+  // device extensions are enabled-if-available (never required for device selection),
+  // and the code is #ifdef _WIN32-guarded + only compiled under the Vulkan backend, so
+  // this is inert on the macOS (Metal) and Linux (GL) tiers.
+  (
+    file: 'src/mbgl/vulkan/renderer_backend.cpp',
+    marker: 'MBL_WIN32_EXTERNAL_MEMORY',
+    patch: 'patches/windows-vulkan-external-memory.patch',
+  ),
+  // Metal: make 3D custom-drawable geometry actually depth-test. mtl::Drawable
+  // deliberately skips setting its own depth/stencil state when is3D ("handled
+  // by the layer group", drawable.cpp:244) — but mtl::TileLayerGroup only
+  // computed features3d INSIDE `if (stencilTiles && !empty())`. A layer group
+  // with no stencil tiles (which is every CustomDrawableLayer) therefore left
+  // features3d false and set no depth state at all, so 3D geometry fell back to
+  // painter's order: models did not occlude behind fill-extrusion buildings and
+  // did not even self-occlude (a mesh's back faces painted over its front ones).
+  // The patch hoists the scan out of that guard; stencil3d stays gated on
+  // stencil tiles, so tiled layers are unaffected. Metal-only: the GL
+  // (drawable_gl.cpp:46) and Vulkan (drawable.cpp:274) drawables already honour
+  // is3D themselves, so Linux/Android/Windows never had this bug.
+  (
+    file: 'src/mbgl/mtl/tile_layer_group.cpp',
+    marker: 'MBL_CUSTOM_3D_DEPTH',
+    patch: 'patches/metal-custom-drawable-3d-depth.patch',
+  ),
+  // Directional lighting for custom geometry, across all four backends.
+  //
+  // mbgl's CustomGeometryShader is texture x tint with no normals, so 3D models
+  // render completely flat — the single biggest thing between a model and
+  // looking placed in the scene. This adds a NORMAL vertex attribute and a light
+  // vec4 to the drawable UBO, plus a half-lambert term in the shader.
+  //
+  // The light is in the drawable's own MODEL space rather than world space, so
+  // no normal matrix is needed and callers rotate the world light by the model's
+  // yaw — which is what keeps a turning model consistently lit. Alpha is left
+  // untouched so blended parts stay blended.
+  //
+  // Touches shader_defines, the shared UBO, all four backend shaders and their
+  // attribute tables, plus Interface::GeometryVertex and the attribute wiring.
+  // VERIFIED ON METAL ONLY; the GL, Vulkan and WebGPU edits are mechanical
+  // mirrors and unverified on hardware.
+  (
+    file: 'include/mbgl/shaders/custom_geometry_ubo.hpp',
+    marker: 'MBL_CUSTOM_GEOMETRY_LIGHTING',
+    patch: 'patches/custom-geometry-lighting.patch',
+  ),
+  // Metal: let custom-geometry textures honour REPEAT wrapping. The Metal
+  // CustomGeometryShader declares `constexpr sampler` INSIDE the shader, and a
+  // Metal constexpr sampler defaults to address::clamp_to_edge, so it ignores
+  // the wrap state mbgl sets on the Texture2D. The GL and Vulkan variants
+  // sample through a sampler2D whose wrap mbgl does control, so only Metal was
+  // affected. glTF defaults to REPEAT and real models tile (the Khronos
+  // BoxTextured sample spans u=[0,6], one unit per face), so clamping collapsed
+  // them to a single edge colour that reads as "the texture never bound".
+  // Switching to address::repeat is safe: UVs inside [0,1] never sample outside
+  // the texture, so clamp and repeat are indistinguishable for them.
+  //
+  // MUST COME AFTER the lighting patch, and is then normally a no-op: the
+  // lighting patch was generated from a working tree that already had this
+  // applied, so it carries this change (and this marker) with it. In the other
+  // order neither patch applies to a fresh tree and a source build fails —
+  // which it did, invisibly, on any machine whose submodule had been patched
+  // incrementally in the historical order. Kept as its own entry so the
+  // rationale above stays with the change, and so it still applies if the
+  // lighting patch is ever regenerated without it.
+  (
+    file: 'include/mbgl/shaders/mtl/custom_geometry.hpp',
+    marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
+    patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
+  ),
+];
+
+/// Applies [_submodulePatches] to the vendored mbgl-native submodule.
+///
+/// Idempotent: each patch is skipped when its marker string is already present
+/// (so re-builds and a dev's already-patched tree are no-ops). Fails loudly if a
+/// patch is missing or cannot be applied, so a source build never silently
+/// produces a core without the fix.
+///
+/// The marker skip has a consequence worth knowing before editing any patch:
+/// against an already-patched tree the edit is skipped, so the old change stays.
+/// Reset the submodule (`git -C third_party/maplibre-native checkout -- .`)
+/// before rebuilding, or the fix appears not to work.
 Future<void> _applySubmodulePatches(
   Uri packageRoot,
   Directory submodule,
   Logger logger,
 ) async {
-  const patches = [
-    (
-      file: 'platform/default/src/mbgl/storage/http_file_source.cpp',
-      marker: 'resolveHostViaOS',
-      patch: 'patches/windows-dns-os-resolve.patch',
-    ),
-    // Centre-anchored text is centred on its actual ink, not on Shaping::yOffset.
-    //
-    // mbgl positions text vertically from a hardcoded constant — `Shaping::yOffset
-    // = -17` (of ONE_EM = 24), whose own declaration says "The y offset *should*
-    // be part of the font metadata". It stands in for the font's baseline metrics,
-    // so any font whose real metrics differ renders centre-anchored text
-    // off-centre. maplibre-gl-js carries the identical constant
-    // (SHAPING_DEFAULT_OFFSET in src/symbol/shaping.ts), so this is upstream
-    // behaviour, not a native-tier divergence.
-    //
-    // It is most visible on line-placed labels, which should straddle the line but
-    // sit above it. Measured with Liberation Sans NLSFI at text-size 15: the ink
-    // spanned -9.80..+1.74 px across the line (4.0 px high) at every one of 24
-    // orientations; with this patch it spans -5.75..+5.73 px, centred to within
-    // 0.25 px. See carta-polaris/flutter-poc/lib/dev/line_anchor_probe.dart.
-    //
-    // The glyphs already carry what is needed: the quad builder places each at
-    // `y - metrics.top * scale` spanning `metrics.height * scale`, so align() can
-    // measure the shaped ink and centre that instead. Only centre anchors are
-    // touched — top/bottom anchors mean "align this edge" and were already right.
-    (
-      file: 'src/mbgl/text/shaping.cpp',
-      marker: 'MBL_TEXT_CENTRE_ON_INK',
-      patch: 'patches/text-centre-anchor-on-ink.patch',
-    ),
-    // Windows Vulkan zero-copy: enable the D3D11<->Vulkan external-memory extensions
-    // (and the instance Properties2 extension for the device-LUID query) so the
-    // Vulkan->D3D11 shared-texture present can import mbgl's rendered image. The added
-    // device extensions are enabled-if-available (never required for device selection),
-    // and the code is #ifdef _WIN32-guarded + only compiled under the Vulkan backend, so
-    // this is inert on the macOS (Metal) and Linux (GL) tiers.
-    (
-      file: 'src/mbgl/vulkan/renderer_backend.cpp',
-      marker: 'MBL_WIN32_EXTERNAL_MEMORY',
-      patch: 'patches/windows-vulkan-external-memory.patch',
-    ),
-    // Metal: make 3D custom-drawable geometry actually depth-test. mtl::Drawable
-    // deliberately skips setting its own depth/stencil state when is3D ("handled
-    // by the layer group", drawable.cpp:244) — but mtl::TileLayerGroup only
-    // computed features3d INSIDE `if (stencilTiles && !empty())`. A layer group
-    // with no stencil tiles (which is every CustomDrawableLayer) therefore left
-    // features3d false and set no depth state at all, so 3D geometry fell back to
-    // painter's order: models did not occlude behind fill-extrusion buildings and
-    // did not even self-occlude (a mesh's back faces painted over its front ones).
-    // The patch hoists the scan out of that guard; stencil3d stays gated on
-    // stencil tiles, so tiled layers are unaffected. Metal-only: the GL
-    // (drawable_gl.cpp:46) and Vulkan (drawable.cpp:274) drawables already honour
-    // is3D themselves, so Linux/Android/Windows never had this bug.
-    (
-      file: 'src/mbgl/mtl/tile_layer_group.cpp',
-      marker: 'MBL_CUSTOM_3D_DEPTH',
-      patch: 'patches/metal-custom-drawable-3d-depth.patch',
-    ),
-    // Directional lighting for custom geometry, across all four backends.
-    //
-    // mbgl's CustomGeometryShader is texture x tint with no normals, so 3D models
-    // render completely flat — the single biggest thing between a model and
-    // looking placed in the scene. This adds a NORMAL vertex attribute and a light
-    // vec4 to the drawable UBO, plus a half-lambert term in the shader.
-    //
-    // The light is in the drawable's own MODEL space rather than world space, so
-    // no normal matrix is needed and callers rotate the world light by the model's
-    // yaw — which is what keeps a turning model consistently lit. Alpha is left
-    // untouched so blended parts stay blended.
-    //
-    // Touches shader_defines, the shared UBO, all four backend shaders and their
-    // attribute tables, plus Interface::GeometryVertex and the attribute wiring.
-    // VERIFIED ON METAL ONLY; the GL, Vulkan and WebGPU edits are mechanical
-    // mirrors and unverified on hardware.
-    (
-      file: 'include/mbgl/shaders/custom_geometry_ubo.hpp',
-      marker: 'MBL_CUSTOM_GEOMETRY_LIGHTING',
-      patch: 'patches/custom-geometry-lighting.patch',
-    ),
-    // Metal: let custom-geometry textures honour REPEAT wrapping. The Metal
-    // CustomGeometryShader declares `constexpr sampler` INSIDE the shader, and a
-    // Metal constexpr sampler defaults to address::clamp_to_edge, so it ignores
-    // the wrap state mbgl sets on the Texture2D. The GL and Vulkan variants
-    // sample through a sampler2D whose wrap mbgl does control, so only Metal was
-    // affected. glTF defaults to REPEAT and real models tile (the Khronos
-    // BoxTextured sample spans u=[0,6], one unit per face), so clamping collapsed
-    // them to a single edge colour that reads as "the texture never bound".
-    // Switching to address::repeat is safe: UVs inside [0,1] never sample outside
-    // the texture, so clamp and repeat are indistinguishable for them.
-    //
-    // MUST COME AFTER the lighting patch, and is then normally a no-op: the
-    // lighting patch was generated from a working tree that already had this
-    // applied, so it carries this change (and this marker) with it. In the other
-    // order neither patch applies to a fresh tree and a source build fails —
-    // which it did, invisibly, on any machine whose submodule had been patched
-    // incrementally in the historical order. Kept as its own entry so the
-    // rationale above stays with the change, and so it still applies if the
-    // lighting patch is ever regenerated without it.
-    (
-      file: 'include/mbgl/shaders/mtl/custom_geometry.hpp',
-      marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
-      patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
-    ),
-  ];
-  for (final p in patches) {
+  for (final p in _submodulePatches) {
     final target = File.fromUri(submodule.uri.resolve(p.file));
     if (target.existsSync() && target.readAsStringSync().contains(p.marker)) {
       continue; // already applied
