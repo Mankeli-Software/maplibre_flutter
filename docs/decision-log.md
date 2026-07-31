@@ -1598,4 +1598,111 @@ Finnish nautical chart). Its swept-depth labels use `symbol-placement: line-cent
   the measurement can self-test: if a fitted angle is not a multiple of 15, the tool refuses to
   report a verdict. Build the self-check before trusting the measurement.
 
+## 2026-07-31 — Cross-platform parity push: verification floor first, then iOS, then the GL tiers
+
+Bringing Android, iOS, Windows, Linux and Web to parity with macOS, and adding the missing
+rotate/tilt gesture. The audit that opened this work measured the gap from source rather than
+from `FEATURE_MATRIX.md`, and the docs turned out to be wrong in **both** directions.
+
+### The capability gap was smaller than documented, and iOS was the cheapest tier, not the dearest
+
+`MapLibreModelHost` was the **only** missing capability on the four non-macOS native tiers.
+Projector, camera tick, style layers, transitions and queries were all genuinely written — just
+unrun. And the continuation doc's recommended order of attack ("Linux (GL) first, the patch edits
+are smallest there") was backwards: `src/CMakeLists.txt` puts the model and glTF sources in
+`_shim_sources` before any platform branch, `hook/build.dart` applies every patch with no OS gate,
+and **iOS runs the same Metal backend as macOS** — so the two patches the docs called "macOS-only"
+already applied to it and 3D on iOS was pure Dart forwarding. iOS is also the one non-macOS tier
+that can be verified today, on an Apple-Silicon Simulator.
+
+### Four defects that made the verification loop unable to report anything
+
+Fixed before any parity work, because each would have let a blind port ship "verified":
+
+1. **`melos run test` was red**, and `failFast` cancelled the three other test-bearing packages —
+   so CI's regen-diff gates, which run after it, could never have fired. Root cause was a **live
+   touch bug**, not a stale test: two anchor fixes collided (55ee9d4 froze the pinch anchor for
+   the Windows/Linux focal drift; 1963302 then made it follow the cursor for the GTK offset), and
+   since a real pinch always produces pointer moves, the frozen anchor became dead code on every
+   path. On a touchscreen there is no cursor at all, so the anchor alternated between the two
+   fingers. Gated on `_inTrackpadPanZoom || _pointers.length <= 1` — both halves load-bearing,
+   because they disagree exactly where it matters and agree on macOS, the only tier we can run.
+2. **The native harness did not compile** (`proj_probe`/`model_harness` called the projection C ABI
+   with the pre-`generation` arity), so every "verify with the harness" plan was dead on arrival.
+3. **3D models aborted the process at exit** — SIGABRT, *after* printing ALL CHECKS PASSED.
+   Uploaded textures hung off the **global** mesh cache, outlived every map, and were released at
+   static-destruction time with the gfx context already gone. Split it: the parsed mesh stays
+   global (the expensive part), the textures moved to `MblMap::gpuByPath` and are released on the
+   render thread inside a `BackendScope`. This was a real crash-on-exit for any app drawing a
+   model, plus a latent cross-context sharing bug with two map widgets.
+4. **`hook/build.dart` did not declare the model/glTF sources or `patches/`** as build inputs, so
+   editing any of them silently reused the previous dylib. Compounded by the marker check, which
+   skips a patch already present — a patch edit also needs a submodule reset.
+
+### The GL attribute-order bug — three auditors, one line, every model wrong
+
+`ShaderProgramGL::create` indexes the attribute table **by GL attribute location**
+(`assert(attributesInfo[location].name == name)`). The lighting patch inserted `a_normal` at vector
+index 1 while the shader declares `location 1 = a_uv, 2 = a_normal`, so texcoords fed `a_normal`
+and normals fed `a_uv` on every GL model draw — Linux, Android **and** the future web-WASM arm.
+Debug aborts on the assert; Release renders garbage silently. Not "an unverified mirror of the
+Metal edit" as the patch header claimed: wrong, and it would have shipped.
+
+Also guarded `normalize(vec3(0))` in all four backend shaders. `GeometryVertex::normal` defaults to
+`{0,0,0}` and its comment claimed "Zero is legal and yields flat ambient shading" — untrue by
+construction; Metal survives only because MSL `saturate` collapses NaN to 0, and GLSL's
+`clamp(NaN,0,1)` is undefined. `mblMakeTestPyramid` never set normals, so the one mesh every
+harness draws was exactly the degenerate case.
+
+### GL 3D stencil: evaluated, deliberately NOT patched
+
+Same *shape* as `metal-custom-drawable-3d-depth.patch`. `gl/drawable_gl.cpp` skips stencil when
+`is3D` ("handled by the layer group"), but `gl/layer_group_gl.cpp` computes `features3d`/`stencil3d`
+only **inside** `if (stencilTiles && !stencilTiles->empty())` — and a `CustomDrawableLayer` never
+has stencil tiles. So a 3D custom drawable on GL inherits whatever stencil state the previous draw
+left, rather than a defined one. Vulkan does not have this: `vulkan/drawable.cpp` handles `is3D`
+itself via `parameters.stencilModeFor3D()`.
+
+Not patched, for two reasons. The consequence depends on the leftover state — if it is
+`disabled()` the model draws correctly, so the model may well render fine without any change; and
+stacking a second speculative patch on top of the attribute-order fix would make neither
+diagnosable. **Decide it with a GL run** (Mesa/llvmpipe via `docker/run-render-test.sh`), which
+could not be done here because docker was not available on the authoring machine.
+
+### Duplication over abstraction for the model host, on purpose
+
+The review asked for a shared mixin instead of four copies. Neither candidate home works:
+`maplibre_flutter_core` is pure Dart and the repaint pump needs a Flutter `Ticker` — adding Flutter
+there would also break `melos run test:native`, whose package filter is `flutter: false` — while
+the platform interface has no dependency on core and would have to restate the core's entire model
+API to express the mixin's requirements. Four copies of ~70 lines of pass-through, held together by
+one conformance suite that runs the same assertions against every tier, is the better trade. **The
+suite is what makes the duplication safe**, and flipping a tier's `models: true` is what proves its
+port landed rather than merely compiled.
+
+### The device-free floor, and what it caught immediately
+
+CLAUDE.md §7 layer 2 ("each platform wrapper with its generated bindings mocked") existed only as a
+sentence — implemented zero times for zero platforms, macOS included. Every fake in the repo
+implemented the *platform interface*, one level above the FFI wrapper. Added `RecordingCoreMap`
+(`maplibre_flutter_core/lib/testing.dart`, pure Dart) plus a `forTesting` constructor per
+controller, and one conformance suite in `maplibre_flutter` — the only package depending on all
+five platform packages, which is also why it is one suite and not five.
+
+On its first run it found that **`setStyle` had no dispose guard on any of the five**, unlike every
+other forward; the core throws `StateError` once disposed and the widget pushes its declarative
+`style` prop from `didUpdateWidget`, which can land during teardown. It also confirmed the
+first-frame `notifyCameraChanged()` was **macOS-only**, which meant `MapLibreMap(markers:)` rendered
+nothing at all on the other four tiers until something else moved the camera — invisible after the
+first pan, and invisible in all three integration tests, which move the camera as their first act.
+
+**LESSON (§11 again):** three of the guards written for this push were wrong on the first attempt,
+and every time the *instrument* was wrong, not the code under test. The `visible`-at-pitch guard
+assumed points behind a pitched camera lie to the north (web mercator is a flat plane — they lie
+south, behind the tilted viewer); the model-harness palette check asserted all four pyramid faces
+in one frame (at most two faces of a pyramid are ever visible); and its colour classifier read
+RGBA when `mbl_map_copy_frame` emits **BGRA**, which silently matched only green, the one target
+symmetric under an R/B swap. Verify the instrument against a known-good and a known-bad case
+before trusting its verdict.
+
 _Append new decisions here with date and rationale._
