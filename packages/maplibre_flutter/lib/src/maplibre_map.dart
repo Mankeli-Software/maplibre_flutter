@@ -33,6 +33,8 @@ class MapLibreMap extends StatefulWidget {
     this.markers = const <MapLibreMarker>[],
     this.models = const <MapLibreModel>[],
     this.onTap,
+    this.rotateGesturesEnabled = true,
+    this.tiltGesturesEnabled = true,
   });
 
   /// MapLibre style document: a URL, asset path, or inline JSON.
@@ -67,6 +69,23 @@ class MapLibreMap extends StatefulWidget {
   /// Called when the map (not a marker) is tapped, with the geographic point
   /// under the tap. Only fires on tiers that can project coordinates.
   final ValueChanged<LatLng>? onTap;
+
+  /// Whether the user can turn the map — a two-finger twist, or a
+  /// secondary-button / ctrl drag with a mouse.
+  ///
+  /// A widget prop rather than a [MapOptions] field, per the three-bucket rule:
+  /// this is mutable, declarative and low-frequency. [MapOptions] is init-only
+  /// and is handed to `createMap`, so it never reaches the gesture layer, which
+  /// lives entirely in the widget.
+  ///
+  /// Has no effect on tiers whose renderer handles its own gestures.
+  final bool rotateGesturesEnabled;
+
+  /// Whether the user can tilt the map — a two-finger vertical "shove", or the
+  /// vertical component of a secondary-button / ctrl drag.
+  ///
+  /// The engine clamps pitch to 0..60 degrees.
+  final bool tiltGesturesEnabled;
 
   /// Optional externally-owned controller for driving the map imperatively.
   ///
@@ -206,6 +225,8 @@ class _MapLibreMapState extends State<MapLibreMap> {
           controller: _controller,
           markers: widget.markers,
           onTap: widget.onTap,
+          rotateGesturesEnabled: widget.rotateGesturesEnabled,
+          tiltGesturesEnabled: widget.tiltGesturesEnabled,
         );
       },
     );
@@ -219,11 +240,15 @@ class _MapEmbed extends StatelessWidget {
     required this.controller,
     this.markers = const <MapLibreMarker>[],
     this.onTap,
+    this.rotateGesturesEnabled = true,
+    this.tiltGesturesEnabled = true,
   });
 
   final MapLibreMapController controller;
   final List<MapLibreMarker> markers;
   final ValueChanged<LatLng>? onTap;
+  final bool rotateGesturesEnabled;
+  final bool tiltGesturesEnabled;
 
   @override
   Widget build(BuildContext context) {
@@ -231,7 +256,12 @@ class _MapEmbed extends StatelessWidget {
     Widget map;
     switch (handle) {
       case TextureHandle(:final textureId):
-        map = _TextureMapView(controller: controller, textureId: textureId);
+        map = _TextureMapView(
+          controller: controller,
+          textureId: textureId,
+          rotateGesturesEnabled: rotateGesturesEnabled,
+          tiltGesturesEnabled: tiltGesturesEnabled,
+        );
       case PlatformViewHandle():
         map = _PlatformView(handle: handle);
       case ElementViewHandle(:final viewType):
@@ -288,10 +318,17 @@ class _MapEmbed extends StatelessWidget {
 /// settles. Because the widget itself decides when to resize, it always knows the
 /// frozen frame's size ([_committedSize]) — no produced-size feedback needed.
 class _TextureMapView extends StatefulWidget {
-  const _TextureMapView({required this.controller, required this.textureId});
+  const _TextureMapView({
+    required this.controller,
+    required this.textureId,
+    this.rotateGesturesEnabled = true,
+    this.tiltGesturesEnabled = true,
+  });
 
   final MapLibreMapController controller;
   final int textureId;
+  final bool rotateGesturesEnabled;
+  final bool tiltGesturesEnabled;
 
   @override
   State<_TextureMapView> createState() => _TextureMapViewState();
@@ -368,7 +405,15 @@ class _TextureMapViewState extends State<_TextureMapView> {
         }
 
         if (widget.controller.gestureHandler case final gestures?) {
-          map = _DesktopMapGestures(handler: gestures, child: map);
+          map = _DesktopMapGestures(
+            handler: gestures,
+            // Null on a tier without the capability, which simply means no
+            // rotate or tilt — pan and zoom are unaffected.
+            rotator: widget.controller.rotateHandler,
+            rotateEnabled: widget.rotateGesturesEnabled,
+            tiltEnabled: widget.tiltGesturesEnabled,
+            child: map,
+          );
         }
         return map;
       },
@@ -464,10 +509,29 @@ class _UnimplementedEmbed extends StatelessWidget {
 /// moves on a [MapLibreGestureHandler]: drag (or trackpad) pans, pinch or the
 /// scroll wheel zooms about the pointer. The desktop tier handles gestures in
 /// Dart so every desktop platform shares this behaviour (CLAUDE.md §3).
+/// What a single gesture has committed to doing.
+///
+/// Latched on the first threshold crossing and held until the gesture ends, so
+/// the recognizers cannot bleed into one another.
+/// `none` doubles as "pan/zoom", which is the default behaviour: it is NOT
+/// latched, so rotate and shove stay able to take over the moment they cross
+/// their thresholds. Latching a pan mode on the first update — when rotation is
+/// necessarily still ~0 — makes rotation permanently unreachable.
+enum _GestureMode { none, rotate, shove }
+
 class _DesktopMapGestures extends StatefulWidget {
-  const _DesktopMapGestures({required this.handler, required this.child});
+  const _DesktopMapGestures({
+    required this.handler,
+    required this.child,
+    this.rotator,
+    this.rotateEnabled = true,
+    this.tiltEnabled = true,
+  });
 
   final MapLibreGestureHandler handler;
+  final MapLibreRotateHandler? rotator;
+  final bool rotateEnabled;
+  final bool tiltEnabled;
   final Widget child;
 
   @override
@@ -478,6 +542,52 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     with SingleTickerProviderStateMixin {
   Offset _lastFocalPoint = Offset.zero;
   double _lastScale = 1;
+
+  // Which interaction this gesture has committed to, latched on the first
+  // threshold crossing and held until the gesture ends.
+  //
+  // Without a latch the recognizers bleed into each other: a twist drags the
+  // map with it, and a shove both zooms and turns. The MapLibre Android SDK
+  // does the same — its shove is mutually exclusive with scale AND rotate, and
+  // it disables the move gesture outright while shoving
+  // (MapGestureDetector.java).
+  _GestureMode _mode = _GestureMode.none;
+
+  // ScaleUpdateDetails.rotation is CUMULATIVE radians since the gesture began,
+  // not a per-frame delta — applying it directly would spin the map by an
+  // ever-growing amount every frame.
+  //
+  // Worse, it arrives WRAPPED. Flutter derives it from atan2 differences, so a
+  // geometric 4.6-degree twist can be reported as -6.203 rad — the same angle
+  // the other way round. Comparing that raw value against a deadzone means the
+  // deadzone is exceeded on the very first update of any two-finger gesture, so
+  // a pinch would immediately latch to rotate; measured, not assumed, from an
+  // instrumented run. Hence: unwrap each frame's delta into (-pi, pi] and keep
+  // our own running total to threshold against.
+  double _lastRawRotation = 0;
+  double _rotationAccum = 0;
+  Offset _rotateAnchor = Offset.zero;
+
+  /// Wraps [radians] into (-pi, pi].
+  static double _normalizeAngle(double radians) {
+    const twoPi = 2 * math.pi;
+    var x = radians % twoPi;
+    if (x > math.pi) x -= twoPi;
+    if (x <= -math.pi) x += twoPi;
+    return x;
+  }
+
+  // Where each pointer was when the shove detector last sampled, so the
+  // per-finger dy can be measured. ScaleUpdateDetails carries only a focal
+  // point, a scale and a rotation — no per-pointer positions — which is why a
+  // shove cannot be recognised from it at all (see [_maybeShove]).
+  final Map<int, Offset> _shoveOrigin = <int, Offset>{};
+
+  // Secondary-button / ctrl drag: the mouse path to rotate and tilt, since a
+  // mouse can neither twist nor shove. Without it, rotation is unreachable on
+  // Windows, Linux and macOS-with-a-mouse.
+  int? _dragRotatePointer;
+  Offset _dragRotateLast = Offset.zero;
 
   // Anchor a pinch zooms about. Tracks the focal point while the gesture is only
   // panning, then FREEZES at pinch onset and stays put for the rest of the zoom.
@@ -594,6 +704,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // path handles it and the global route stays out (so there is no double-handling).
   bool _blockedPanZoom = false;
   double _blockedLastScale = 1;
+  double _blockedLastRotation = 0;
+  double _blockedRotationAccum = 0;
   Offset _blockedAnchor = Offset.zero;
   // The true cursor position (global coords), tracked from every hover/move via the
   // global route. Linux's GTK embedder can report a STALE position on trackpad
@@ -617,6 +729,29 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // pointer — both already track 1:1 and must stay so.
   static const double _kLinuxTrackpadPanGain = 0.25;
 
+  // Twist must exceed this before it latches. The MapLibre Android SDK uses 3
+  // degrees, but backs it with a speed-adaptive second gate we are not porting;
+  // at 3 degrees alone an ordinary pinch visibly jitters the bearing, so this is
+  // deliberately coarser.
+  static const double _kRotateDeadzoneDegrees = 8;
+
+  // Degrees of tilt per logical pixel of two-finger vertical travel. The SDK's
+  // SHOVE_PIXEL_CHANGE_FACTOR.
+  static const double _kShoveDegreesPerPixel = 0.1;
+
+  // A shove is two fingers moving vertically TOGETHER. Each must travel at
+  // least this far, in the same direction, staying near-vertical, while the
+  // scale and rotation stay inside their own deadzones.
+  static const double _kShoveMinTravel = 12;
+  static const double _kShoveMaxHorizontalRatio =
+      0.36; // ~20 degrees off vertical
+
+  // Mouse drag-rotate sensitivity. Starting points for the native-feel A/B
+  // against the SDKs; horizontal drives bearing, vertical drives pitch, as in
+  // maplibre-gl-js's DragRotateHandler.
+  static const double _kDragRotateDegreesPerPixel = 0.8;
+  static const double _kDragPitchDegreesPerPixel = 0.5;
+
   double get _panGain =>
       (_inTrackpadPanZoom && defaultTargetPlatform == TargetPlatform.linux)
       ? _kLinuxTrackpadPanGain
@@ -634,13 +769,123 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     _lastMoveUs = _clock.elapsedMicroseconds;
     _gestureHadScale = false;
     _zoomAnchor = details.localFocalPoint;
+    _mode = _GestureMode.none;
+    _lastRawRotation = 0;
+    _rotationAccum = 0;
+    _rotateAnchor = Offset.zero;
+    _shoveOrigin.clear();
+  }
+
+  /// True when this gesture is a two-finger vertical shove (tilt).
+  ///
+  /// Detected from raw pointer positions, NOT from the focal delta: a shove and
+  /// a two-finger PAN are both "focal moves vertically with scale ~1 and
+  /// rotation ~0", so approximating it from `focalDelta.dy` would silently
+  /// break panning, which works today. What separates them is that in a shove
+  /// both fingers move the same way while their separation holds — which
+  /// `ScaleUpdateDetails` cannot express, since it carries no per-pointer
+  /// positions.
+  bool _isShove(ScaleUpdateDetails details) {
+    if (_pointers.length != 2) {
+      _shoveOrigin.clear();
+      return false;
+    }
+    // Seed on the first update that actually has two pointers. _onScaleStart
+    // fires when the recognizer wins the arena, which is typically while only
+    // one pointer is down — seeding there leaves a single entry and the shove
+    // can never be recognised.
+    if (_shoveOrigin.length != 2 ||
+        !_pointers.keys.every(_shoveOrigin.containsKey)) {
+      _shoveOrigin
+        ..clear()
+        ..addAll(_pointers);
+      return false; // no travel measured yet
+    }
+    if ((details.scale - 1.0).abs() > 0.02) return false;
+    if (details.rotation.abs() > _kRotateDeadzoneDegrees * math.pi / 180) {
+      return false;
+    }
+    final ids = _pointers.keys.toList();
+    final a = _pointers[ids[0]]! - (_shoveOrigin[ids[0]] ?? Offset.zero);
+    final b = _pointers[ids[1]]! - (_shoveOrigin[ids[1]] ?? Offset.zero);
+    if (a.dy.sign != b.dy.sign) return false; // must move together
+    if (a.dy.abs() < _kShoveMinTravel || b.dy.abs() < _kShoveMinTravel) {
+      return false;
+    }
+    // Near-vertical: a diagonal two-finger drag is a pan, not a shove.
+    if (a.dx.abs() > a.dy.abs() * _kShoveMaxHorizontalRatio) return false;
+    if (b.dx.abs() > b.dy.abs() * _kShoveMaxHorizontalRatio) return false;
+    return true;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
+    // A secondary-button / ctrl drag is handled entirely on the raw Listener
+    // (see [_isRotateDrag]). The scale recognizer still receives it, so without
+    // this the map would pan underneath the rotation.
+    if (_dragRotatePointer != null) return;
+
     final focal = details.localFocalPoint;
     final dx = focal.dx - _lastFocalPoint.dx;
     final dy = focal.dy - _lastFocalPoint.dy;
     _lastFocalPoint = focal;
+
+    final rotator = widget.rotator;
+
+    // Unwrap this frame's rotation and accumulate our own total; see
+    // [_lastRawRotation] for why the reported value cannot be used directly.
+    final rotationDelta = _normalizeAngle(details.rotation - _lastRawRotation);
+    _lastRawRotation = details.rotation;
+    _rotationAccum += rotationDelta;
+
+    // --- latch the mode on the first threshold crossing ----------------------
+    if (_mode == _GestureMode.none && rotator != null) {
+      if (widget.tiltEnabled && _isShove(details)) {
+        _mode = _GestureMode.shove;
+      } else if (widget.rotateEnabled &&
+          _rotationAccum.abs() > _kRotateDeadzoneDegrees * math.pi / 180) {
+        _mode = _GestureMode.rotate;
+        // Freeze the anchor at the latch. _zoomAnchor keeps tracking the focal
+        // while a gesture is not scaling, so reading it per-frame would rotate
+        // about a drifting point and make the map lurch.
+        _rotateAnchor = _zoomAnchor;
+      }
+    }
+
+    if (_mode == _GestureMode.shove && rotator != null) {
+      // Both fingers moved together; use the mean travel since the last sample.
+      final ids = _pointers.keys.toList();
+      final a = _pointers[ids[0]]! - (_shoveOrigin[ids[0]] ?? Offset.zero);
+      final b = _pointers[ids[1]]! - (_shoveOrigin[ids[1]] ?? Offset.zero);
+      final meanDy = (a.dy + b.dy) / 2;
+      _shoveOrigin
+        ..clear()
+        ..addAll(_pointers);
+      if (meanDy != 0) {
+        // Fingers moving UP increase pitch (SDK convention). No Dart-side
+        // clamp — the engine clamps to 0..60.
+        rotator.pitchBy(-_kShoveDegreesPerPixel * meanDy);
+      }
+      // A shove must not also pan or zoom; the SDK disables move while shoving.
+      return;
+    }
+
+    if (_mode == _GestureMode.rotate && rotator != null) {
+      // Positive is a clockwise on-screen twist, which is the convention the C
+      // shim takes; the bearing sign lives there, not here.
+      if (rotationDelta != 0) {
+        final anchor = _rotateAnchor;
+        rotator.rotateBy(rotationDelta * 180 / math.pi, anchor.dx, anchor.dy);
+      }
+      // Fall through: a twist still zooms if the fingers also spread, which is
+      // how every native map behaves. It must not PAN, which the `zooming`
+      // branch below already prevents.
+    }
+
+    // NOTE: `none` is NOT latched to panZoom here. Pan and zoom are the default
+    // behaviour and run while the mode is still undecided, so rotate and shove
+    // stay able to take over the moment they cross their thresholds. Latching
+    // panZoom on the first update — when rotation is necessarily still ~0 —
+    // makes rotation permanently unreachable.
 
     // A *scaling* gesture is a zoom (pinch) — detect by scale change, NOT by finger
     // count: a two-finger drag with scale ≈ 1 is a pan and should still fling.
@@ -834,6 +1079,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _stopInertia();
       _inTrackpadPanZoom = true;
       _blockedLastScale = 1;
+      _blockedLastRotation = 0;
+      _blockedRotationAccum = 0;
       _blockedAnchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
     } else if (event is PointerPanZoomUpdateEvent) {
       if (!_blockedPanZoom) return;
@@ -853,6 +1100,27 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
           );
         }
         _blockedLastScale = event.scale;
+      }
+      // Forward rotation too. PointerPanZoomUpdateEvent carries it (a macOS
+      // trackpad twist), and dropping it here would reproduce exactly the bug
+      // class this fallback exists for: a gesture that works over the map but
+      // silently does nothing once an overlay covers the cursor.
+      final rotator = widget.rotator;
+      if (rotator != null && widget.rotateEnabled) {
+        final deltaRadians = _normalizeAngle(
+          event.rotation - _blockedLastRotation,
+        );
+        _blockedRotationAccum += deltaRadians;
+        if (_blockedRotationAccum.abs() >
+                _kRotateDeadzoneDegrees * math.pi / 180 &&
+            deltaRadians != 0) {
+          rotator.rotateBy(
+            deltaRadians * 180 / math.pi,
+            _blockedAnchor.dx,
+            _blockedAnchor.dy,
+          );
+        }
+        _blockedLastRotation = event.rotation;
       }
     } else if (event is PointerPanZoomEndEvent) {
       _blockedPanZoom = false;
@@ -910,22 +1178,63 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     _lastPointerPos = e.localPosition;
   }
 
+  // A mouse can neither twist nor shove, so without a drag path rotation is
+  // unreachable on Windows, Linux and macOS-with-a-mouse. Follows gl-js's
+  // DragRotateHandler: secondary button (or ctrl + primary), horizontal drives
+  // bearing and vertical drives pitch.
+  //
+  // Deliberately on the raw Listener rather than the GestureDetector:
+  // `onScaleStart` fires for a secondary drag too, so routing it through the
+  // gesture recognizer would pan the map underneath the rotation.
+  bool _isRotateDrag(PointerDownEvent e) =>
+      widget.rotator != null &&
+      (widget.rotateEnabled || widget.tiltEnabled) &&
+      (e.buttons & kSecondaryMouseButton != 0 ||
+          (e.buttons & kPrimaryMouseButton != 0 &&
+              HardwareKeyboard.instance.isControlPressed));
+
   void _onPointerDown(PointerDownEvent e) {
     _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
+    if (_dragRotatePointer == null && _isRotateDrag(e)) {
+      _dragRotatePointer = e.pointer;
+      _dragRotateLast = e.localPosition;
+      _stopInertia();
+    }
   }
 
   void _onPointerMove(PointerMoveEvent e) {
     _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
+
+    if (e.pointer == _dragRotatePointer) {
+      final rotator = widget.rotator;
+      final delta = e.localPosition - _dragRotateLast;
+      _dragRotateLast = e.localPosition;
+      if (rotator == null) return;
+      if (widget.rotateEnabled && delta.dx != 0) {
+        // Dragging RIGHT turns the content clockwise, matching gl-js.
+        rotator.rotateBy(
+          delta.dx * _kDragRotateDegreesPerPixel,
+          _lastPointerPos.dx,
+          _lastPointerPos.dy,
+        );
+      }
+      if (widget.tiltEnabled && delta.dy != 0) {
+        // Dragging UP tilts toward the horizon.
+        rotator.pitchBy(-delta.dy * _kDragPitchDegreesPerPixel);
+      }
+    }
   }
 
   void _onPointerUp(PointerUpEvent e) {
     _pointers.remove(e.pointer);
+    if (e.pointer == _dragRotatePointer) _dragRotatePointer = null;
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
     _pointers.remove(e.pointer);
+    if (e.pointer == _dragRotatePointer) _dragRotatePointer = null;
   }
 
   @override

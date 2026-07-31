@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
@@ -50,9 +52,32 @@ class _FakeModelController extends _FakeController
 /// A desktop-style controller that also drives gestures in Dart. Records the
 /// gesture calls so tests can assert what the widget gesture layer forwarded.
 class _FakeGestureController extends _FakeController
-    implements MapLibreGestureHandler {
+    implements MapLibreGestureHandler, MapLibreRotateHandler {
   _FakeGestureController(super.renderHandle);
   final List<Offset> moveCalls = <Offset>[]; // (dx, dy)
+  final List<({double scale, Offset anchor})> scaleCalls =
+      <({double scale, Offset anchor})>[];
+  final List<({double degrees, Offset anchor})> rotateCalls =
+      <({double degrees, Offset anchor})>[];
+  final List<double> pitchCalls = <double>[];
+  @override
+  void moveBy(double dx, double dy) => moveCalls.add(Offset(dx, dy));
+  @override
+  void scaleBy(double scale, double anchorX, double anchorY) =>
+      scaleCalls.add((scale: scale, anchor: Offset(anchorX, anchorY)));
+  @override
+  void rotateBy(double degrees, double anchorX, double anchorY) =>
+      rotateCalls.add((degrees: degrees, anchor: Offset(anchorX, anchorY)));
+  @override
+  void pitchBy(double degrees) => pitchCalls.add(degrees);
+}
+
+/// Pans and zooms but offers NO rotate capability — the graceful-degradation
+/// case that justifies MapLibreRotateHandler being a separate interface.
+class _FakeGestureOnlyController extends _FakeController
+    implements MapLibreGestureHandler {
+  _FakeGestureOnlyController(super.renderHandle);
+  final List<Offset> moveCalls = <Offset>[];
   final List<({double scale, Offset anchor})> scaleCalls =
       <({double scale, Offset anchor})>[];
   @override
@@ -605,6 +630,307 @@ void main() {
       closeTo((left.dx + rightStart.dx) / 2, 20),
       reason:
           'the anchor froze near the starting centroid, not the drifted one',
+    );
+  });
+
+  // --- rotate / tilt ---------------------------------------------------------
+  //
+  // The recognizers are where rotation is most likely to be silently wrong, and
+  // none of it can be checked on hardware for four of the five tiers. Each case
+  // below targets one specific way it can break.
+
+  Future<_FakeGestureController> pumpGestureMap(
+    WidgetTester tester, {
+    bool rotate = true,
+    bool tilt = true,
+  }) async {
+    final platform = _FakePlatform(
+      const TextureHandle(textureId: 9),
+      gestures: true,
+    );
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(
+          style: _style,
+          options: _options,
+          rotateGesturesEnabled: rotate,
+          tiltGesturesEnabled: tilt,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return platform.lastController! as _FakeGestureController;
+  }
+
+  /// Twists two fingers about [centre] by [degrees], in steps.
+  Future<void> twist(
+    WidgetTester tester,
+    Offset centre,
+    double degrees, {
+    double radius = 100,
+    int steps = 10,
+  }) async {
+    Offset at(double angleDeg, double sign) {
+      final r = angleDeg * math.pi / 180;
+      return centre + Offset(math.cos(r), math.sin(r)) * radius * sign;
+    }
+
+    final f1 = await tester.startGesture(at(0, 1), pointer: 21);
+    final f2 = await tester.startGesture(at(0, -1), pointer: 22);
+    await tester.pump();
+    for (var i = 1; i <= steps; i++) {
+      final a = degrees * i / steps;
+      await f1.moveTo(at(a, 1));
+      await f2.moveTo(at(a, -1));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+  }
+
+  testWidgets('a twist below the deadzone does not rotate, but still zooms', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester);
+    // 4 degrees, under the 8 degree deadzone, while the fingers also spread.
+    const centre = Offset(400, 300);
+    final f1 = await tester.startGesture(
+      centre - const Offset(100, 0),
+      pointer: 31,
+    );
+    final f2 = await tester.startGesture(
+      centre + const Offset(100, 0),
+      pointer: 32,
+    );
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      final r = 4 * i / 8 * math.pi / 180;
+      final len = 100 + 8.0 * i;
+      await f1.moveTo(centre - Offset(math.cos(r), math.sin(r)) * len);
+      await f2.moveTo(centre + Offset(math.cos(r), math.sin(r)) * len);
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+
+    expect(
+      c.rotateCalls,
+      isEmpty,
+      reason:
+          'a small incidental twist during an ordinary pinch must not turn '
+          'the map — that is what the deadzone is for',
+    );
+    expect(c.scaleCalls, isNotEmpty, reason: 'the pinch must still zoom');
+  });
+
+  testWidgets('a twist past the deadzone rotates with the CORRECT SIGN', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester);
+    // Fingers sweep CLOCKWISE on screen (increasing angle in Flutter's y-down
+    // space). Assert against that absolute direction, never a round trip: a
+    // sign error is symmetric and survives any there-and-back check.
+    await twist(tester, const Offset(400, 300), 40);
+
+    expect(c.rotateCalls, isNotEmpty, reason: 'a 40 degree twist must rotate');
+    final total = c.rotateCalls.fold<double>(0, (a, r) => a + r.degrees);
+    expect(
+      total,
+      greaterThan(0),
+      reason:
+          'a CLOCKWISE on-screen twist must emit POSITIVE degrees; the '
+          'engine shim turns that into a decreasing bearing',
+    );
+    // Deadzone consumed, so the emitted total is the travel past it, not the
+    // full 40 degrees.
+    expect(total, lessThan(40));
+    expect(total, greaterThan(20));
+  });
+
+  testWidgets('an anticlockwise twist emits negative degrees', (tester) async {
+    final c = await pumpGestureMap(tester);
+    await twist(tester, const Offset(400, 300), -40);
+    final total = c.rotateCalls.fold<double>(0, (a, r) => a + r.degrees);
+    expect(total, lessThan(0));
+  });
+
+  testWidgets('the rotate anchor is one frozen point for the whole gesture', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester);
+    await twist(tester, const Offset(300, 500), 40);
+    final anchors = c.rotateCalls.map((r) => r.anchor).toSet();
+    expect(
+      anchors,
+      hasLength(1),
+      reason:
+          'rotating about a moving anchor makes the map lurch; it must use '
+          'the same frozen anchor the pinch zoom does',
+    );
+  });
+
+  testWidgets('a two-finger vertical shove tilts and does NOT pan', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester);
+    const left = Offset(350, 400);
+    const right = Offset(450, 400);
+    final f1 = await tester.startGesture(left, pointer: 41);
+    final f2 = await tester.startGesture(right, pointer: 42);
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      final dy = -8.0 * i; // upward, together, separation unchanged
+      await f1.moveTo(left + Offset(0, dy));
+      await f2.moveTo(right + Offset(0, dy));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+
+    expect(c.pitchCalls, isNotEmpty, reason: 'a shove must tilt');
+    expect(
+      c.pitchCalls.fold<double>(0, (a, b) => a + b),
+      greaterThan(0),
+      reason: 'fingers moving UP must INCREASE pitch, as in the native SDKs',
+    );
+    // Some pan before the shove is recognised is unavoidable and correct: any
+    // threshold-based detector watches a little travel before committing, and
+    // the SDK is no different. What matters is that panning STOPS once the
+    // shove latches — without the mode latch the map would be dragged the whole
+    // 64px of the gesture rather than the ~12px it takes to recognise it.
+    final pannedDy = c.moveCalls.fold<double>(0, (a, m) => a + m.dy.abs());
+    expect(
+      pannedDy,
+      lessThan(20),
+      reason:
+          'the map must stop panning once the shove latches; the fingers '
+          'travel 64px, so a total near that means the latch never fired',
+    );
+  });
+
+  testWidgets('a two-finger horizontal pan still pans and does NOT tilt', (
+    tester,
+  ) async {
+    // The regression guard for the shove detector. A shove and a two-finger pan
+    // are both "focal moves with scale ~1 and rotation ~0", so a detector built
+    // on focalDelta.dy would silently break panning — which works today.
+    final c = await pumpGestureMap(tester);
+    const left = Offset(350, 400);
+    const right = Offset(450, 400);
+    final f1 = await tester.startGesture(left, pointer: 51);
+    final f2 = await tester.startGesture(right, pointer: 52);
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      final dx = 10.0 * i;
+      await f1.moveTo(left + Offset(dx, 0));
+      await f2.moveTo(right + Offset(dx, 0));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+
+    expect(c.moveCalls, isNotEmpty, reason: 'a two-finger pan must still pan');
+    expect(c.pitchCalls, isEmpty, reason: 'a horizontal pan is not a shove');
+  });
+
+  testWidgets('a secondary-button drag rotates and tilts, without panning', (
+    tester,
+  ) async {
+    // Without this a mouse-only user cannot rotate at all, on any desktop tier.
+    final c = await pumpGestureMap(tester);
+    final mouse = await tester.startGesture(
+      const Offset(400, 300),
+      pointer: 61,
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pump();
+    await mouse.moveTo(const Offset(460, 260));
+    await tester.pump();
+    await mouse.up();
+    await tester.pump();
+
+    expect(
+      c.rotateCalls.fold<double>(0, (a, r) => a + r.degrees),
+      greaterThan(0),
+      reason: 'dragging RIGHT turns the content clockwise, as in gl-js',
+    );
+    expect(
+      c.pitchCalls.fold<double>(0, (a, b) => a + b),
+      greaterThan(0),
+      reason: 'dragging UP tilts toward the horizon',
+    );
+    expect(
+      c.moveCalls,
+      isEmpty,
+      reason:
+          'a secondary drag must not also pan; onScaleStart fires for it '
+          'too, which is why this path lives on the raw Listener',
+    );
+  });
+
+  testWidgets('rotateGesturesEnabled: false suppresses only rotation', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester, rotate: false);
+    await twist(tester, const Offset(400, 300), 40);
+    expect(c.rotateCalls, isEmpty);
+    expect(
+      c.scaleCalls,
+      isNotEmpty,
+      reason: 'disabling rotation must not disable zoom',
+    );
+  });
+
+  testWidgets('tiltGesturesEnabled: false suppresses only tilt', (
+    tester,
+  ) async {
+    final c = await pumpGestureMap(tester, tilt: false);
+    const left = Offset(350, 400);
+    const right = Offset(450, 400);
+    final f1 = await tester.startGesture(left, pointer: 71);
+    final f2 = await tester.startGesture(right, pointer: 72);
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      await f1.moveTo(left + Offset(0, -8.0 * i));
+      await f2.moveTo(right + Offset(0, -8.0 * i));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+    expect(c.pitchCalls, isEmpty);
+  });
+
+  testWidgets('a controller without MapLibreRotateHandler still pans and zooms', (
+    tester,
+  ) async {
+    // The graceful-degradation proof that justifies rotate/tilt being a
+    // SEPARATE capability rather than two more members on MapLibreGestureHandler.
+    final platform = _FakePlatform(const TextureHandle(textureId: 9))
+      ..controllerFactory = _FakeGestureOnlyController.new;
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(style: _style, options: _options),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final c = platform.lastController! as _FakeGestureOnlyController;
+
+    expect(_gestureLayer(), findsOneWidget, reason: 'still gets the layer');
+    await twist(tester, const Offset(400, 300), 40);
+    expect(
+      c.scaleCalls,
+      isNotEmpty,
+      reason: 'a tier with no rotate capability must still zoom, not throw',
     );
   });
 }
