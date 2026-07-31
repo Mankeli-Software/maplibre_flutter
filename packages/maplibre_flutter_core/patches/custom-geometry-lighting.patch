@@ -20,10 +20,10 @@ index 50a9f052d130..e4221daa8f69 100644
  } // namespace shaders
  } // namespace mbgl
 diff --git a/include/mbgl/shaders/gl/custom_geometry.hpp b/include/mbgl/shaders/gl/custom_geometry.hpp
-index 6c1c8082febf..31b8698db754 100644
+index 6c1c8082febf..4f1ee77c28e1 100644
 --- a/include/mbgl/shaders/gl/custom_geometry.hpp
 +++ b/include/mbgl/shaders/gl/custom_geometry.hpp
-@@ -11,28 +11,40 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::OpenGL> {
+@@ -11,28 +11,43 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::OpenGL> {
      static constexpr const char* vertex = R"(layout (std140) uniform CustomGeometryDrawableUBO {
      mat4 u_matrix;
      vec4 u_color;
@@ -42,7 +42,10 @@ index 6c1c8082febf..31b8698db754 100644
 +    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space (normal and light
 +    // share that space), so a rotating model stays lit by a fixed world light and
 +    // no normal matrix is needed.
-+    float ndotl = dot(normalize(a_normal), normalize(u_light.xyz));
++    float nlen2 = dot(a_normal, a_normal);
++    float ndotl = nlen2 > 1e-8
++        ? dot(a_normal * inversesqrt(nlen2), normalize(u_light.xyz))
++        : 0.0;
 +    frag_shade = mix(u_light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
      gl_Position = u_matrix * vec4(a_pos, 1.0);
  }
@@ -66,7 +69,7 @@ index 6c1c8082febf..31b8698db754 100644
  )";
  };
 diff --git a/include/mbgl/shaders/mtl/custom_geometry.hpp b/include/mbgl/shaders/mtl/custom_geometry.hpp
-index b4bc2666ca66..a10abbcf7878 100644
+index b4bc2666ca66..f42b71ffaa02 100644
 --- a/include/mbgl/shaders/mtl/custom_geometry.hpp
 +++ b/include/mbgl/shaders/mtl/custom_geometry.hpp
 @@ -17,9 +17,10 @@ enum {
@@ -91,7 +94,7 @@ index b4bc2666ca66..a10abbcf7878 100644
      static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
      static const std::array<TextureInfo, 1> textures;
  
-@@ -39,27 +40,48 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Metal> {
+@@ -39,27 +40,51 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Metal> {
  struct VertexStage {
      float3 position [[attribute(0)]];
      float2 uv [[attribute(1)]];
@@ -111,7 +114,10 @@ index b4bc2666ca66..a10abbcf7878 100644
 +    // the ambient floor rather than to black. Normal and light are both in model
 +    // space, so no normal matrix is needed and a rotating model stays lit by a
 +    // fixed world light.
-+    const float ndotl = dot(normalize(vertx.normal), normalize(drawable.light.xyz));
++    const float nlen2 = dot(vertx.normal, vertx.normal);
++    const float ndotl = nlen2 > 1e-8
++        ? dot(vertx.normal * rsqrt(nlen2), normalize(drawable.light.xyz))
++        : 0.0;
 +    const float shade = mix(drawable.light.w, 1.0, saturate(ndotl * 0.5 + 0.5));
 +
      return {
@@ -156,7 +162,7 @@ index b51584a0d4e9..85053eacf950 100644
  };
  
 diff --git a/include/mbgl/shaders/vulkan/custom_geometry.hpp b/include/mbgl/shaders/vulkan/custom_geometry.hpp
-index c08dd782c1c8..7eb2f7ffabe8 100644
+index c08dd782c1c8..bcd96967dc1e 100644
 --- a/include/mbgl/shaders/vulkan/custom_geometry.hpp
 +++ b/include/mbgl/shaders/vulkan/custom_geometry.hpp
 @@ -12,7 +12,7 @@ template <>
@@ -168,7 +174,7 @@ index c08dd782c1c8..7eb2f7ffabe8 100644
      static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
      static const std::array<TextureInfo, 1> textures;
  
-@@ -20,17 +20,25 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Vulkan> {
+@@ -20,17 +20,28 @@ struct ShaderSource<BuiltIn::CustomGeometryShader, gfx::Backend::Type::Vulkan> {
      static constexpr auto vertex = R"(
  layout(location = 0) in vec3 in_position;
  layout(location = 1) in vec2 in_texcoord;
@@ -188,13 +194,16 @@ index c08dd782c1c8..7eb2f7ffabe8 100644
  
 +    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space, so a rotating
 +    // model stays lit by a fixed world light and needs no normal matrix.
-+    float ndotl = dot(normalize(in_normal), normalize(drawable.light.xyz));
++    float nlen2 = dot(in_normal, in_normal);
++    float ndotl = nlen2 > 1e-8
++        ? dot(in_normal * inversesqrt(nlen2), normalize(drawable.light.xyz))
++        : 0.0;
 +    frag_shade = mix(drawable.light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
 +
      gl_Position = drawable.matrix * vec4(in_position, 1.0);
      applySurfaceTransform();
  }
-@@ -38,17 +46,21 @@ void main() {
+@@ -38,17 +49,21 @@ void main() {
  
      static constexpr auto fragment = R"(
  layout(location = 0) in vec2 frag_uv;
@@ -218,7 +227,7 @@ index c08dd782c1c8..7eb2f7ffabe8 100644
  )";
  };
 diff --git a/include/mbgl/shaders/webgpu/custom_geometry.hpp b/include/mbgl/shaders/webgpu/custom_geometry.hpp
-index 6752dd132d31..012372c7e889 100644
+index 6752dd132d31..7662f97974db 100644
 --- a/include/mbgl/shaders/webgpu/custom_geometry.hpp
 +++ b/include/mbgl/shaders/webgpu/custom_geometry.hpp
 @@ -10,7 +10,7 @@ namespace shaders {
@@ -250,18 +259,21 @@ index 6752dd132d31..012372c7e889 100644
  };
  
  @group(0) @binding(0) var<uniform> drawable: CustomDrawableUBO;
-@@ -36,6 +39,10 @@ struct CustomDrawableUBO {
+@@ -36,6 +39,13 @@ struct CustomDrawableUBO {
  fn main(in: VertexInput) -> VertexOutput {
      var out: VertexOutput;
      out.uv = in.texcoord;
 +    // MBL_CUSTOM_GEOMETRY_LIGHTING: half-lambert in MODEL space, so a rotating
 +    // model stays lit by a fixed world light and needs no normal matrix.
-+    let ndotl = dot(normalize(in.normal), normalize(drawable.light.xyz));
++    let nlen2 = dot(in.normal, in.normal);
++    let ndotl = select(0.0,
++        dot(in.normal * inverseSqrt(nlen2), normalize(drawable.light.xyz)),
++        nlen2 > 1e-8);
 +    out.shade = mix(drawable.light.w, 1.0, clamp(ndotl * 0.5 + 0.5, 0.0, 1.0));
      out.position = drawable.matrix * vec4<f32>(in.position, 1.0);
      return out;
  }
-@@ -44,11 +51,13 @@ fn main(in: VertexInput) -> VertexOutput {
+@@ -44,11 +54,13 @@ fn main(in: VertexInput) -> VertexOutput {
      static constexpr auto fragment = R"(
  struct FragmentInput {
      @location(0) uv: vec2<f32>,
@@ -275,7 +287,7 @@ index 6752dd132d31..012372c7e889 100644
  };
  
  @group(0) @binding(0) var<uniform> drawable: CustomDrawableUBO;
-@@ -57,7 +66,9 @@ struct CustomDrawableUBO {
+@@ -57,7 +69,9 @@ struct CustomDrawableUBO {
  
  @fragment
  fn main(in: FragmentInput) -> @location(0) vec4<f32> {
@@ -313,17 +325,17 @@ index ec7c602a71fa..4052e229f3c7 100644
  
      template <typename T>
 diff --git a/src/mbgl/shaders/gl/shader_info.cpp b/src/mbgl/shaders/gl/shader_info.cpp
-index 8a4df03d2721..e584a335c603 100644
+index 8a4df03d2721..90cc70114d67 100644
 --- a/src/mbgl/shaders/gl/shader_info.cpp
 +++ b/src/mbgl/shaders/gl/shader_info.cpp
-@@ -103,6 +103,7 @@ const std::vector<UniformBlockInfo> CustomGeometryInfo::uniformBlocks = {
- };
+@@ -104,6 +104,7 @@ const std::vector<UniformBlockInfo> CustomGeometryInfo::uniformBlocks = {
  const std::vector<AttributeInfo> CustomGeometryInfo::attributes = {
      AttributeInfo{"a_pos", idCustomGeometryPosVertexAttribute},
-+    AttributeInfo{"a_normal", idCustomGeometryNormalVertexAttribute},
      AttributeInfo{"a_uv", idCustomGeometryTexVertexAttribute},
++    AttributeInfo{"a_normal", idCustomGeometryNormalVertexAttribute},
  };
  const std::vector<TextureInfo> CustomGeometryInfo::textures = {
+     TextureInfo{"u_image", idCustomGeometryTexture},
 diff --git a/src/mbgl/shaders/mtl/custom_geometry.cpp b/src/mbgl/shaders/mtl/custom_geometry.cpp
 index 57f5593efa81..ffa720a56a20 100644
 --- a/src/mbgl/shaders/mtl/custom_geometry.cpp
