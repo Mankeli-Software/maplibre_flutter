@@ -50,7 +50,9 @@ struct MblMeshData {
     std::array<float, 3> position;
     std::array<float, 2> texcoords;
     // Unit normal in the same model space as `position`. Zero when the source
-    // mesh had no NORMAL, which the shader treats as flat ambient shading.
+    // mesh had no NORMAL; the shaders guard that case explicitly (normalize of
+    // a zero vector is a division by zero, not "flat ambient shading") and fall
+    // back to the ambient floor.
     std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
   };
 

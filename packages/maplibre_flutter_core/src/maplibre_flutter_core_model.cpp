@@ -204,13 +204,45 @@ constexpr std::array<float, 2> kUvGreen = {0.75f, 0.25f};
 constexpr std::array<float, 2> kUvBlue = {0.25f, 0.75f};
 constexpr std::array<float, 2> kUvYellow = {0.75f, 0.75f};
 
+// Flat-shaded triangle with a real geometric normal.
+//
+// The normal matters: without one the vertices carry the {0,0,0} default and
+// the shaders' lighting term degenerates (see the guard in
+// patches/custom-geometry-lighting.patch). This pyramid is the mesh every
+// harness draws by default, so leaving it at zero meant the ONE fixture
+// exercising the lighting path was exactly the case that does not exercise it.
+//
+// `outwardFrom` disambiguates the sign without relying on winding order or on
+// map model space's left-handedness: flip the cross product until it points
+// away from the solid's interior.
 void pushTriangle(MblMeshData::Part &part, const std::array<float, 3> &a,
                   const std::array<float, 3> &b, const std::array<float, 3> &c,
-                  const std::array<float, 2> &uv) {
+                  const std::array<float, 2> &uv,
+                  const std::array<float, 3> &outwardFrom = {0.0f, 0.0f, 0.0f}) {
+  const std::array<float, 3> ab{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+  const std::array<float, 3> ac{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+  std::array<float, 3> n{ab[1] * ac[2] - ab[2] * ac[1],
+                         ab[2] * ac[0] - ab[0] * ac[2],
+                         ab[0] * ac[1] - ab[1] * ac[0]};
+  const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+  if (len > 1e-8f) {
+    n = {n[0] / len, n[1] / len, n[2] / len};
+    const std::array<float, 3> centroid{(a[0] + b[0] + c[0]) / 3.0f,
+                                        (a[1] + b[1] + c[1]) / 3.0f,
+                                        (a[2] + b[2] + c[2]) / 3.0f};
+    const float outward = n[0] * (centroid[0] - outwardFrom[0]) +
+                          n[1] * (centroid[1] - outwardFrom[1]) +
+                          n[2] * (centroid[2] - outwardFrom[2]);
+    if (outward < 0.0f) {
+      n = {-n[0], -n[1], -n[2]};
+    }
+  } else {
+    n = {0.0f, 0.0f, 0.0f};
+  }
   const auto base = static_cast<uint16_t>(part.vertices.size());
-  part.vertices.push_back({a, uv});
-  part.vertices.push_back({b, uv});
-  part.vertices.push_back({c, uv});
+  part.vertices.push_back({a, uv, n});
+  part.vertices.push_back({b, uv, n});
+  part.vertices.push_back({c, uv, n});
   part.indices.push_back(base);
   part.indices.push_back(static_cast<uint16_t>(base + 1));
   part.indices.push_back(static_cast<uint16_t>(base + 2));
@@ -240,18 +272,21 @@ MblMeshData mblMakeTestPyramid() {
   const std::array<float, 3> apex = {0.0f, 0.0f, h};
 
   // +Y is south in map model space, so -Y is the north-facing side.
+  // Inside the solid, so every face normal can be oriented outward from it.
+  const std::array<float, 3> inside = {0.0f, 0.0f, h / 4.0f};
+
   MblMeshData::Part part;
-  pushTriangle(part, v0, v1, apex, kUvRed);    // north face
-  pushTriangle(part, v1, v2, apex, kUvGreen);  // east face
-  pushTriangle(part, v2, v3, apex, kUvBlue);   // south face
-  pushTriangle(part, v3, v0, apex, kUvYellow); // west face
+  pushTriangle(part, v0, v1, apex, kUvRed, inside);    // north face
+  pushTriangle(part, v1, v2, apex, kUvGreen, inside);  // east face
+  pushTriangle(part, v2, v3, apex, kUvBlue, inside);   // south face
+  pushTriangle(part, v3, v0, apex, kUvYellow, inside); // west face
 
   // Base, so the model is closed if viewed from below. NOTE: without the Metal
   // depth patch this base paints OVER all four side faces from above, because
   // custom drawables fall back to painter's order — that is the regression this
   // mesh exists to catch.
-  pushTriangle(part, v0, v3, v2, kUvBlue);
-  pushTriangle(part, v0, v2, v1, kUvBlue);
+  pushTriangle(part, v0, v3, v2, kUvBlue, inside);
+  pushTriangle(part, v0, v2, v1, kUvBlue, inside);
 
   mesh.minPosition = {-hx, -hy, 0.0f};
   mesh.maxPosition = {hx, hy, h};

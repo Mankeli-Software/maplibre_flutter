@@ -70,6 +70,55 @@ bool capture(MblMap *map, Frame &out) {
   return true;
 }
 
+// The test pyramid's palette (maplibre_flutter_core_model.cpp): each of the four
+// side faces samples exactly one texel of a 2x2 texture through a distinct UV,
+// with nearest filtering, so each renders as one flat unambiguous colour.
+struct Rgb {
+  int r, g, b;
+  const char *name;
+};
+constexpr Rgb kPyramidPalette[] = {
+    {255, 40, 40, "red (north)"},
+    {40, 200, 40, "green (east)"},
+    {60, 110, 255, "blue (south)"},
+    {255, 210, 40, "yellow (west)"},
+};
+
+// Counts pixels near `c`, tolerating the lighting term. The lighting patch
+// multiplies the sampled texel by a half-lambert shade in [ambient, 1], so a
+// face is its palette colour SCALED, not the exact value — match on hue ratio
+// rather than absolute distance.
+size_t countShadedColor(const Frame &f, const Rgb &c) {
+  size_t n = 0;
+  for (uint32_t y = 0; y < f.height; ++y) {
+    const uint8_t *row = f.pixels.data() + static_cast<size_t>(y) * f.stride;
+    for (uint32_t x = 0; x < f.width; ++x) {
+      const uint8_t *p = row + static_cast<size_t>(x) * 4;
+      // BGRA: mbl_map_copy_frame emits BGRA unless set_pixel_format_bgra(0)
+      // says otherwise, and this harness never changes it. Reading it as RGBA
+      // silently matched only GREEN, whose target is symmetric under an R/B
+      // swap — so three of the four faces looked permanently missing.
+      const int pb = p[0], pg = p[1], pr = p[2];
+      const int maxTarget = std::max({c.r, c.g, c.b});
+      const int maxPix = std::max({pr, pg, pb});
+      if (maxPix < 30) continue;  // too dark to classify
+      // Compare each channel as a fraction of the brightest, which is invariant
+      // under the uniform shade multiplier.
+      const double sr = static_cast<double>(pr) / maxPix;
+      const double sg = static_cast<double>(pg) / maxPix;
+      const double sb = static_cast<double>(pb) / maxPix;
+      const double tr = static_cast<double>(c.r) / maxTarget;
+      const double tg = static_cast<double>(c.g) / maxTarget;
+      const double tb = static_cast<double>(c.b) / maxTarget;
+      if (std::abs(sr - tr) < 0.18 && std::abs(sg - tg) < 0.18 &&
+          std::abs(sb - tb) < 0.18) {
+        ++n;
+      }
+    }
+  }
+  return n;
+}
+
 struct Diff {
   size_t changed = 0;
   double centroidX = 0;
@@ -308,6 +357,39 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Sweep a full rotation, recording which palette colours ever appear.
+  //
+  // The pinwheel's four side faces sample four distinct texels of a 2x2 palette
+  // through four distinct UVs, so a correct render shows all four as each face
+  // turns into view. Feed the UV attribute a NORMAL instead — the GL attribute
+  // table bug — and the mapping collapses: with nearest+clamp on a 2x2 the four
+  // face normals (0,-1), (1,0), (0,1), (-1,0) land on red, green, blue and RED,
+  // so yellow never appears. That is the discriminator; "pixels changed",
+  // "anchored", "moved east" and "survived a style reload" all pass either way.
+  //
+  // A single capture cannot do it: from any viewpoint at most two faces of a
+  // pyramid are visible, so an all-four check on one frame fails on a perfectly
+  // good render. Pyramid only — a real .glb has arbitrary materials.
+  // One pyramid face at the harness camera covers thousands of px; 150 is
+  // well clear of antialiasing fringes without needing an exact area.
+  const size_t kMinFacePixels = 150;
+  bool paletteSeen[4] = {false, false, false, false};
+  const bool sweptPalette = glb.empty() && spinDps > 0.0;
+  if (sweptPalette) {
+    const int sweepMs = static_cast<int>(360.0 / spinDps * 1000.0) + 400;
+    const int steps = 12;
+    for (int i = 0; i < steps; ++i) {
+      pump(map, sweepMs / steps);
+      Frame f;
+      if (!capture(map, f)) continue;
+      for (int c = 0; c < 4; ++c) {
+        if (countShadedColor(f, kPyramidPalette[c]) >= kMinFacePixels) {
+          paletteSeen[c] = true;
+        }
+      }
+    }
+  }
+
   mbl_map_destroy(map);
 
   // --- verdict ---
@@ -347,6 +429,24 @@ int main(int argc, char **argv) {
     } else {
       printf("PASS: model is anchored (anchor inside drawn bbox)\n");
     }
+  }
+
+  // THE PALETTE CHECK — see the sweep above for why this exists and what it
+  // detects. Asserted here; measured before the map was destroyed.
+  if (sweptPalette) {
+    int missing = 0;
+    for (int c = 0; c < 4; ++c) {
+      if (!paletteSeen[c]) {
+        printf("FAIL: pyramid face %s never appeared across a full rotation — "
+               "a UV/normal attribute mix-up looks exactly like this\n",
+               kPyramidPalette[c].name);
+        ++missing;
+      } else {
+        printf("PASS: pyramid face %s seen during the sweep\n",
+               kPyramidPalette[c].name);
+      }
+    }
+    failures += missing;
   }
 
   // Only meaningful when the model was actually asked to spin. Asserting it
