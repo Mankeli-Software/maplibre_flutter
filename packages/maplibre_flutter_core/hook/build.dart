@@ -448,7 +448,17 @@ Future<bool> _tryPrebuilt(
     final os = input.config.code.targetOS;
     final arch = input.config.code.targetArchitecture;
     final libName = os.dylibFileName(input.packageName);
-    final asset = '${os.name}-${arch.name}-$libName';
+    // (os, arch) alone does NOT identify an iOS binary. Device and Simulator are
+    // both ios+arm64 yet are genuinely different builds: src/CMakeLists.txt
+    // compiles maplibre_flutter_core_sim_stubs.mm into the Simulator only,
+    // because the Simulator's Metal stub omits MTLIOErrorDomain and
+    // MTLTensorDomain. Downloading one for the other links against symbols that
+    // are not there — and it would fail at RUN time, on whichever of the two a
+    // consumer happened not to build first.
+    final sdkSuffix = os == OS.iOS
+        ? '-${input.config.code.iOS.targetSdk == IOSSdk.iPhoneSimulator ? 'simulator' : 'device'}'
+        : '';
+    final asset = '${os.name}-${arch.name}$sdkSuffix-$libName';
     final url = Uri.parse(
       '$_releaseBaseUrl/maplibre_flutter_core-v$version/$asset',
     );

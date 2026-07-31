@@ -1,16 +1,17 @@
-# Quality gate for the maplibre_flutter workspace. Exercises the macOS desktop
-# tier and the Web tier end to end (the implemented platforms); Android/iOS/
-# Linux/Windows runners are added as those platforms come online (CLAUDE.md §7
-# layer 6).
+# Quality gate for the maplibre_flutter workspace (CLAUDE.md §7 layer 6).
+#
+# macOS and Web run the full end-to-end suites. iOS, Android, Linux and Windows
+# get COMPILE gates: none of them can be run on hardware here, so `flutter build`
+# is the only automated signal that their native halves — Swift + Metal, Kotlin +
+# JNI + GL ES, EGL, Vulkan + vcpkg — even build. Before this, the sole automated
+# check covering those four was `dart analyze`, which cannot see a line of native
+# code.
 name: CI
 
-# DISABLED: automatic triggers are commented out so NOTHING runs on GitHub yet
-# (CI cost is being reviewed first). Only manual `workflow_dispatch` is active.
-# To enable, uncomment the push + pull_request blocks below.
 on:
-  # push:
-  #   branches: [main]
-  # pull_request:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -45,12 +46,29 @@ jobs:
           ccache --set-config=hash_dir=false
           ccache --set-config=max_size=3G
 
+      # WITHOUT THIS THE NATIVE GATES PROVE NOTHING. The build hook that compiles
+      # mbgl-core only runs when native assets are enabled; on a fresh runner the
+      # flag is off, so every `flutter build` below would succeed having compiled
+      # zero lines of the engine. It is set locally on the dev machine, which is
+      # exactly why it was easy to miss.
+      - run: flutter config --enable-native-assets
+
       - run: flutter pub get
 
       - run: dart run melos run format
       - run: dart run melos run analyze
       - run: dart run melos run test --no-select
       - run: dart run melos run test:native --no-select # builds mbgl-core
+
+      # The C++ probes assert things no Dart test can reach: the text-shaping
+      # patch against mbgl's own layout, .glb parse invariants, the projection
+      # and anchor origin conventions, and that a 3D model actually renders.
+      # They existed for months, built and run by nothing.
+      - run: dart run melos run test:harness
+
+      # Podspec versions drift from pubspecs silently — melos version does not
+      # touch them — and nothing catches it until `pod lib lint` at release.
+      - run: dart run melos run verify:podspecs
 
       - name: Generated ffigen bindings are up to date
         working-directory: packages/maplibre_flutter_core
@@ -105,3 +123,116 @@ jobs:
             --driver=test_driver/integration_test.dart \
             --target=integration_test/web_map_test.dart \
             -d web-server --browser-name=chrome --headless
+
+  # ---------------------------------------------------------------------------
+  # Compile gates for the four tiers that cannot be run on hardware here.
+  #
+  # These do not prove anything renders. They prove the native half builds,
+  # which for these platforms is the difference between "unverified" and
+  # "unknown" — and it is the only automated coverage their Swift, Kotlin, C++
+  # and CMake have.
+  # ---------------------------------------------------------------------------
+  ios:
+    runs-on: macos-14
+    env:
+      MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: brew install cmake ninja ccache
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-ios-${{ hashFiles('packages/maplibre_flutter_core/MBGL_CORE_VERSION') }}
+          restore-keys: ccache-ios-
+      - run: flutter config --enable-native-assets
+      - run: flutter pub get
+      # Swift Package Manager and CocoaPods must BOTH work until Flutter drops
+      # the latter, so neither a migrated nor an unmigrated app breaks
+      # (CLAUDE.md §8).
+      - run: flutter config --enable-swift-package-manager
+      - run: flutter build ios --simulator --debug
+        working-directory: packages/maplibre_flutter/example
+      - run: flutter config --no-enable-swift-package-manager
+      - run: flutter clean
+        working-directory: packages/maplibre_flutter/example
+      - run: flutter build ios --simulator --debug
+        working-directory: packages/maplibre_flutter/example
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      # The SDK's bundled CMake is 3.22.1 and the core needs >= 3.25
+      # (CLAUDE.md §8).
+      - run: sdkmanager 'cmake;3.31.4' 'ndk;27.0.12077973'
+      - run: flutter config --enable-native-assets
+      - run: flutter pub get
+      - run: flutter build apk --debug
+        working-directory: packages/maplibre_flutter/example
+
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake ccache clang pkg-config \
+            libgtk-3-dev liblzma-dev libcurl4-openssl-dev libegl1-mesa-dev \
+            libgles2-mesa-dev libpng-dev libjpeg-dev libwebp-dev libuv1-dev \
+            libicu-dev
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ hashFiles('packages/maplibre_flutter_core/MBGL_CORE_VERSION') }}
+          restore-keys: ccache-linux-
+      - run: flutter config --enable-native-assets --enable-linux-desktop
+      - run: flutter pub get
+      - run: flutter build linux --debug
+        working-directory: packages/maplibre_flutter/example
+
+  windows:
+    runs-on: windows-2022
+    env:
+      MAPLIBRE_FLUTTER_BUILD_FROM_SOURCE: '1'
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      # The build hook runs `vcpkg install` and hands CMake the toolchain file;
+      # a custom static triplet links the deps into the shim DLL so there are no
+      # runtime DLLs to bundle (CLAUDE.md §8).
+      - name: Bootstrap vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+      - run: flutter config --enable-native-assets --enable-windows-desktop
+      - run: flutter pub get
+      - run: flutter build windows --debug
+        working-directory: packages/maplibre_flutter/example
