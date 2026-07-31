@@ -28,7 +28,7 @@ dependencies:
 How it works: renders `MLNMapView` inside a `UiKitView` (`PlatformViewHandle`);
 control flows Dart → the Objective-C runtime → a Foundation-only swiftgen shim
 (`MapLibreController`/`MapRegistry`) that forwards to a MapLibre-backed `ops`
-implementation, with no data-path method channel (CLAUDE.md §3, §5b). Packaged for
+implementation, with no data-path method channel (CLAUDE.md §3, §5c). Packaged for
 both Swift Package Manager and CocoaPods (§9).
 
 > Note: the swiftgen module name equals this package name

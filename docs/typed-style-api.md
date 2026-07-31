@@ -171,7 +171,7 @@ hatch, and tighten types later where it pays.
 
 `packages/maplibre_flutter/tool/generate_style_api.dart`, following the repo
 convention that codegen is a Dart script in `tool/` and **output is committed**
-(§5, §10 of CLAUDE.md). Reads the vendored `v8.json`, writes
+(§5, §9 of CLAUDE.md). Reads the vendored `v8.json`, writes
 `lib/src/style/generated/*.g.dart`.
 
 CI then verifies it is current the same way ffigen is: regenerate and

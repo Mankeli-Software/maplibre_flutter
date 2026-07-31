@@ -6,7 +6,7 @@ row says otherwise — that is the whole point of this document: what is done, w
 merely *written*, and what has to happen per platform before any of it can be called
 supported.
 
-Read this with CLAUDE.md §12 (the decision log carries the *why* for each piece) and
+Read this with `docs/decision-log.md` (it carries the *why* for each piece) and
 `FEATURE_MATRIX.md` (the exhaustive per-feature parity backlog, brought up to date on 2026-07-30
 with everything below — it is the place to look up a single feature; this file is the place to look
 up what to *do next*).
@@ -50,7 +50,7 @@ Both already implement projector, camera tick and style layers, and both forward
 `setTransitionOptions`. Nothing is known to be missing; **the work is verification**,
 and these two are where a mistake is most likely, because their present paths flip the
 pixel buffer while the anchor space stays top-left (see the 2026-06-21 pinch-anchor
-regression in CLAUDE.md — the lesson being: do not "fix" an anchor convention on a
+regression in `docs/decision-log.md` — the lesson being: do not "fix" an anchor convention on a
 platform you have not run).
 
 Verify, in this order:
@@ -74,7 +74,7 @@ Same capability set as above, all unrun. Additional per-platform items:
 
 - Both need a **physical device** run, not just a simulator/emulator. The Android
   emulator specifically **cannot composite a GPU-produced `SurfaceProducer` buffer**
-  (documented at length in CLAUDE.md 2026-06-20) — so zero-copy will read as white
+  (documented at length in `docs/decision-log.md`, 2026-06-20) — so zero-copy will read as white
   there and that is not a bug to chase.
 - iOS: the marker overlay and gesture layer are the shared Dart tier, so the risk is
   DPR-related, not logic-related. Check label crispness and that pins track under a
@@ -162,4 +162,4 @@ Audited 2026-07-30:
   patches, not work.
 - The submodule **pointer** is unchanged; only its working tree is patched.
 - Not committed, on purpose: the Flutter-generated `example/ios` and `example/macos`
-  project churn (regenerated at build time, CLAUDE.md §5b).
+  project churn (regenerated at build time, CLAUDE.md §8).

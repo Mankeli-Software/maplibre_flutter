@@ -557,7 +557,7 @@ The natural next session is **Phase 1** (the "build spike" — it needs the Emsc
 
 **GO, experimental and opt-in.** Keep maplibre-gl-js the default; gate the core path behind
 `MAPLIBRE_WEB_CORE`. Revisit promotion after the Phase-1 spike gives real size/perf numbers. Record
-graduation (or abandonment) in CLAUDE.md §12.
+graduation (or abandonment) in `docs/decision-log.md`.
 
 ## Sources
 

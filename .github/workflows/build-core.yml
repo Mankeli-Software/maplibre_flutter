@@ -2,7 +2,7 @@
 # they don't compile mbgl-core). Triggered by a `maplibre_flutter_core-v<version>`
 # tag; uploads per-(os,arch) dylibs to that release. The asset names match what
 # hook/build.dart's _tryPrebuilt() requests: `<os>-<arch>-<dylibFileName>`.
-# Linux/Windows arms are added when those platforms land. (CLAUDE.md §12.)
+# Linux/Windows arms are added when those platforms land. (docs/decision-log.md.)
 name: build-core
 
 # DISABLED: the release-tag trigger is commented out so a `maplibre_flutter_core-v*`

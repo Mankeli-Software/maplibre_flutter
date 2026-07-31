@@ -22,7 +22,7 @@ dependencies:
 How it works: renders the SDK's `MapView` inside an `AndroidView`
 (`PlatformViewHandle`); control flows Dart → jni → a thin Kotlin/Java shim
 (`MapRegistry`/`MapLibreController`), with no data-path method channel
-(CLAUDE.md §3, §5a). Smaller `minSdk` (21) than the core path (26).
+(CLAUDE.md §3, §5b). Smaller `minSdk` (21) than the core path (26).
 
 > Note: the jnigen-bound shim classes keep their original
 > `dev.maplibreflutter.maplibre_flutter_android` source package (only the gradle
