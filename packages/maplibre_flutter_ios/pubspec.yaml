@@ -2,7 +2,7 @@ name: maplibre_flutter_ios
 description: >-
   The default iOS implementation of maplibre_flutter (mbgl-core via FFI, rendered
   into a Flutter Texture with Metal).
-version: 0.0.2
+version: 0.0.3
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -14,11 +14,11 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # The shared desktop core engine: iOS renders mbgl-core (Metal) into a Flutter
   # Texture, the same engine as every other platform. Because this package no
   # longer links the MapLibre Apple SDK, there is no mbgl symbol duplication.
-  maplibre_flutter_core: ^0.0.2
+  maplibre_flutter_core: ^0.0.3
 
 dev_dependencies:
   flutter_lints: ^6.0.0

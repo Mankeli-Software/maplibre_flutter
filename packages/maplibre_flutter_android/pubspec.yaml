@@ -2,7 +2,7 @@ name: maplibre_flutter_android
 description: >-
   The default Android implementation of maplibre_flutter (mbgl-core via FFI,
   rendered into a Flutter Texture).
-version: 0.0.2
+version: 0.0.3
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -14,11 +14,11 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # The shared desktop core engine: Android renders mbgl-core into a Flutter
   # Texture (the same engine as every other platform). The native present bridge
   # lives in android/src/main (a small JNI lib + OkHttp HTTP source).
-  maplibre_flutter_core: ^0.0.2
+  maplibre_flutter_core: ^0.0.3
 
 dev_dependencies:
   flutter_lints: ^6.0.0

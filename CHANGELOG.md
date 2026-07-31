@@ -3,6 +3,292 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## 2026-07-31
+
+### Changes
+
+---
+
+Packages with breaking changes:
+
+ - There are no breaking changes in this release.
+
+Packages with other changes:
+
+ - [`maplibre_flutter` - `v0.0.3`](#maplibre_flutter---v003)
+ - [`maplibre_flutter_android` - `v0.0.3`](#maplibre_flutter_android---v003)
+ - [`maplibre_flutter_android_sdk` - `v0.0.2+1`](#maplibre_flutter_android_sdk---v0021)
+ - [`maplibre_flutter_core` - `v0.0.3`](#maplibre_flutter_core---v003)
+ - [`maplibre_flutter_ios` - `v0.0.3`](#maplibre_flutter_ios---v003)
+ - [`maplibre_flutter_ios_sdk` - `v0.0.2+1`](#maplibre_flutter_ios_sdk---v0021)
+ - [`maplibre_flutter_linux` - `v0.0.3`](#maplibre_flutter_linux---v003)
+ - [`maplibre_flutter_macos` - `v0.0.3`](#maplibre_flutter_macos---v003)
+ - [`maplibre_flutter_platform_interface` - `v0.0.3`](#maplibre_flutter_platform_interface---v003)
+ - [`maplibre_flutter_web` - `v0.0.3`](#maplibre_flutter_web---v003)
+ - [`maplibre_flutter_web_gljs` - `v0.0.2+1`](#maplibre_flutter_web_gljs---v0021)
+ - [`maplibre_flutter_windows` - `v0.0.3`](#maplibre_flutter_windows---v003)
+
+---
+
+#### `maplibre_flutter` - `v0.0.3`
+
+ - **REFACTOR**(maplibre_flutter): extract embed helper methods into widget classes. ([de96d2a5](https://github.com/Mankeli-Software/maplibre_flutter/commit/de96d2a52e2a384fe5d8b934940750386dc15be3))
+ - **REFACTOR**(ios): mbgl-core is the default; split SDK into maplibre_flutter_ios_sdk. ([0b65d381](https://github.com/Mankeli-Software/maplibre_flutter/commit/0b65d381f69ed100eb2dc3c1d439794b2c53cb74))
+ - **REFACTOR**(windows): drop resize-mask polling — widget-owned freeze + cover-fit. ([cc046ade](https://github.com/Mankeli-Software/maplibre_flutter/commit/cc046ade38c908224c7553dade33f710fa4cc39d))
+ - **PERF**: share GPU textures between models, merge parts by material, add a HUD. ([42be7969](https://github.com/Mankeli-Software/maplibre_flutter/commit/42be7969eab660c2273b5a3b83157e89603bc8e1))
+ - **PERF**(markers): cull off-screen markers and cache rich children in layers. ([1a9d7340](https://github.com/Mankeli-Software/maplibre_flutter/commit/1a9d7340ae4b7a72384e17104c79f0b78844de14))
+ - **FIX**(example): the fps counter measured Flutter's vsync, not the map. ([a16f0b4f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a16f0b4fe33012d7eef50ff5950a0cf4fa1d14ee))
+ - **FIX**(gestures): reliable pan inertia — manual velocity, no zoom-fling, two-finger pan. ([6a2cacaa](https://github.com/Mankeli-Software/maplibre_flutter/commit/6a2cacaacf80789a7af772827cb12f09e419b75f))
+ - **FIX**(core): model heading rotated the wrong way; circle the nearest marker. ([e7e77bf6](https://github.com/Mankeli-Software/maplibre_flutter/commit/e7e77bf6c985018cce9d7b757a2a94b075a5123f))
+ - **FIX**(example): un-clip the widget-derived icon; add an unclustered icon scenario. ([d3d10ec6](https://github.com/Mankeli-Software/maplibre_flutter/commit/d3d10ec6ae05557387d79a72a8128295450eb9f3))
+ - **FIX**: four model bugs from the first hands-on run. ([18df649e](https://github.com/Mankeli-Software/maplibre_flutter/commit/18df649e06b42d4fe70a63094706adff6678b033))
+ - **FIX**(markers): a cluster count label with an unknown font killed the dataset. ([5f3c5b98](https://github.com/Mankeli-Software/maplibre_flutter/commit/5f3c5b989e1b5db41792c9dab3dfb9539637f300))
+ - **FIX**(gestures): touch flick no longer spins the world at low zoom. ([431e394f](https://github.com/Mankeli-Software/maplibre_flutter/commit/431e394fbf0a9bf84ad09ced181dd6620697097f))
+ - **FIX**(desktop): pinch/scroll-zoom work when the cursor is over an overlay control. ([ad0a9441](https://github.com/Mankeli-Software/maplibre_flutter/commit/ad0a944123d7aea009bd20a00f7796fa8b5c5034))
+ - **FIX**(linux): desktop gesture fixes — resize stretch, 2x trackpad pan, pinch anchor. ([19633027](https://github.com/Mankeli-Software/maplibre_flutter/commit/19633027485acecb3756bf3acd7ce6cc839ce2da))
+ - **FIX**(gestures): trackpad pinch zoom drifts from the cursor on Windows/Linux. ([55ee9d4e](https://github.com/Mankeli-Software/maplibre_flutter/commit/55ee9d4e88d30e47343a3a8070baae5f38a2a553))
+ - **FIX**(windows): mask resize stretch — coalesce + freeze + cover-fit (exploratory). ([ec857fb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/ec857fb6a277bdb25eda5c9c16c089b359ca6d9b))
+ - **FIX**(macos): harden window resize — IOSurface UAF crash, white blink, frame-lag squeeze. ([96553165](https://github.com/Mankeli-Software/maplibre_flutter/commit/965531658dc4a8afc20171dbb9b4173731f622b3))
+ - **FIX**(gestures): reuse one Ticker for pan inertia (SingleTicker forbids per-fling tickers). ([b8123677](https://github.com/Mankeli-Software/maplibre_flutter/commit/b81236775fea388f6d785fbd995aed940f88b84b))
+ - **FEAT**(markers): queryRenderedFeatures, and animated widgets over engine clusters. ([74350233](https://github.com/Mankeli-Software/maplibre_flutter/commit/7435023333b055c4d0d2ab8212073fc6cf17ecea))
+ - **FEAT**: multi-model stress mode, and share parsed meshes between models. ([f7134383](https://github.com/Mankeli-Software/maplibre_flutter/commit/f71343830a9effd76d413336da6afe67fed795de))
+ - **FEAT**(markers): app-facing engine-drawn annotations for very large datasets. ([5f2b2a9a](https://github.com/Mankeli-Software/maplibre_flutter/commit/5f2b2a9a5a7248a58afaf654e27af6335a1322a9))
+ - **FEAT**(example): swap between the car and the test box at runtime. ([008e5d12](https://github.com/Mankeli-Software/maplibre_flutter/commit/008e5d12f289d87bd332c28e3fa49f1cff5a1000))
+ - **FEAT**(markers): glue interactive Flutter widgets to map points (macOS-first). ([532d3c3a](https://github.com/Mankeli-Software/maplibre_flutter/commit/532d3c3a516f2c12ab5fc52a8193ab9a7d7614fe))
+ - **FEAT**(gestures): port the MapLibre Native SDK pan-fling model. ([b37cd373](https://github.com/Mankeli-Software/maplibre_flutter/commit/b37cd3737087e288866a6f863e00f559eb3c9e4b))
+ - **FEAT**(example): bundle the Alto K10 as the default model, with attribution. ([895e7d8b](https://github.com/Mankeli-Software/maplibre_flutter/commit/895e7d8b92910180303bc23c41ce07b3cf30c216))
+ - **FEAT**: declarative MapLibreMap(models:) prop. ([ca593364](https://github.com/Mankeli-Software/maplibre_flutter/commit/ca5933646fddebad9b61bb81baad1d90db01c444))
+ - **FEAT**: Android Hybrid Composition + map-ready signal; mobile-tier hardening. ([dba5974d](https://github.com/Mankeli-Software/maplibre_flutter/commit/dba5974d346dda471750d756d1058c5b487c883c))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **FEAT**(example): bundle a demo vehicle so models need no setup to test. ([114f22db](https://github.com/Mankeli-Software/maplibre_flutter/commit/114f22db4d7268d5eb2459d03c135cdb45648287))
+ - **FEAT**(markers): markers, layers and queries on Linux, Windows, iOS-core, Android-core. ([9e052c7d](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e052c7d6e4d84cbfbcf3f270c632fa316c63cdc))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**(example): add and remove cars incrementally while the field runs. ([9f3a31c4](https://github.com/Mankeli-Software/maplibre_flutter/commit/9f3a31c4c61b0cc9f2be8b6dcb3f20be2777047d))
+ - **FEAT**(style): typed style API generated from the MapLibre Style Spec. ([c1c6692f](https://github.com/Mankeli-Software/maplibre_flutter/commit/c1c6692f9e17fd82dc9a3e316baa7dffc963332b))
+ - **FEAT**(android): render MapLibre map and drive it from Dart over jnigen. ([3293efc0](https://github.com/Mankeli-Software/maplibre_flutter/commit/3293efc042021ca76fd59d89224a32f00da8c14f))
+ - **FEAT**: drive models along a path, lift them off the ground, rotate the camera. ([73776545](https://github.com/Mankeli-Software/maplibre_flutter/commit/73776545052ab62bb6710644a8f72f5fe1d72c86))
+ - **FEAT**(example): fold the 3D-model demo into the scenario list, and add map turning. ([9ab0c449](https://github.com/Mankeli-Software/maplibre_flutter/commit/9ab0c449b9898e3490fea89639bec56ad03b56e7))
+ - **FEAT**(gestures): pan inertia (fling) on the custom rendering engines. ([99e10eb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/99e10eb6d0bdd7f8a683ac2d0207e8407d77e9e0))
+ - **FEAT**(maplibre_flutter_android): experimental core-on-Android render (mbgl-core GL → Texture). ([b1ed90df](https://github.com/Mankeli-Software/maplibre_flutter/commit/b1ed90dfcc2be4b424a656fd60a7b3494e2534f8))
+ - **FEAT**: expose 3D models through the app-facing API and example. ([f495cc3b](https://github.com/Mankeli-Software/maplibre_flutter/commit/f495cc3b70b2fa1e72664ca5af1b40ce1a5209e4))
+ - **FEAT**(maplibre_flutter): namespace camera API under controller.camera. ([51f0f6a2](https://github.com/Mankeli-Software/maplibre_flutter/commit/51f0f6a20ddac2d099dd83d440688ba3cc726efe))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(macos): render mbgl-core into a Flutter Texture. ([2c771850](https://github.com/Mankeli-Software/maplibre_flutter/commit/2c77185053ee739e7abf9c47171b278c2aba99cb))
+ - **FEAT**(windows): build + render mbgl-core on real Windows hardware (ANGLE/EGL). ([c8513a05](https://github.com/Mankeli-Software/maplibre_flutter/commit/c8513a0507bca05a9cd0ffedbe40a517d4ab5173))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**: desktop map gestures — pan, pinch- and scroll-zoom. ([64f8ceb4](https://github.com/Mankeli-Software/maplibre_flutter/commit/64f8ceb4fabfe0dd0323ffd334c3a8329c2b24a8))
+ - **FEAT**(macos): add Podfile and related configurations for macOS support. ([4dd6ed1c](https://github.com/Mankeli-Software/maplibre_flutter/commit/4dd6ed1c51d4acaeb9dc797efaf3ae7319e47414))
+ - **FEAT**(web): maplibre-gl-js rendering + control via HtmlElementView. ([e6f11b5e](https://github.com/Mankeli-Software/maplibre_flutter/commit/e6f11b5ec63c3f812f647e58abc4612e67c1b0df))
+ - **DOCS**: note smooth/springy pinch-to-zoom as an unimplemented feature. ([fea41484](https://github.com/Mankeli-Software/maplibre_flutter/commit/fea41484d589670351e90288cbd7a57ae0610348))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+ - **DOCS**: design notes for a generated, typed Dart style API. ([e6148b30](https://github.com/Mankeli-Software/maplibre_flutter/commit/e6148b303f79a7ec3be99f0b705f4f3b92c28712))
+ - **DOCS**(linux): mark desktop tier verified on real hardware. ([5ab7f6a6](https://github.com/Mankeli-Software/maplibre_flutter/commit/5ab7f6a690613d9a3249a2cf0bfe478d0f6f5947))
+
+#### `maplibre_flutter_android` - `v0.0.3`
+
+ - **REFACTOR**(android): mbgl-core is the default; split SDK into maplibre_flutter_android_sdk. ([cb5213a0](https://github.com/Mankeli-Software/maplibre_flutter/commit/cb5213a0331dcdcd6e1fa5f246e0a8e995970d9e))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**(markers): markers, layers and queries on Linux, Windows, iOS-core, Android-core. ([9e052c7d](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e052c7d6e4d84cbfbcf3f270c632fa316c63cdc))
+ - **FEAT**(maplibre_flutter_android): adaptive zero-copy — on by default, auto-fallback to CPU. ([a3ed708f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a3ed708f5e94fc7216e4c2b15fa019debcccc638))
+ - **FEAT**(maplibre_flutter_android): experimental core-on-Android render (mbgl-core GL → Texture). ([b1ed90df](https://github.com/Mankeli-Software/maplibre_flutter/commit/b1ed90dfcc2be4b424a656fd60a7b3494e2534f8))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**: Android Hybrid Composition + map-ready signal; mobile-tier hardening. ([dba5974d](https://github.com/Mankeli-Software/maplibre_flutter/commit/dba5974d346dda471750d756d1058c5b487c883c))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **FEAT**(android): render MapLibre map and drive it from Dart over jnigen. ([3293efc0](https://github.com/Mankeli-Software/maplibre_flutter/commit/3293efc042021ca76fd59d89224a32f00da8c14f))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+#### `maplibre_flutter_android_sdk` - `v0.0.2+1`
+
+ - **REFACTOR**(android): mbgl-core is the default; split SDK into maplibre_flutter_android_sdk. ([cb5213a0](https://github.com/Mankeli-Software/maplibre_flutter/commit/cb5213a0331dcdcd6e1fa5f246e0a8e995970d9e))
+ - **DOCS**: compact CLAUDE.md and archive the decision log. ([c2f5a506](https://github.com/Mankeli-Software/maplibre_flutter/commit/c2f5a5062a025f5cc2e5c9b1bd83b35cfb786606))
+
+#### `maplibre_flutter_core` - `v0.0.3`
+
+ - **REFACTOR**(windows): drop resize-mask polling — widget-owned freeze + cover-fit. ([cc046ade](https://github.com/Mankeli-Software/maplibre_flutter/commit/cc046ade38c908224c7553dade33f710fa4cc39d))
+ - **PERF**(core): coalesce render requests on the render thread. ([42286914](https://github.com/Mankeli-Software/maplibre_flutter/commit/422869149a71c3366af3367458fdf6939f25ec0b))
+ - **PERF**: share GPU textures between models, merge parts by material, add a HUD. ([42be7969](https://github.com/Mankeli-Software/maplibre_flutter/commit/42be7969eab660c2273b5a3b83157e89603bc8e1))
+ - **PERF**(linux): v2 zero-copy sync — glFlush + implicit dmabuf fence. ([f28d0522](https://github.com/Mankeli-Software/maplibre_flutter/commit/f28d052265e8b7e53669c8ed89807cb0dd74e939))
+ - **FIX**(example): the fps counter measured Flutter's vsync, not the map. ([a16f0b4f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a16f0b4fe33012d7eef50ff5950a0cf4fa1d14ee))
+ - **FIX**(core): model heading rotated the wrong way; circle the nearest marker. ([e7e77bf6](https://github.com/Mankeli-Software/maplibre_flutter/commit/e7e77bf6c985018cce9d7b757a2a94b075a5123f))
+ - **FIX**: four model bugs from the first hands-on run. ([18df649e](https://github.com/Mankeli-Software/maplibre_flutter/commit/18df649e06b42d4fe70a63094706adff6678b033))
+ - **FIX**(markers): a cluster count label with an unknown font killed the dataset. ([5f3c5b98](https://github.com/Mankeli-Software/maplibre_flutter/commit/5f3c5b989e1b5db41792c9dab3dfb9539637f300))
+ - **FIX**(core): make 3D custom-drawable geometry depth-test on Metal. ([bcf8d704](https://github.com/Mankeli-Software/maplibre_flutter/commit/bcf8d7040f44731f57e4a4e236d8bbee67bffb39))
+ - **FIX**(core): correct the projection Y axis and glue markers to the shown frame. ([6eeb663f](https://github.com/Mankeli-Software/maplibre_flutter/commit/6eeb663f2291b2d05b86b247b3ba8266b51934f8))
+ - **FIX**(windows): mask resize stretch — coalesce + freeze + cover-fit (exploratory). ([ec857fb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/ec857fb6a277bdb25eda5c9c16c089b359ca6d9b))
+ - **FIX**(macos): harden window resize — IOSurface UAF crash, white blink, frame-lag squeeze. ([96553165](https://github.com/Mankeli-Software/maplibre_flutter/commit/965531658dc4a8afc20171dbb9b4173731f622b3))
+ - **FIX**(web): glFlush after present blit so the canvas isn't left stale (real-GPU "stuck"/blank). ([1383683e](https://github.com/Mankeli-Software/maplibre_flutter/commit/1383683e0976769e6d2e73545a6a04624148a27e))
+ - **FIX**(web): unstick the native-core map — async HTTP + drop the redundant blit. ([1e49659d](https://github.com/Mankeli-Software/maplibre_flutter/commit/1e49659da11b68c98e6df0fb7f179985f6f46ba8))
+ - **FIX**(core): cap desktop tile-request concurrency to avoid HTTP/2 throttling. ([f58450c8](https://github.com/Mankeli-Software/maplibre_flutter/commit/f58450c8e79f971dcc43a3ef5a0971256e781e12))
+ - **FIX**(core): skip the build hook when code assets aren't requested. ([136c9f56](https://github.com/Mankeli-Software/maplibre_flutter/commit/136c9f5621805a58629667e515f3e565bc0b3888))
+ - **FEAT**(markers): glue interactive Flutter widgets to map points (macOS-first). ([532d3c3a](https://github.com/Mankeli-Software/maplibre_flutter/commit/532d3c3a516f2c12ab5fc52a8193ab9a7d7614fe))
+ - **FEAT**(example): swap between the car and the test box at runtime. ([008e5d12](https://github.com/Mankeli-Software/maplibre_flutter/commit/008e5d12f289d87bd332c28e3fa49f1cff5a1000))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**: multi-model stress mode, and share parsed meshes between models. ([f7134383](https://github.com/Mankeli-Software/maplibre_flutter/commit/f71343830a9effd76d413336da6afe67fed795de))
+ - **FEAT**: drive models along a path, lift them off the ground, rotate the camera. ([73776545](https://github.com/Mankeli-Software/maplibre_flutter/commit/73776545052ab62bb6710644a8f72f5fe1d72c86))
+ - **FEAT**(markers): queryRenderedFeatures, and animated widgets over engine clusters. ([74350233](https://github.com/Mankeli-Software/maplibre_flutter/commit/7435023333b055c4d0d2ab8212073fc6cf17ecea))
+ - **FEAT**(gestures): pan inertia (fling) on the custom rendering engines. ([99e10eb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/99e10eb6d0bdd7f8a683ac2d0207e8407d77e9e0))
+ - **FEAT**: expose 3D models through the app-facing API and example. ([f495cc3b](https://github.com/Mankeli-Software/maplibre_flutter/commit/f495cc3b70b2fa1e72664ca5af1b40ce1a5209e4))
+ - **FEAT**(maplibre_flutter_android): adaptive zero-copy — on by default, auto-fallback to CPU. ([a3ed708f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a3ed708f5e94fc7216e4c2b15fa019debcccc638))
+ - **FEAT**(maplibre_flutter_android): experimental core-on-Android render (mbgl-core GL → Texture). ([b1ed90df](https://github.com/Mankeli-Software/maplibre_flutter/commit/b1ed90dfcc2be4b424a656fd60a7b3494e2534f8))
+ - **FEAT**(web): smooth resize via ResizeObserver (fix the post-resize stretch). ([b1531e82](https://github.com/Mankeli-Software/maplibre_flutter/commit/b1531e826dc92d96ad1d1b7f6a90ef672ae63a37))
+ - **FEAT**(web): continuous rendering, resize fixes, bounded fetch pool, fly-to arc. ([e7a81f9f](https://github.com/Mankeli-Software/maplibre_flutter/commit/e7a81f9f9429689d859e87bfdc9eb698c73c3659))
+ - **FEAT**(core): split .glb models into per-material parts; render a 509k-vertex car. ([84ed3633](https://github.com/Mankeli-Software/maplibre_flutter/commit/84ed3633f24a9a90684694f7c3d74bb309c34d9c))
+ - **FEAT**(web): native-core web map is interactive — gestures, auto-size, fly-to. ([7e328a5d](https://github.com/Mankeli-Software/maplibre_flutter/commit/7e328a5db4397411ec01173862c1f0d80b2ca034))
+ - **FEAT**(web): native-core map renders in the Flutter web example (verified). ([d0501839](https://github.com/Mankeli-Software/maplibre_flutter/commit/d05018395145046b7a16b19093f33c15474d42aa))
+ - **FEAT**(web): embind module renders a map to the canvas (verified). ([c2fa9f0c](https://github.com/Mankeli-Software/maplibre_flutter/commit/c2fa9f0c6d409b5854ab49ae5e34dbaa30ec3a7a))
+ - **FEAT**(web): render mbgl-core in WebAssembly — full platform-layer port (verified). ([7844c343](https://github.com/Mankeli-Software/maplibre_flutter/commit/7844c343ddb20330f47cf75a792508d654db4a3c))
+ - **FEAT**(maplibre_flutter_core): run the iOS core renderer on the Simulator. ([d3455e8a](https://github.com/Mankeli-Software/maplibre_flutter/commit/d3455e8ab19b281bee868e68bb5af2ae1661fea0))
+ - **FEAT**(maplibre_flutter_ios): experimental core-on-iOS renderer (POC). ([a64cfeb9](https://github.com/Mankeli-Software/maplibre_flutter/commit/a64cfeb9ebafe490cf9c3e803fe861563e6ac062))
+ - **FEAT**(web): prove mbgl-core compiles to WASM (Emscripten probe) + status. ([0bde7544](https://github.com/Mankeli-Software/maplibre_flutter/commit/0bde75447b6270c21517a71c1df5541589221e38))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **FEAT**(windows): Vulkan backend — fixes the fly-to crash (replaces ANGLE/OpenGL-ES). ([b2f44ee2](https://github.com/Mankeli-Software/maplibre_flutter/commit/b2f44ee25daa5625316440a5520d255b90f72a94))
+ - **FEAT**(windows): native map — DNS fix (OS resolver) + D3D11 zero-copy present. ([1a51d00a](https://github.com/Mankeli-Software/maplibre_flutter/commit/1a51d00a716103a3fbbd0b3f550935393af5e634))
+ - **FEAT**(windows): build + render mbgl-core on real Windows hardware (ANGLE/EGL). ([c8513a05](https://github.com/Mankeli-Software/maplibre_flutter/commit/c8513a0507bca05a9cd0ffedbe40a517d4ab5173))
+ - **FEAT**(windows): scaffold the Windows desktop tier (ANGLE/EGL, CPU pixel-buffer). ([907f910e](https://github.com/Mankeli-Software/maplibre_flutter/commit/907f910e6ff06165c7662bb3bc95a20288925209))
+ - **FEAT**(core): directional lighting for 3D models. ([ac073f9a](https://github.com/Mankeli-Software/maplibre_flutter/commit/ac073f9a8be648cf4c5a90a9c12ef73908d81c6e))
+ - **FEAT**(linux): zero-copy FlTextureGL present via dmabuf. ([0e0cb8aa](https://github.com/Mankeli-Software/maplibre_flutter/commit/0e0cb8aad8cece74ecd49fb094032b9fc6097946))
+ - **FEAT**(core): load and render .glb models; fix Metal custom-geometry sampler wrap. ([9e438727](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e43872790e6911ecc3fb05d4b3243cc94553ed2))
+ - **FEAT**(linux): GTK plugin + shared fly-to + RGBA pixel-format flag. ([1ad69b85](https://github.com/Mankeli-Software/maplibre_flutter/commit/1ad69b85cc99a4f33a9ee2ed10fed91824f66acd))
+ - **FEAT**(core): engine-drawn sources, layers and images, with in-engine clustering. ([cf796d94](https://github.com/Mankeli-Software/maplibre_flutter/commit/cf796d9452bb4e2e4f30ac814c35ac0daf79eeb6))
+ - **FEAT**(core): prebuilt-artifact distribution + CI workflows. ([c81a1219](https://github.com/Mankeli-Software/maplibre_flutter/commit/c81a12195165040ab7f423f3c2ce2032774d5f4e))
+ - **FEAT**(core): Continuous render mode for smooth fly-to over detailed tiles. ([fb5a5aaf](https://github.com/Mankeli-Software/maplibre_flutter/commit/fb5a5aaf91d038bd5cecef1ebb24cf5c52de654c))
+ - **FEAT**(macos): zero-copy present via GPU blit into an IOSurface. ([5e2e5855](https://github.com/Mankeli-Software/maplibre_flutter/commit/5e2e5855e308f378dabe91536f1dfc48337eb49f))
+ - **FEAT**(core): render MapLibre Native (mbgl-core) headless on desktop. ([cfff4151](https://github.com/Mankeli-Software/maplibre_flutter/commit/cfff4151d346f655c93ec955822cb72ac2e5221a))
+ - **FEAT**: desktop map gestures — pan, pinch- and scroll-zoom. ([64f8ceb4](https://github.com/Mankeli-Software/maplibre_flutter/commit/64f8ceb4fabfe0dd0323ffd334c3a8329c2b24a8))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**(core): OpenGL/EGL arm for non-Apple desktop (Linux GL core). ([a5cbe990](https://github.com/Mankeli-Software/maplibre_flutter/commit/a5cbe990f5f2bfa2a8063ab9747e6c7da996cb89))
+ - **DOCS**: design notes for a generated, typed Dart style API. ([e6148b30](https://github.com/Mankeli-Software/maplibre_flutter/commit/e6148b303f79a7ec3be99f0b705f4f3b92c28712))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+#### `maplibre_flutter_ios` - `v0.0.3`
+
+ - **REFACTOR**(ios): mbgl-core is the default; split SDK into maplibre_flutter_ios_sdk. ([0b65d381](https://github.com/Mankeli-Software/maplibre_flutter/commit/0b65d381f69ed100eb2dc3c1d439794b2c53cb74))
+ - **FIX**(macos): harden window resize — IOSurface UAF crash, white blink, frame-lag squeeze. ([96553165](https://github.com/Mankeli-Software/maplibre_flutter/commit/965531658dc4a8afc20171dbb9b4173731f622b3))
+ - **FIX**(maplibre_flutter_ios): render core at the device pixel ratio. ([2e226cbb](https://github.com/Mankeli-Software/maplibre_flutter/commit/2e226cbbd21f9ae45007a1af51b627664de625a5))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**(markers): markers, layers and queries on Linux, Windows, iOS-core, Android-core. ([9e052c7d](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e052c7d6e4d84cbfbcf3f270c632fa316c63cdc))
+ - **FEAT**(maplibre_flutter_core): run the iOS core renderer on the Simulator. ([d3455e8a](https://github.com/Mankeli-Software/maplibre_flutter/commit/d3455e8ab19b281bee868e68bb5af2ae1661fea0))
+ - **FEAT**(maplibre_flutter_ios): experimental core-on-iOS renderer (POC). ([a64cfeb9](https://github.com/Mankeli-Software/maplibre_flutter/commit/a64cfeb9ebafe490cf9c3e803fe861563e6ac062))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**: Android Hybrid Composition + map-ready signal; mobile-tier hardening. ([dba5974d](https://github.com/Mankeli-Software/maplibre_flutter/commit/dba5974d346dda471750d756d1058c5b487c883c))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+ - **DOCS**(maplibre_flutter_ios): note the simulator-only tile seam (clean on device). ([f86fd9da](https://github.com/Mankeli-Software/maplibre_flutter/commit/f86fd9da1243f71bfe75e9bc96d83dfb0bbf7c3a))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+#### `maplibre_flutter_ios_sdk` - `v0.0.2+1`
+
+ - **REFACTOR**(ios): mbgl-core is the default; split SDK into maplibre_flutter_ios_sdk. ([0b65d381](https://github.com/Mankeli-Software/maplibre_flutter/commit/0b65d381f69ed100eb2dc3c1d439794b2c53cb74))
+ - **DOCS**: compact CLAUDE.md and archive the decision log. ([c2f5a506](https://github.com/Mankeli-Software/maplibre_flutter/commit/c2f5a5062a025f5cc2e5c9b1bd83b35cfb786606))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+
+#### `maplibre_flutter_linux` - `v0.0.3`
+
+ - **FIX**(linux): desktop gesture fixes — resize stretch, 2x trackpad pan, pinch anchor. ([19633027](https://github.com/Mankeli-Software/maplibre_flutter/commit/19633027485acecb3756bf3acd7ce6cc839ce2da))
+ - **FIX**(desktop): render the core at the device pixel ratio (macOS/Linux/Windows). ([e55fa4f5](https://github.com/Mankeli-Software/maplibre_flutter/commit/e55fa4f5e7e09e8fa3ca57752abf9a82e00fb6c5))
+ - **FIX**(linux): zero-copy white screen — do EGL setup on the raster thread. ([88996bd9](https://github.com/Mankeli-Software/maplibre_flutter/commit/88996bd96eb7f3e46c84c209868a4bb3c1da8752))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**(markers): markers, layers and queries on Linux, Windows, iOS-core, Android-core. ([9e052c7d](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e052c7d6e4d84cbfbcf3f270c632fa316c63cdc))
+ - **FEAT**(desktop): zero-copy present on by default for Linux + Windows. ([fd6977ee](https://github.com/Mankeli-Software/maplibre_flutter/commit/fd6977ee32ec677da23b80525c325bb0c2be9ac2))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(windows): Vulkan backend — fixes the fly-to crash (replaces ANGLE/OpenGL-ES). ([b2f44ee2](https://github.com/Mankeli-Software/maplibre_flutter/commit/b2f44ee25daa5625316440a5520d255b90f72a94))
+ - **FEAT**(linux): zero-copy FlTextureGL present via dmabuf. ([0e0cb8aa](https://github.com/Mankeli-Software/maplibre_flutter/commit/0e0cb8aad8cece74ecd49fb094032b9fc6097946))
+ - **FEAT**(linux): GTK plugin + shared fly-to + RGBA pixel-format flag. ([1ad69b85](https://github.com/Mankeli-Software/maplibre_flutter/commit/1ad69b85cc99a4f33a9ee2ed10fed91824f66acd))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+#### `maplibre_flutter_macos` - `v0.0.3`
+
+ - **PERF**: share GPU textures between models, merge parts by material, add a HUD. ([42be7969](https://github.com/Mankeli-Software/maplibre_flutter/commit/42be7969eab660c2273b5a3b83157e89603bc8e1))
+ - **PERF**(macos): serve the texture from a reused IOSurface-backed buffer pool. ([27181225](https://github.com/Mankeli-Software/maplibre_flutter/commit/27181225a09a64d66c9f635c19c5497d290d01e7))
+ - **FIX**(example): the fps counter measured Flutter's vsync, not the map. ([a16f0b4f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a16f0b4fe33012d7eef50ff5950a0cf4fa1d14ee))
+ - **FIX**(core): correct the projection Y axis and glue markers to the shown frame. ([6eeb663f](https://github.com/Mankeli-Software/maplibre_flutter/commit/6eeb663f2291b2d05b86b247b3ba8266b51934f8))
+ - **FIX**(macos): harden window resize — IOSurface UAF crash, white blink, frame-lag squeeze. ([96553165](https://github.com/Mankeli-Software/maplibre_flutter/commit/965531658dc4a8afc20171dbb9b4173731f622b3))
+ - **FIX**(desktop): render the core at the device pixel ratio (macOS/Linux/Windows). ([e55fa4f5](https://github.com/Mankeli-Software/maplibre_flutter/commit/e55fa4f5e7e09e8fa3ca57752abf9a82e00fb6c5))
+ - **FIX**(macos): only apply the fly-to zoom dip for real flights. ([bb299055](https://github.com/Mankeli-Software/maplibre_flutter/commit/bb29905516e9a407320f2b50e5d6df359f46e388))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**: drive models along a path, lift them off the ground, rotate the camera. ([73776545](https://github.com/Mankeli-Software/maplibre_flutter/commit/73776545052ab62bb6710644a8f72f5fe1d72c86))
+ - **FEAT**(markers): queryRenderedFeatures, and animated widgets over engine clusters. ([74350233](https://github.com/Mankeli-Software/maplibre_flutter/commit/7435023333b055c4d0d2ab8212073fc6cf17ecea))
+ - **FEAT**: expose 3D models through the app-facing API and example. ([f495cc3b](https://github.com/Mankeli-Software/maplibre_flutter/commit/f495cc3b70b2fa1e72664ca5af1b40ce1a5209e4))
+ - **FEAT**(markers): app-facing engine-drawn annotations for very large datasets. ([5f2b2a9a](https://github.com/Mankeli-Software/maplibre_flutter/commit/5f2b2a9a5a7248a58afaf654e27af6335a1322a9))
+ - **FEAT**(markers): glue interactive Flutter widgets to map points (macOS-first). ([532d3c3a](https://github.com/Mankeli-Software/maplibre_flutter/commit/532d3c3a516f2c12ab5fc52a8193ab9a7d7614fe))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(linux): GTK plugin + shared fly-to + RGBA pixel-format flag. ([1ad69b85](https://github.com/Mankeli-Software/maplibre_flutter/commit/1ad69b85cc99a4f33a9ee2ed10fed91824f66acd))
+ - **FEAT**(core): Continuous render mode for smooth fly-to over detailed tiles. ([fb5a5aaf](https://github.com/Mankeli-Software/maplibre_flutter/commit/fb5a5aaf91d038bd5cecef1ebb24cf5c52de654c))
+ - **FEAT**(macos): zero-copy present via GPU blit into an IOSurface. ([5e2e5855](https://github.com/Mankeli-Software/maplibre_flutter/commit/5e2e5855e308f378dabe91536f1dfc48337eb49f))
+ - **FEAT**(macos): animate moveCamera(duration) with an eased fly-to arc. ([4cbc37d1](https://github.com/Mankeli-Software/maplibre_flutter/commit/4cbc37d162ae8b70325a226640b47a62dc474ab5))
+ - **FEAT**: desktop map gestures — pan, pinch- and scroll-zoom. ([64f8ceb4](https://github.com/Mankeli-Software/maplibre_flutter/commit/64f8ceb4fabfe0dd0323ffd334c3a8329c2b24a8))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**(macos): render mbgl-core into a Flutter Texture. ([2c771850](https://github.com/Mankeli-Software/maplibre_flutter/commit/2c77185053ee739e7abf9c47171b278c2aba99cb))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+ - **DOCS**(macos): note true zero-copy as deferred follow-up. ([8a617675](https://github.com/Mankeli-Software/maplibre_flutter/commit/8a6176757e589a890a69fc9c0cb0b0a544b55f96))
+
+#### `maplibre_flutter_platform_interface` - `v0.0.3`
+
+ - **REFACTOR**(windows): drop resize-mask polling — widget-owned freeze + cover-fit. ([cc046ade](https://github.com/Mankeli-Software/maplibre_flutter/commit/cc046ade38c908224c7553dade33f710fa4cc39d))
+ - **PERF**: share GPU textures between models, merge parts by material, add a HUD. ([42be7969](https://github.com/Mankeli-Software/maplibre_flutter/commit/42be7969eab660c2273b5a3b83157e89603bc8e1))
+ - **PERF**(markers): cull off-screen markers and cache rich children in layers. ([1a9d7340](https://github.com/Mankeli-Software/maplibre_flutter/commit/1a9d7340ae4b7a72384e17104c79f0b78844de14))
+ - **FIX**(example): the fps counter measured Flutter's vsync, not the map. ([a16f0b4f](https://github.com/Mankeli-Software/maplibre_flutter/commit/a16f0b4fe33012d7eef50ff5950a0cf4fa1d14ee))
+ - **FIX**(windows): mask resize stretch — coalesce + freeze + cover-fit (exploratory). ([ec857fb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/ec857fb6a277bdb25eda5c9c16c089b359ca6d9b))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**: declarative MapLibreMap(models:) prop. ([ca593364](https://github.com/Mankeli-Software/maplibre_flutter/commit/ca5933646fddebad9b61bb81baad1d90db01c444))
+ - **FEAT**: drive models along a path, lift them off the ground, rotate the camera. ([73776545](https://github.com/Mankeli-Software/maplibre_flutter/commit/73776545052ab62bb6710644a8f72f5fe1d72c86))
+ - **FEAT**(markers): queryRenderedFeatures, and animated widgets over engine clusters. ([74350233](https://github.com/Mankeli-Software/maplibre_flutter/commit/7435023333b055c4d0d2ab8212073fc6cf17ecea))
+ - **FEAT**: expose 3D models through the app-facing API and example. ([f495cc3b](https://github.com/Mankeli-Software/maplibre_flutter/commit/f495cc3b70b2fa1e72664ca5af1b40ce1a5209e4))
+ - **FEAT**(markers): app-facing engine-drawn annotations for very large datasets. ([5f2b2a9a](https://github.com/Mankeli-Software/maplibre_flutter/commit/5f2b2a9a5a7248a58afaf654e27af6335a1322a9))
+ - **FEAT**(markers): glue interactive Flutter widgets to map points (macOS-first). ([532d3c3a](https://github.com/Mankeli-Software/maplibre_flutter/commit/532d3c3a516f2c12ab5fc52a8193ab9a7d7614fe))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(linux): GTK plugin + shared fly-to + RGBA pixel-format flag. ([1ad69b85](https://github.com/Mankeli-Software/maplibre_flutter/commit/1ad69b85cc99a4f33a9ee2ed10fed91824f66acd))
+ - **FEAT**: desktop map gestures — pan, pinch- and scroll-zoom. ([64f8ceb4](https://github.com/Mankeli-Software/maplibre_flutter/commit/64f8ceb4fabfe0dd0323ffd334c3a8329c2b24a8))
+ - **FEAT**: size the desktop map to the widget + gate readiness on first frame. ([a83a284e](https://github.com/Mankeli-Software/maplibre_flutter/commit/a83a284e224337af3b84e44523037531a36a06a0))
+ - **FEAT**: Android Hybrid Composition + map-ready signal; mobile-tier hardening. ([dba5974d](https://github.com/Mankeli-Software/maplibre_flutter/commit/dba5974d346dda471750d756d1058c5b487c883c))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **FEAT**(android): render MapLibre map and drive it from Dart over jnigen. ([3293efc0](https://github.com/Mankeli-Software/maplibre_flutter/commit/3293efc042021ca76fd59d89224a32f00da8c14f))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+#### `maplibre_flutter_web` - `v0.0.3`
+
+ - **REFACTOR**(web): mbgl-core WASM is the default; split gl-js into maplibre_flutter_web_gljs. ([85ccc100](https://github.com/Mankeli-Software/maplibre_flutter/commit/85ccc1009a3945a1f7e4cc48d69b036d7e6961c2))
+ - **FEAT**(web): smooth resize via ResizeObserver (fix the post-resize stretch). ([b1531e82](https://github.com/Mankeli-Software/maplibre_flutter/commit/b1531e826dc92d96ad1d1b7f6a90ef672ae63a37))
+ - **FEAT**(web): native-core web map is interactive — gestures, auto-size, fly-to. ([7e328a5d](https://github.com/Mankeli-Software/maplibre_flutter/commit/7e328a5db4397411ec01173862c1f0d80b2ca034))
+ - **FEAT**(web): native-core map renders in the Flutter web example (verified). ([d0501839](https://github.com/Mankeli-Software/maplibre_flutter/commit/d05018395145046b7a16b19093f33c15474d42aa))
+ - **FEAT**(web): scaffold experimental native-core (WASM) web renderer behind a build flag. ([8ab11296](https://github.com/Mankeli-Software/maplibre_flutter/commit/8ab11296f560d06d712dde515a3ab7b14b4c8ab0))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(web): maplibre-gl-js rendering + control via HtmlElementView. ([e6f11b5e](https://github.com/Mankeli-Software/maplibre_flutter/commit/e6f11b5ec63c3f812f647e58abc4612e67c1b0df))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+ - **DOCS**(web): record the working native-core WASM PoC. ([223bfd43](https://github.com/Mankeli-Software/maplibre_flutter/commit/223bfd4324dac9c09e873e31a22013483e86f7b2))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+ - **DOCS**(web): add maplibre_flutter_web implementation plan. ([4b8a09a0](https://github.com/Mankeli-Software/maplibre_flutter/commit/4b8a09a0912ae145b3fc70579cfb2a4307b180f9))
+
+#### `maplibre_flutter_web_gljs` - `v0.0.2+1`
+
+ - **REFACTOR**(web): mbgl-core WASM is the default; split gl-js into maplibre_flutter_web_gljs. ([85ccc100](https://github.com/Mankeli-Software/maplibre_flutter/commit/85ccc1009a3945a1f7e4cc48d69b036d7e6961c2))
+
+#### `maplibre_flutter_windows` - `v0.0.3`
+
+ - **REFACTOR**(windows): drop resize-mask polling — widget-owned freeze + cover-fit. ([cc046ade](https://github.com/Mankeli-Software/maplibre_flutter/commit/cc046ade38c908224c7553dade33f710fa4cc39d))
+ - **FIX**(windows): revert pinch-zoom anchor Y-flip that mirrored the zoom point. ([43d29926](https://github.com/Mankeli-Software/maplibre_flutter/commit/43d299262db2ad7f00cf0dbd5f746ee5b5c3fccd))
+ - **FIX**(linux): desktop gesture fixes — resize stretch, 2x trackpad pan, pinch anchor. ([19633027](https://github.com/Mankeli-Software/maplibre_flutter/commit/19633027485acecb3756bf3acd7ce6cc839ce2da))
+ - **FIX**(windows): mask resize stretch — coalesce + freeze + cover-fit (exploratory). ([ec857fb6](https://github.com/Mankeli-Software/maplibre_flutter/commit/ec857fb6a277bdb25eda5c9c16c089b359ca6d9b))
+ - **FIX**(desktop): render the core at the device pixel ratio (macOS/Linux/Windows). ([e55fa4f5](https://github.com/Mankeli-Software/maplibre_flutter/commit/e55fa4f5e7e09e8fa3ca57752abf9a82e00fb6c5))
+ - **FEAT**(core): expose the style's transition options. ([201de598](https://github.com/Mankeli-Software/maplibre_flutter/commit/201de59858a25e831808899854e3f7cac6165303))
+ - **FEAT**(markers): markers, layers and queries on Linux, Windows, iOS-core, Android-core. ([9e052c7d](https://github.com/Mankeli-Software/maplibre_flutter/commit/9e052c7d6e4d84cbfbcf3f270c632fa316c63cdc))
+ - **FEAT**(desktop): zero-copy present on by default for Linux + Windows. ([fd6977ee](https://github.com/Mankeli-Software/maplibre_flutter/commit/fd6977ee32ec677da23b80525c325bb0c2be9ac2))
+ - **FEAT**: Introduce MapLibreMapController for imperative map control. ([dd625919](https://github.com/Mankeli-Software/maplibre_flutter/commit/dd62591995b93b66ebdf8189ba222af200b94a13))
+ - **FEAT**(windows): Vulkan backend — fixes the fly-to crash (replaces ANGLE/OpenGL-ES). ([b2f44ee2](https://github.com/Mankeli-Software/maplibre_flutter/commit/b2f44ee25daa5625316440a5520d255b90f72a94))
+ - **FEAT**(windows): native map — DNS fix (OS resolver) + D3D11 zero-copy present. ([1a51d00a](https://github.com/Mankeli-Software/maplibre_flutter/commit/1a51d00a716103a3fbbd0b3f550935393af5e634))
+ - **FEAT**(windows): build + render mbgl-core on real Windows hardware (ANGLE/EGL). ([c8513a05](https://github.com/Mankeli-Software/maplibre_flutter/commit/c8513a0507bca05a9cd0ffedbe40a517d4ab5173))
+ - **FEAT**(windows): scaffold the Windows desktop tier (ANGLE/EGL, CPU pixel-buffer). ([907f910e](https://github.com/Mankeli-Software/maplibre_flutter/commit/907f910e6ff06165c7662bb3bc95a20288925209))
+ - **FEAT**(ios): render MapLibre map and drive it from Dart over swiftgen. ([12823cf8](https://github.com/Mankeli-Software/maplibre_flutter/commit/12823cf817fd5298356ea357b568b9847797892d))
+ - **DOCS**: rewrite READMEs + feature matrix for first pub.dev release. ([1157517f](https://github.com/Mankeli-Software/maplibre_flutter/commit/1157517f68e8786f97fdb5738e64517626c128aa))
+
+
 ## 2026-06-17
 
 ### Changes

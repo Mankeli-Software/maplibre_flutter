@@ -2,7 +2,7 @@ name: maplibre_flutter
 description: >-
   Native MapLibre vector maps for Flutter on every platform — Android, iOS,
   macOS, Windows, Linux, and Web — with true native rendering on desktop.
-version: 0.0.2
+version: 0.0.3
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -17,15 +17,15 @@ dependencies:
   # For @internal on the controller's widget-glue members (kept out of the
   # public API surface). flutter/foundation does not re-export @internal.
   meta: ^1.15.0
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # Endorsed default implementations. App users get these transitively and
   # never depend on a platform package directly.
-  maplibre_flutter_android: ^0.0.2
-  maplibre_flutter_ios: ^0.0.2
-  maplibre_flutter_macos: ^0.0.2
-  maplibre_flutter_windows: ^0.0.2
-  maplibre_flutter_linux: ^0.0.2
-  maplibre_flutter_web: ^0.0.2
+  maplibre_flutter_android: ^0.0.3
+  maplibre_flutter_ios: ^0.0.3
+  maplibre_flutter_macos: ^0.0.3
+  maplibre_flutter_windows: ^0.0.3
+  maplibre_flutter_linux: ^0.0.3
+  maplibre_flutter_web: ^0.0.3
 
 dev_dependencies:
   flutter_lints: ^6.0.0

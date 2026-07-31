@@ -3,7 +3,7 @@ description: >-
   Opt-in MapLibre Android SDK implementation of maplibre_flutter (jnigen over the
   Kotlin MapLibre SDK, AndroidView). Add it to render with the native Android SDK
   instead of the default mbgl-core engine.
-version: 0.0.2
+version: 0.0.2+1
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -15,7 +15,7 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # jnigen control layer (CLAUDE.md §5a): Dart drives the native MapLibre map
   # over JNI, not method channels.
   jni: ^1.0.0

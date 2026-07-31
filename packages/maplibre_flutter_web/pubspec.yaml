@@ -2,7 +2,7 @@ name: maplibre_flutter_web
 description: >-
   The default Web implementation of maplibre_flutter (mbgl-core compiled to
   WebAssembly, rendered into a canvas via HtmlElementView).
-version: 0.0.2
+version: 0.0.3
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -16,7 +16,7 @@ dependencies:
     sdk: flutter
   flutter_web_plugins:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # DOM bindings for dart:js_interop (replaces dart:html, WASM-safe). The
   # interop with maplibre-gl-js itself uses dart:js_interop / dart:ui_web, which
   # ship with the SDK and need no dependency (CLAUDE.md §5).

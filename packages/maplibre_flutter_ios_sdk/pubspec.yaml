@@ -3,7 +3,7 @@ description: >-
   Opt-in MapLibre Apple SDK implementation of maplibre_flutter (swiftgen over the
   MapLibre Apple SDK, UiKitView). Add it to render with the native Apple SDK
   instead of the default mbgl-core engine.
-version: 0.0.2
+version: 0.0.2+1
 repository: https://github.com/Mankeli-Software/maplibre_flutter
 
 environment:
@@ -15,7 +15,7 @@ resolution: workspace
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_flutter_platform_interface: ^0.0.2
+  maplibre_flutter_platform_interface: ^0.0.3
   # swiftgen control layer (CLAUDE.md §5b): Dart drives the native MapLibre map
   # over the Objective-C runtime, not method channels.
   #
