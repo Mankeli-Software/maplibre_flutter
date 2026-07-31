@@ -139,6 +139,11 @@ void main() {
               'the shared Dart gesture layer is attached on `is` — without '
               'this the map does not pan or zoom at all',
         );
+        expect(
+          controller,
+          isA<MapLibreRotateHandler>(),
+          reason: 'without it the map cannot be rotated or tilted by gesture',
+        );
         expect(controller, isA<MapLibreMapProjector>());
         expect(controller, isA<MapLibreCameraTickNotifier>());
         expect(controller, isA<MapLibreStyleLayers>());
@@ -486,6 +491,9 @@ void main() {
         (controller as MapLibreGestureHandler)
           ..moveBy(1, 1)
           ..scaleBy(2, 0, 0);
+        (controller as MapLibreRotateHandler)
+          ..rotateBy(1, 0, 0)
+          ..pitchBy(1);
         (controller as MapLibreStyleLayers)
           ..addSourceJson('s', '{}')
           ..addLayerJson('{}')
@@ -495,6 +503,8 @@ void main() {
 
         expect(core.moves, isEmpty);
         expect(core.scales, isEmpty);
+        expect(core.rotations, isEmpty);
+        expect(core.pitches, isEmpty);
         expect(core.sources, isEmpty);
         expect(core.layers, isEmpty);
         expect(core.removedLayers, isEmpty);

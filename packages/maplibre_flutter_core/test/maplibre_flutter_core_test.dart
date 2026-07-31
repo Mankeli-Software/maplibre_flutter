@@ -939,4 +939,133 @@ void main() {
           'never writes it paints markers from the far side of the world',
     );
   });
+
+  // SYMMETRY BROKEN: the sign, and the anchor — as two separate facts, because
+  // one fixture cannot show both.
+  //
+  // A CORNER-anchored rotation both turns and translates the world, so "the
+  // northern point ends up to the right" simply is not true of it; that only
+  // holds about the centre. Conversely a CENTRE-anchored rotation cannot show
+  // the anchor was honoured at all, since the centre is a fixed point whether
+  // the anchor was applied or silently dropped — and dropped is the live
+  // hazard, because mbgl discards CameraOptions::anchor whenever a centre is
+  // also set, which is exactly what mbl_map_set_camera always sends.
+  test('rotateBy turns the content clockwise', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+    await settle(map);
+
+    // Baseline: at bearing 0 a point due north projects ABOVE centre.
+    final centre = map.project(0, 0)!;
+    final north = map.project(1, 0)!;
+    expect(north.y, lessThan(centre.y));
+    final radius = (north.y - centre.y).abs();
+
+    map.rotateBy(90, 256, 256); // about the centre: isolates the SIGN
+    await settle(map);
+
+    // Turning the content 90 degrees clockwise carries the point that was above
+    // centre round to the RIGHT of it. A reversed sign puts it to the LEFT at
+    // the same distance, which no magnitude-only check could tell apart.
+    final moved = map.project(1, 0)!;
+    expect(
+      moved.x,
+      greaterThan(centre.x),
+      reason:
+          'clockwise must swing the northern point RIGHT; left means the '
+          'bearing sign is inverted',
+    );
+    expect(
+      (moved.x - centre.x).abs(),
+      closeTo(radius, radius * 0.35),
+      reason: 'and at roughly the same radius — rotated, not translated',
+    );
+    expect(
+      moved.y,
+      closeTo(centre.y, radius * 0.35),
+      reason: 'a quarter turn puts it level with the centre',
+    );
+  });
+
+  test('rotateBy honours its anchor rather than silently dropping it', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    Future<CoreCamera> rotateAbout(double ax, double ay) async {
+      map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+      await settle(map);
+      map.rotateBy(90, ax, ay);
+      await settle(map);
+      return map.getCamera();
+    }
+
+    // The contrast IS the test. Rotating about the viewport centre must leave
+    // the camera centre exactly where it was; rotating about a corner must move
+    // it. An implementation that dropped the anchor — the get-camera-then-
+    // set-camera one, since set_camera always supplies a centre — leaves it
+    // unmoved in BOTH cases, and a centre-only test would call that correct.
+    final aboutCentre = await rotateAbout(256, 256);
+    expect(aboutCentre.latitude, closeTo(0, 1e-6));
+    expect(aboutCentre.longitude, closeTo(0, 1e-6));
+
+    final aboutCorner = await rotateAbout(0, 0);
+    expect(
+      aboutCorner.latitude.abs() + aboutCorner.longitude.abs(),
+      greaterThan(1e-3),
+      reason:
+          'a corner-anchored rotation must move the camera centre; not '
+          'moving it means the anchor never reached mbgl',
+    );
+  });
+
+  test('pitchBy tilts toward the horizon and mbgl clamps at 60', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 512,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+    await settle(map);
+    expect(map.getCamera().pitch, closeTo(0, 1e-6));
+
+    // POSITIVE tilts AWAY from straight down. mbgl's own Map::pitchBy
+    // subtracts, so an implementation built on it would go the other way and
+    // simply clamp to 0 — which looks like "pitch does nothing".
+    map.pitchBy(30);
+    await settle(map);
+    expect(
+      map.getCamera().pitch,
+      closeTo(30, 0.5),
+      reason: 'positive degrees must INCREASE pitch',
+    );
+
+    // No Dart-side clamp: this asserts mbgl owns the limit, so a change to
+    // DEFAULT_PITCH_MAX shows up here instead of being masked by our own clamp.
+    map.pitchBy(60);
+    await settle(map);
+    expect(
+      map.getCamera().pitch,
+      closeTo(60, 0.5),
+      reason:
+          'mbgl clamps to DEFAULT_PITCH_MAX (60), and we do not duplicate it',
+    );
+  });
 }

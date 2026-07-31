@@ -31,6 +31,7 @@ class MapLibreFlutterMacosController
     implements
         MapLibreMapPlatformController,
         MapLibreGestureHandler,
+        MapLibreRotateHandler,
         MapLibreMapProjector,
         MapLibreStyleLayers,
         MapLibreModelHost {
@@ -245,6 +246,29 @@ class MapLibreFlutterMacosController
     _animToken++; // a gesture supersedes any running fly-to
     _coreMap.scaleBy(scale, anchorX, anchorY);
     notifyCameraChanged(); // reproject glued widget overlays
+  }
+
+  @override
+  void rotateBy(double degrees, double anchorX, double anchorY) {
+    if (_disposed) return;
+    _animToken++; // a gesture supersedes any running fly-to
+    // Anchor passes STRAIGHT THROUGH — no `_renderHeight - anchorY`. mbgl
+    // documents CameraOptions' anchor as top-left origin and converts it
+    // itself; a briefly-shipped flip here mirrored the Windows pinch anchor.
+    // The clockwise/bearing sign lives in the C shim, once, not per controller.
+    _coreMap.rotateBy(degrees, anchorX, anchorY);
+    // Bearing changes where EVERY projected marker lands, so glued overlays
+    // must reproject — omit this and markers swim during a twist while pan and
+    // zoom look perfectly fine.
+    notifyCameraChanged();
+  }
+
+  @override
+  void pitchBy(double degrees) {
+    if (_disposed) return;
+    _animToken++;
+    _coreMap.pitchBy(degrees);
+    notifyCameraChanged();
   }
 
   // --- MapLibreStyleLayers ----------------------------------------------------

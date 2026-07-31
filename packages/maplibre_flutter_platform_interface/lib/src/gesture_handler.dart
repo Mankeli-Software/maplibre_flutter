@@ -5,6 +5,9 @@
 /// gestures in Dart (CLAUDE.md §3). The mobile platform-view controllers do not
 /// implement it (their native views handle gestures), so the widget skips its
 /// gesture layer for them. Deltas and anchors are in logical pixels.
+/// Rotation and tilt are deliberately NOT here — they live in the separate
+/// `MapLibreRotateHandler`, so a controller can pan and zoom without being
+/// forced to answer for them. See that interface for why.
 abstract interface class MapLibreGestureHandler {
   /// Pans the map by a screen-space delta in logical pixels.
   void moveBy(double dx, double dy);

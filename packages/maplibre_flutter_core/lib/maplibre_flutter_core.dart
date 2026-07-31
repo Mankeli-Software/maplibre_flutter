@@ -628,6 +628,23 @@ class MapLibreCoreMap {
     bindings.mbl_map_scale_by(_handle, scale, anchorX, anchorY);
   }
 
+  /// Turns the map CONTENT clockwise by [degrees] about the anchor.
+  ///
+  /// The anchor is in the same space as [scaleBy]: logical points, top-left
+  /// origin, passed to mbgl unflipped. (Note this is the opposite of the
+  /// projection methods, which do flip — see the C header.)
+  void rotateBy(double degrees, double anchorX, double anchorY) {
+    _checkAlive();
+    bindings.mbl_map_rotate_by(_handle, degrees, anchorX, anchorY);
+  }
+
+  /// Tilts by [degrees] (positive tilts toward the horizon) about the viewport
+  /// centre. Clamped natively to 0..60, so callers need no clamp of their own.
+  void pitchBy(double degrees) {
+    _checkAlive();
+    bindings.mbl_map_pitch_by(_handle, degrees);
+  }
+
   /// Projects [count] geographic points — read interleaved as
   /// `[lat0, lng0, lat1, lng1, …]` from the first `2 * count` entries of
   /// [inLatLng] — to screen positions written into the first `2 * count` entries

@@ -1356,6 +1356,73 @@ void mbl_map_scale_by(MblMap *m, double scale, double anchor_x,
   });
 }
 
+// Both of the following are built on jumpTo + CameraOptions rather than on
+// mbgl's own Map::rotateBy / Map::pitchBy, because BOTH of those are broken
+// upstream:
+//
+//   Transform::rotateBy computes
+//       std::sqrt(std::pow(2, offset.x) + std::pow(2, offset.y))
+//   which is 2^x + 2^y, not x^2 + y^2. Its "if the touch is within 200px of
+//   centre, shift the rotation centre" heuristic therefore fires on garbage:
+//   the pseudo-distance is ~0 for any negative offset (so the shift ALWAYS
+//   fires left/above centre) and passes 200 at about +16px (so it NEVER fires
+//   right/below). Rotation would feel wildly asymmetric about the centre.
+//   Inherited from mapbox-gl-native; an upstream-PR candidate.
+//
+//   Map::pitchBy SUBTRACTS its argument
+//       easeTo(CameraOptions().withPitch(rad2deg(transform.getPitch()) - pitch))
+//   so pitchBy(+10) tilts DOWN, not up.
+//
+// Two further constraints, both load-bearing:
+//   - Never set .withCenter() alongside .withAnchor(): transform.cpp reads
+//     `anchor = camera.center ? std::nullopt : camera.anchor`, silently
+//     discarding the anchor. That alone rules out implementing these as
+//     get-camera-then-set-camera, since mbl_map_set_camera always sends centre.
+//   - The read-modify-write must happen INSIDE the posted lambda. Doing the
+//     arithmetic in Dart would read m->camera, a cache refreshed on the render
+//     thread, so a fast twist would read a stale bearing and drop deltas.
+void mbl_map_rotate_by(MblMap *m, double degrees, double anchor_x,
+                       double anchor_y) {
+  if (m == nullptr) {
+    return;
+  }
+  // mbgl::LatLng's constructor throws on non-finite values and a throw across
+  // this extern "C" boundary is UB; a NaN bearing would also poison the camera
+  // cache. Reject rather than sanitize — there is no sensible NaN rotation.
+  if (!std::isfinite(degrees) || !std::isfinite(anchor_x) ||
+      !std::isfinite(anchor_y)) {
+    return;
+  }
+  m->post([m, degrees, anchor_x, anchor_y] {
+    const auto cam = m->map->getCameraOptions();
+    // Minus: bearing is the compass direction that is up, so turning the
+    // content clockwise lowers it. See the header — the sign lives here once.
+    m->map->jumpTo(mbgl::CameraOptions()
+                       .withBearing(cam.bearing.value_or(0.0) - degrees)
+                       .withAnchor(mbgl::ScreenCoordinate{anchor_x, anchor_y}));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_pitch_by(MblMap *m, double degrees) {
+  if (m == nullptr || !std::isfinite(degrees)) {
+    return;
+  }
+  m->post([m, degrees] {
+    const auto cam = m->map->getCameraOptions();
+    // Plus, unlike mbgl's own pitchBy. No clamp here: mbgl clamps to
+    // [0, DEFAULT_PITCH_MAX] in Transform, and duplicating it would hide a
+    // change to that limit.
+    m->map->jumpTo(
+        mbgl::CameraOptions().withPitch(cam.pitch.value_or(0.0) + degrees));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
 // --- Projection -------------------------------------------------------------
 // All four run pure math on a copy of the transform snapshot (taken out under
 // projMutex, then released), so they never touch the live map and are safe from

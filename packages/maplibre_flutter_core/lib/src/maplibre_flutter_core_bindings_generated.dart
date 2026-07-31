@@ -82,6 +82,19 @@ external void mbl_map_scale_by(
 );
 
 @ffi.Native<
+  ffi.Void Function(ffi.Pointer<MblMap>, ffi.Double, ffi.Double, ffi.Double)
+>()
+external void mbl_map_rotate_by(
+  ffi.Pointer<MblMap> map,
+  double degrees,
+  double anchor_x,
+  double anchor_y,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Double)>()
+external void mbl_map_pitch_by(ffi.Pointer<MblMap> map, double degrees);
+
+@ffi.Native<
   ffi.Int Function(
     ffi.Pointer<MblMap>,
     ffi.Double,

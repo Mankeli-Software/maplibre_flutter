@@ -98,6 +98,9 @@ class RecordingCoreMap implements MapLibreCoreMap {
   final List<({double dx, double dy})> moves = <({double dx, double dy})>[];
   final List<({double scale, double anchorX, double anchorY})> scales =
       <({double scale, double anchorX, double anchorY})>[];
+  final List<({double degrees, double anchorX, double anchorY})> rotations =
+      <({double degrees, double anchorX, double anchorY})>[];
+  final List<double> pitches = <double>[];
   final List<({String id, String json})> sources =
       <({String id, String json})>[];
   final List<({String json, String? beforeId})> layers =
@@ -253,6 +256,13 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void scaleBy(double scale, double anchorX, double anchorY) =>
       scales.add((scale: scale, anchorX: anchorX, anchorY: anchorY));
+
+  @override
+  void rotateBy(double degrees, double anchorX, double anchorY) =>
+      rotations.add((degrees: degrees, anchorX: anchorX, anchorY: anchorY));
+
+  @override
+  void pitchBy(double degrees) => pitches.add(degrees);
 
   @override
   void addSourceJson(String id, String json) =>

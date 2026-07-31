@@ -171,6 +171,21 @@ class MapLibreMapController {
         : null;
   }
 
+  /// The platform controller's rotate/tilt handler when its renderer offers
+  /// one; null otherwise. The widget uses this to decide whether to attach the
+  /// twist and shove recognizers — pan and zoom work either way.
+  ///
+  /// Nothing public is added to [MapLibreMapController] for this: a rotate
+  /// GESTURE is not an app-facing command, and the imperative case is already
+  /// `controller.camera.move(...copyWith(bearing:))`.
+  @internal
+  MapLibreRotateHandler? get rotateHandler {
+    final platform = _platform;
+    return platform is MapLibreRotateHandler
+        ? platform as MapLibreRotateHandler
+        : null;
+  }
+
   /// The platform controller's projector when its renderer supports anchoring
   /// widgets to geographic points (the default `mbgl-core` tiers); null on tiers
   /// that don't. The widget uses this to decide whether to render the marker

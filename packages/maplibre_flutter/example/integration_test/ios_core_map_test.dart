@@ -69,6 +69,32 @@ int _nonBlankPixels(ByteData rgba) {
   return count;
 }
 
+/// Pumps a bounded number of frames.
+///
+/// NOT `pumpAndSettle`: it waits for the frame pipeline to go idle, and on a
+/// live map it never does. The marker overlay runs a repaint ticker while the
+/// camera is settling, and a model with a non-zero spin drives `triggerRepaint`
+/// forever by design — so `pumpAndSettle` times out on exactly the scenarios
+/// worth testing.
+Future<void> pumpFrames(WidgetTester tester, {int frames = 20}) async {
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+}
+
+/// Lets REAL time pass, then pumps frames.
+///
+/// `tester.pump` alone is not enough for anything the engine does: mbgl renders
+/// on its own thread in real time, so tiles, the first transform snapshot and
+/// the projector tick all need wall-clock time that only `runAsync` allows to
+/// elapse. A marker whose projection is not ready yet is SKIPPED by the overlay
+/// delegate and its child stays parked at the origin — which reads as "the
+/// marker is in the wrong place" rather than "the map has not caught up".
+Future<void> settleMap(WidgetTester tester, {int seconds = 4}) async {
+  await tester.runAsync(() => Future<void>.delayed(Duration(seconds: seconds)));
+  await pumpFrames(tester, frames: 30);
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -98,7 +124,7 @@ void main() {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(seconds: 8)),
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     final pixels = await _capture(tester, mapKey);
     final drawn = _nonBlankPixels(pixels);
@@ -175,12 +201,17 @@ void main() {
               point: centre,
               child: SizedBox(key: middle, width: 12, height: 12),
             ),
+            // Deliberately modest offsets. The overlay CULLS a marker whose
+            // box lies wholly outside the map, and a phone viewport is only
+            // ~400pt wide — at zoom 8 that is about a third of a degree of
+            // longitude, so a point 0.6 degrees east is legitimately off-screen
+            // and its absence would read as a projection bug.
             MapLibreMarker(
-              point: LatLng(52.0, -0.13), // due north
+              point: LatLng(51.7, -0.13), // due north
               child: SizedBox(key: north, width: 12, height: 12),
             ),
             MapLibreMarker(
-              point: LatLng(51.5, 0.5), // due east
+              point: LatLng(51.5, 0.02), // due east
               child: SizedBox(key: east, width: 12, height: 12),
             ),
           ],
@@ -189,7 +220,7 @@ void main() {
     );
     await tester.pump();
     await controller.onReady.timeout(const Duration(seconds: 30));
-    await tester.pumpAndSettle();
+    await settleMap(tester);
 
     // Markers must be painted WITHOUT any gesture first: the projector ticks on
     // the first frame precisely so the overlay does not wait for a pan.
@@ -238,6 +269,16 @@ void main() {
       isTrue,
       reason: 'the iOS core tier must offer MapLibreStyleLayers',
     );
+
+    // Settle BEFORE adding anything. `onReady` completes on the first FRAME,
+    // which can precede the style finishing its load — and loading a style
+    // drops every app-added source and layer, with no event to tell you it
+    // happened. Adding immediately after onReady is therefore a race that
+    // silently loses the layer. (This is the missing style-loaded event the
+    // contract still owes; the example app papers over it with a hardcoded
+    // 700ms delay.)
+    await settleMap(tester, seconds: 5);
+
     controller.layers
       ..addSourceJson('pts', '''
         {"type":"geojson","data":{"type":"Feature",
@@ -252,7 +293,7 @@ void main() {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(seconds: 5)),
     );
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     // Query where the feature actually is, not the whole viewport: a
     // full-viewport box is y-symmetric and so cannot detect a flipped box.
@@ -320,7 +361,7 @@ void main() {
     );
     await tester.pump();
     await controller.onReady.timeout(const Duration(seconds: 30));
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
 
     // modelPartCount is non-null only after the .glb actually parsed, so this
     // distinguishes "loaded" from "silently failed and drew nothing".

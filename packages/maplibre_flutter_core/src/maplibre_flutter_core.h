@@ -80,6 +80,30 @@ FFI_PLUGIN_EXPORT void mbl_map_move_by(MblMap *map, double dx, double dy);
 FFI_PLUGIN_EXPORT void mbl_map_scale_by(MblMap *map, double scale,
                                         double anchor_x, double anchor_y);
 
+// Turn the map CONTENT clockwise by `degrees` about the anchor, and re-render.
+//
+// The anchor is in the same space as mbl_map_scale_by: logical points,
+// TOP-LEFT origin, passed to mbgl unflipped. That is the OPPOSITE of the
+// projection functions below, which do flip — mbgl documents CameraOptions'
+// anchor as top-left and converts it itself (transform.cpp does
+// `anchor->y = height - anchor->y`), whereas latLngToScreenCoordinate hands back
+// a bottom-left y. Two conventions coexist in this file deliberately; a
+// briefly-shipped flip here mirrored the Windows pinch anchor.
+//
+// The sign lives HERE, once, so five controllers do not each re-derive it.
+// mbgl's bearing is the compass direction that is UP, so turning the content
+// clockwise LOWERS it; Flutter's ScaleUpdateDetails.rotation is positive for a
+// clockwise on-screen twist, and this takes that convention.
+FFI_PLUGIN_EXPORT void mbl_map_rotate_by(MblMap *map, double degrees,
+                                         double anchor_x, double anchor_y);
+
+// Tilt by `degrees` (positive tilts AWAY from straight down, toward the
+// horizon) about the viewport centre, and re-render.
+//
+// mbgl clamps the result to [0, util::DEFAULT_PITCH_MAX] = [0, 60], so callers
+// need no clamp of their own.
+FFI_PLUGIN_EXPORT void mbl_map_pitch_by(MblMap *map, double degrees);
+
 // --- Projection -------------------------------------------------------------
 //
 // Convert between geographic coordinates and screen positions, for anchoring
