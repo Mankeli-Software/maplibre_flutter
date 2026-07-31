@@ -114,7 +114,30 @@ class MaplibreFlutterWindowsPlugin : public flutter::Plugin {
 
   explicit MaplibreFlutterWindowsPlugin(flutter::PluginRegistrarWindows* r)
       : textures_(r->texture_registrar()) {}
-  ~MaplibreFlutterWindowsPlugin() override = default;
+  // Clear each surviving texture's frame callback before the map of owning
+  // pointers is destroyed.
+  //
+  // The defaulted destructor this replaces freed every MapTexture while the
+  // core still held a pointer to it as its frame callback's user data — so a
+  // render thread that produced one more frame during teardown called
+  // OnFrameReady on freed memory. The `unregisterTexture` handler already gets
+  // this ordering right; only the destructor path did not, and that path is
+  // reached exactly when the engine goes away without Dart having disposed the
+  // maps.
+  //
+  // UnregisterTexture is deliberately not called here: it is asynchronous and
+  // completes into `this`, which is being destroyed. Dropping the callback is
+  // what makes the teardown safe; the engine releases its own registrations
+  // with the registrar.
+  ~MaplibreFlutterWindowsPlugin() override {
+    for (auto& [id, texture] : registered_) {
+      if (texture && texture->set_frame_callback != nullptr &&
+          texture->map_handle != nullptr) {
+        texture->set_frame_callback(texture->map_handle, nullptr, nullptr);
+      }
+    }
+    registered_.clear();
+  }
 
  private:
   void HandleMethodCall(const MethodCall<EncodableValue>& call,

@@ -21,18 +21,19 @@ const MethodChannel _registrar = MethodChannel(
   'maplibre_flutter/android/registrar',
 );
 
-/// EXPERIMENTAL controller: renders Android via `mbgl-core` (OpenGL ES + a
-/// Flutter `Texture`) instead of the MapLibre Android SDK (`MapView`/`AndroidView`).
+/// Controller for a map composited through a Flutter `Texture` on Android.
 ///
-/// This is the desktop core tier ported to Android, gated behind
-/// `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true` (CLAUDE.md §3 escape hatch;
-/// the 2026-06-19 decision keeps the SDK the default on mobile). It drives the
-/// shared `maplibre_flutter_core` over FFI: the core renders off-screen on its
-/// own thread into an RGBA frame; the native plugin presents that frame into a
-/// `SurfaceProducer`'s `Surface` (a CPU `ANativeWindow` blit). By returning a
-/// [TextureHandle] and implementing [MapLibreGestureHandler] it reuses the shared
-/// desktop Dart gesture + fly-to tier with no widget or interface change —
-/// feature parity with the macOS/Linux/Windows/iOS-core controllers.
+/// The DEFAULT Android renderer since the core-primary inversion:
+/// `maplibre_flutter_android` endorses this unconditionally (see its pubspec's
+/// `dartPluginClass`). The MapLibre Android SDK is the opt-in alternative, in
+/// `maplibre_flutter_android_sdk`.
+///
+/// Drives the shared `maplibre_flutter_core` over FFI: the core renders
+/// off-screen on its own thread into an RGBA frame; the native plugin presents
+/// that frame into a `SurfaceProducer`'s `Surface` (a CPU `ANativeWindow`
+/// blit). Returning a [TextureHandle] and implementing [MapLibreGestureHandler]
+/// reuses the shared Dart gesture + fly-to tier with no widget or interface
+/// change.
 class MapLibreFlutterAndroidCoreController
     with MapLibreCameraTickNotifier
     implements

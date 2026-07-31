@@ -15,6 +15,20 @@ public class MaplibreFlutterMacosPlugin: NSObject, FlutterPlugin {
   static let channelName = "maplibre_flutter/macos/registrar"
 
   private let textures: FlutterTextureRegistry
+
+  /// Live textures by id, so `unregisterTexture` can find one and several maps
+  /// can coexist.
+  ///
+  /// NOTE, because the asymmetry with iOS looks like an oversight and is not:
+  /// there is deliberately no engine-detach cleanup here. FlutterMacOS's plugin
+  /// protocol has no `detachFromEngine` (checked against the framework
+  /// headers — iOS's FlutterPlugin.h declares
+  /// `detachFromEngineForRegistrar:`, FlutterMacOS declares nothing
+  /// equivalent), so there is no hook to release these from. The Dart
+  /// controller's `dispose()` is macOS's only teardown path, and it is the one
+  /// the widget always takes. If an entry ever outlives the engine it holds a
+  /// live mbgl-core map and its render thread; the iOS plugin releases those on
+  /// detach and macOS cannot.
   private var registered: [Int64: MapLibreTexture] = [:]
 
   init(textures: FlutterTextureRegistry) {

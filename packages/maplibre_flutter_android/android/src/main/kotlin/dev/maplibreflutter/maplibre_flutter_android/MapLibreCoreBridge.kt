@@ -9,7 +9,7 @@ import android.view.Surface
  * entry points. The native side calls mbgl-core's FFI functions (whose addresses
  * are passed as [Long]s) to read frames and presents them into a SurfaceProducer's
  * [Surface] via the NDK ANativeWindow API. Only used when the core path is selected
- * by `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true`; the SDK path never loads it.
+ * on the default core path; the opt-in SDK package never loads it.
  */
 internal object MapLibreCoreBridge {
     init {

@@ -20,18 +20,22 @@ const MethodChannel _registrar = MethodChannel(
   'maplibre_flutter/ios/registrar',
 );
 
-/// EXPERIMENTAL controller: renders iOS via `mbgl-core` (Metal + a Flutter
-/// `Texture`) instead of the MapLibre Apple SDK (`MLNMapView`/`UiKitView`).
+/// Controller for a map composited through a Flutter `Texture` on iOS.
 ///
-/// This is the macOS desktop tier ported to iOS, gated behind
-/// `--dart-define=MAPLIBRE_EXPERIMENTAL_CORE=true` (CLAUDE.md §3 escape hatch;
-/// the 2026-06-19 decision keeps the SDK the default on mobile). It drives the
-/// shared `maplibre_flutter_core` over FFI: the core renders off-screen on its
-/// own thread into a Metal/IOSurface frame; the native plugin's
-/// `MapLibreCoreTexture` wraps that in a `CVPixelBuffer` for the `Texture`. By
-/// returning a [TextureHandle] and implementing [MapLibreGestureHandler] it
-/// reuses the shared desktop Dart gesture + fly-to tier with no widget or
-/// interface change — feature parity with the macOS/Linux/Windows controllers.
+/// The DEFAULT iOS renderer since the core-primary inversion: `maplibre_flutter_ios`
+/// endorses this unconditionally (see its pubspec's `dartPluginClass`). The
+/// MapLibre Apple SDK is the opt-in alternative, in `maplibre_flutter_ios_sdk`.
+///
+/// Drives the shared `maplibre_flutter_core` over FFI: the core renders
+/// off-screen on its own thread into a Metal/IOSurface frame; the native
+/// plugin's `MapLibreCoreTexture` wraps that in a `CVPixelBuffer` for the
+/// `Texture`. Returning a [TextureHandle] and implementing
+/// [MapLibreGestureHandler] reuses the shared Dart gesture + fly-to tier with
+/// no widget or interface change.
+///
+/// iOS runs the same Metal backend as macOS, so the mbgl patches often
+/// described as "Metal-only" apply here too — which is why this tier draws 3D
+/// models ([MapLibreModelHost]) with no platform-specific work.
 class MapLibreFlutterIosCoreController
     with MapLibreCameraTickNotifier
     implements

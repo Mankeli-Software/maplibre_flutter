@@ -75,15 +75,17 @@ void main(List<String> args) async {
     final src = packageRoot.resolve('src/');
     final targetOS = input.config.code.targetOS;
 
-    // iOS is the EXPERIMENTAL core-on-mobile path (CLAUDE.md §3): the mobile tier ships
-    // the MapLibre Apple SDK by default, and a dart-define selects the mbgl-core path at
-    // the Dart layer. mbgl-core is built for BOTH iOS device and Simulator: the CMake arm
-    // weak-links Metal on the Simulator (whose stub omits MTLIOErrorDomain/MTLTensorDomain),
-    // and Apple-Silicon Simulators have a real host-GPU Metal, so the core renders there
-    // too. KNOWN POC LIMITATION: the hook can't see the dart-define, so SDK-only iOS builds
-    // also bundle mbgl-core (build time + ~binary size); the production fix is a separate
-    // opt-in package (federation endorses one impl per platform). Other platforms
-    // (macOS/Linux/Windows) always build.
+    // mbgl-core is the default renderer on every platform (CLAUDE.md §3), so every
+    // arm builds it; the native SDKs live in separate opt-in packages, which is what
+    // build-time-excludes them. The old dart-define escape hatch, and the "SDK-only
+    // iOS builds still bundle mbgl-core" limitation it caused, are both gone —
+    // federation endorses one implementation per platform.
+    //
+    // iOS builds for BOTH device and Simulator: the CMake arm weak-links Metal on the
+    // Simulator (whose stub omits MTLIOErrorDomain/MTLTensorDomain), and Apple-Silicon
+    // Simulators have a real host-GPU Metal, so the core renders there too — which
+    // makes the Simulator a genuine verification target for this tier, not just a
+    // compile check.
 
     // Windows: mbgl-core's deps (ANGLE for EGL/GLES, curl, libpng/jpeg/webp, libuv,
     // dlfcn-win32) come from vcpkg. Provision them and hand CMake the vcpkg toolchain

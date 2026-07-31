@@ -3,7 +3,7 @@ import Flutter
 import Foundation
 import IOSurface
 
-// EXPERIMENTAL core-on-iOS path (MAPLIBRE_EXPERIMENTAL_CORE). This is the macOS
+// The default core-on-iOS path. This is the macOS
 // MapLibreTexture.swift ported to iOS: `import FlutterMacOS` → `import Flutter`,
 // everything else identical. FlutterTexture/FlutterTextureRegistry, copyPixelBuffer,
 // CVPixelBufferCreateWithIOSurface and the IOSurface-backed CPU pool are the same on

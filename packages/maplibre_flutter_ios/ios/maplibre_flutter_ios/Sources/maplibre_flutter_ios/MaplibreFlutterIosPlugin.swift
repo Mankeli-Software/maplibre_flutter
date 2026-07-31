@@ -31,6 +31,33 @@ public class MaplibreFlutterIosPlugin: NSObject, FlutterPlugin {
       name: registrarChannelName, binaryMessenger: registrar.messenger())
     let instance = MaplibreFlutterIosPlugin(textures: registrar.textures())
     registrar.addMethodCallDelegate(instance, channel: channel)
+    // Required for detachFromEngine to be delivered at all: FlutterPlugin.h is
+    // explicit that "you will only receive this method if you registered your
+    // plugin instance with the FlutterEngine via -[FlutterPluginRegistry
+    // publish:]". addMethodCallDelegate alone is not enough.
+    registrar.publish(instance)
+  }
+
+  /// Releases any texture still registered when the engine goes away.
+  ///
+  /// Normally the Dart controller's `dispose()` sends `unregisterTexture` and
+  /// this finds nothing to do. It matters when the engine is torn down without
+  /// that happening — an add-to-app host dropping a FlutterEngine, say — where
+  /// each surviving entry holds a live mbgl-core map AND its render thread.
+  ///
+  /// SCOPE, so this is not mistaken for more than it is: iOS is the only Apple
+  /// tier where this hook exists at all. FlutterMacOS's plugin protocol has no
+  /// detach callback (checked against the framework headers), so macOS has no
+  /// equivalent and the Dart dispose path is its only teardown. Neither
+  /// platform is notified of a hot restart, so neither this nor anything else
+  /// at the plugin layer addresses that case.
+  public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+    for texture in registered.values {
+      // Clears the core's frame callback before dropping the registration, so
+      // the render thread cannot call back into a texture that is going away.
+      texture.unregister()
+    }
+    registered.removeAll()
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
