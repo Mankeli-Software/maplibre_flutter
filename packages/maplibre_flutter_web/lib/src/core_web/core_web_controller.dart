@@ -104,8 +104,13 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
           if (m == null) return;
           final dpr = web.window.devicePixelRatio;
           final rect = canvas.getBoundingClientRect();
-          final w = rect.width * dpr;
-          final h = rect.height * dpr;
+          // LOGICAL (CSS) size. mbgl allocates its framebuffer as
+          // `Size * pixelRatio`, so multiplying here applied the ratio twice —
+          // at DPR 2 the framebuffer was 4x the canvas and only its bottom-left
+          // quadrant was blitted. Identical at DPR 1, which is the only
+          // configuration this tier has been run in.
+          final w = rect.width;
+          final h = rect.height;
           if (w >= 1 && h >= 1) m.resizeSync(w, h, dpr);
         }.toJS,
       );
@@ -170,14 +175,10 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
   Future<void> resize(Size size, double devicePixelRatio) async {
     final map = _map;
     if (map == null || _disposed) return;
-    // The engine renders into the canvas backing store, which is sized in device
-    // pixels (the C ABI `mbl_map_resize` takes device pixels; `mbl_map_create`
-    // takes the ratio separately).
-    map.resize(
-      size.width * devicePixelRatio,
-      size.height * devicePixelRatio,
-      devicePixelRatio,
-    );
+    // LOGICAL points plus the ratio, matching the five native tiers: mbgl sizes
+    // its framebuffer as `Size * pixelRatio` itself, and the shim scales to
+    // device pixels once, in present(), when it blits to the canvas.
+    map.resize(size.width, size.height, devicePixelRatio);
   }
 
   @override

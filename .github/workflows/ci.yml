@@ -236,3 +236,49 @@ jobs:
       - run: flutter pub get
       - run: flutter build windows --debug
         working-directory: packages/maplibre_flutter/example
+
+  # The WASM arm is a STANDALONE Emscripten build — not `flutter build web`, not
+  # hook/build.dart — so nothing in CI compiled it and nothing type-checked the
+  # embind surface or its mbgl API use. That is most of the risk in this tier:
+  # its C++ cannot be built on a machine without emsdk, so a change to it was
+  # previously verified by nothing at all.
+  #
+  # Compile only. Running it needs a browser with a real GPU (CLAUDE.md §2).
+  web-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-wasm-${{ hashFiles('packages/maplibre_flutter_core/MBGL_CORE_VERSION') }}
+          restore-keys: ccache-wasm-
+
+      - name: Build the embind module
+        working-directory: packages/maplibre_flutter_core/web
+        run: |
+          emcmake cmake -G Ninja -S . -B ../build/wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build ../build/wasm --target maplibre_flutter_core_wasm
+
+      - name: Publish the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maplibre-flutter-core-wasm
+          path: |
+            packages/maplibre_flutter_core/build/wasm/maplibre_flutter_core.js
+            packages/maplibre_flutter_core/build/wasm/maplibre_flutter_core.wasm
+          if-no-files-found: error

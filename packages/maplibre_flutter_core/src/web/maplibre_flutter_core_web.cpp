@@ -95,7 +95,24 @@ void ensureLoop() {
     }
 }
 
-mbgl::Size sizeFromCanvas(const val& canvas, mbgl::Size fallback) {
+// LOGICAL (CSS) size of the canvas, NOT its backing store.
+//
+// mbgl allocates its framebuffer as `Size * pixelRatio` (HeadlessFrontend), so
+// Size must be logical points — the same contract the five native tiers follow.
+// Reading canvas.width/height here gave it DEVICE pixels, which it then
+// multiplied by the ratio a second time: at DPR 2 the framebuffer was 4x the
+// canvas and present() blitted its bottom-left quadrant. Invisible at DPR 1,
+// where every term coincides — and DPR 1 is the only configuration this tier has
+// ever been run in (headless Edge on a Windows box).
+mbgl::Size cssSizeOf(const std::string& target, const val& canvas, mbgl::Size fallback) {
+    double cssW = 0;
+    double cssH = 0;
+    if (emscripten_get_element_css_size(target.c_str(), &cssW, &cssH) == EMSCRIPTEN_RESULT_SUCCESS &&
+        cssW >= 1.0 && cssH >= 1.0) {
+        return mbgl::Size{static_cast<uint32_t>(cssW), static_cast<uint32_t>(cssH)};
+    }
+    // No CSS box yet (detached canvas): fall back to the backing store converted
+    // back to logical points.
     const int w = canvas["width"].as<int>();
     const int h = canvas["height"].as<int>();
     return mbgl::Size{static_cast<uint32_t>(w > 0 ? w : static_cast<int>(fallback.width)),
@@ -125,7 +142,7 @@ public:
                canvas_.as_handle());
         mbgl::webgl::setCanvasSelector(target_);
 
-        size_ = sizeFromCanvas(canvas_, mbgl::Size{1, 1});
+        size_ = cssSizeOf(target_, canvas_, mbgl::Size{1, 1});
 
         if (continuous_) {
             // Continuous mode: mbgl renders partial frames immediately and refines
@@ -209,7 +226,7 @@ public:
         if (dLng > 180.0) dLng = 360.0 - dLng; // shortest way around the globe
         const double dLat = std::fabs(toLat_ - fromLat_);
         const double span = std::max(std::max(dLng, dLat), 1e-6);
-        const double cssWidth = size_.width / (pixelRatio_ > 0.0f ? pixelRatio_ : 1.0f);
+        const double cssWidth = size_.width; // size_ is already logical points
         // Zoom at which `span` degrees fits the viewport (whole world = 512px·2^z = 360°).
         const double fitZoom = std::log2(360.0 * cssWidth / (512.0 * span));
         peakZoom_ = fitZoom < 0.0 ? 0.0 : fitZoom;
@@ -272,6 +289,35 @@ public:
 
     void scaleBy(double scale, double anchorX, double anchorY) {
         map_->scaleBy(scale, mbgl::ScreenCoordinate{anchorX, anchorY});
+        dirty_ = true;
+    }
+
+    // Same bodies as the native shim's mbl_map_rotate_by / mbl_map_pitch_by, and
+    // for the same reasons: mbgl's own Map::rotateBy computes
+    // sqrt(pow(2, x) + pow(2, y)) instead of x^2 + y^2, and Map::pitchBy
+    // SUBTRACTS its argument. Never pair .withCenter() with .withAnchor() —
+    // transform.cpp discards the anchor when a centre is present.
+    //
+    // Anchors are logical (CSS) points, top-left origin, unflipped.
+    void rotateBy(double degrees, double anchorX, double anchorY) {
+        if (!std::isfinite(degrees) || !std::isfinite(anchorX) || !std::isfinite(anchorY)) {
+            return;
+        }
+        const auto cam = map_->getCameraOptions();
+        // Minus: bearing is the compass direction that is up, so turning the
+        // content clockwise lowers it.
+        map_->jumpTo(mbgl::CameraOptions()
+                         .withBearing(cam.bearing.value_or(0.0) - degrees)
+                         .withAnchor(mbgl::ScreenCoordinate{anchorX, anchorY}));
+        dirty_ = true;
+    }
+
+    void pitchBy(double degrees) {
+        if (!std::isfinite(degrees)) {
+            return;
+        }
+        const auto cam = map_->getCameraOptions();
+        map_->jumpTo(mbgl::CameraOptions().withPitch(cam.pitch.value_or(0.0) + degrees));
         dirty_ = true;
     }
 
@@ -385,14 +431,19 @@ private:
         // Sync the canvas backing store to the render size here — immediately before
         // the blit — so the clear it triggers and the blit happen in one turn (no
         // resize white blink; see resize()). Guarded so we only touch it on a change.
-        if (canvasW_ != size_.width || canvasH_ != size_.height) {
-            canvas_.set("width", static_cast<int>(size_.width));
-            canvas_.set("height", static_cast<int>(size_.height));
-            canvasW_ = size_.width;
-            canvasH_ = size_.height;
+        // size_ is LOGICAL; the framebuffer and the canvas backing store are
+        // both DEVICE pixels, so scale by the ratio here — this is the one place
+        // that conversion belongs.
+        const auto deviceW = static_cast<uint32_t>(size_.width * pixelRatio_);
+        const auto deviceH = static_cast<uint32_t>(size_.height * pixelRatio_);
+        if (canvasW_ != deviceW || canvasH_ != deviceH) {
+            canvas_.set("width", static_cast<int>(deviceW));
+            canvas_.set("height", static_cast<int>(deviceH));
+            canvasW_ = deviceW;
+            canvasH_ = deviceH;
         }
-        const auto w = static_cast<GLint>(size_.width);
-        const auto h = static_cast<GLint>(size_.height);
+        const auto w = static_cast<GLint>(deviceW);
+        const auto h = static_cast<GLint>(deviceH);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(srcFbo));
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
@@ -426,8 +477,9 @@ private:
         if (cssW < 1.0 || cssH < 1.0) {
             return;
         }
-        const auto w = static_cast<uint32_t>(cssW * pixelRatio_);
-        const auto h = static_cast<uint32_t>(cssH * pixelRatio_);
+        // CSS size straight through: size_ is logical points (see cssSizeOf).
+        const auto w = static_cast<uint32_t>(cssW);
+        const auto h = static_cast<uint32_t>(cssH);
         if (w == size_.width && h == size_.height) {
             return;
         }
@@ -484,7 +536,7 @@ private:
         inertiaVx_ *= decay;
         inertiaVy_ *= decay;
         dirty_ = true;
-        if (std::hypot(inertiaVx_, inertiaVy_) < kInertiaMinSpeed * pixelRatio_) {
+        if (std::hypot(inertiaVx_, inertiaVy_) < kInertiaMinSpeed) {
             inertia_ = false;
         }
     }
@@ -501,18 +553,43 @@ private:
         m->dragVx_ = 0;
         m->dragVy_ = 0;
         m->lastMoveMs_ = emscripten_get_now();
+        // button 2 is the secondary button; ctrlKey + primary is the mac idiom.
+        m->rotateDragging_ = (e->button == 2) || (e->button == 0 && e->ctrlKey);
+        if (m->rotateDragging_) {
+            m->dragging_ = false; // rotate-drag must not also pan
+        }
         return EM_TRUE;
     }
     static EM_BOOL onMouseMove(int, const EmscriptenMouseEvent* e, void* ud) {
         auto* m = static_cast<WebMap*>(ud);
+        if (m->rotateDragging_) {
+            // Secondary button or ctrl+primary: horizontal turns, vertical tilts
+            // (gl-js's DragRotateHandler). A mouse can neither twist nor shove,
+            // so without this rotation is unreachable with one.
+            const double dx = static_cast<double>(e->targetX - m->lastX_);
+            const double dy = static_cast<double>(e->targetY - m->lastY_);
+            m->lastX_ = e->targetX;
+            m->lastY_ = e->targetY;
+            if (dx != 0.0) {
+                m->rotateBy(dx * kDragRotateDegreesPerPixel,
+                            static_cast<double>(e->targetX),
+                            static_cast<double>(e->targetY));
+            }
+            if (dy != 0.0) {
+                m->pitchBy(-dy * kDragPitchDegreesPerPixel);
+            }
+            return EM_TRUE;
+        }
         if (!m->dragging_) {
             return EM_FALSE;
         }
-        const double dx = (e->targetX - m->lastX_) * m->pixelRatio_;
-        const double dy = (e->targetY - m->lastY_) * m->pixelRatio_;
+        // No pixelRatio scaling: mbgl's screen space is logical points now, and
+        // targetX/Y are CSS pixels, so the two already agree.
+        const double dx = static_cast<double>(e->targetX - m->lastX_);
+        const double dy = static_cast<double>(e->targetY - m->lastY_);
         m->lastX_ = e->targetX;
         m->lastY_ = e->targetY;
-        // Track a smoothed drag velocity (device px/s) for the release fling.
+        // Track a smoothed drag velocity (logical px/s) for the release fling.
         const double now = emscripten_get_now();
         const double dt = (now - m->lastMoveMs_) / 1000.0;
         m->lastMoveMs_ = now;
@@ -527,12 +604,16 @@ private:
     }
     static EM_BOOL onMouseUp(int, const EmscriptenMouseEvent*, void* ud) {
         auto* m = static_cast<WebMap*>(ud);
+        if (m->rotateDragging_) {
+            m->rotateDragging_ = false;
+            return EM_TRUE; // a rotate-drag never flings
+        }
         m->dragging_ = false;
         // Fling only if released while still moving (not after a pause) and fast
-        // enough — mirrors the desktop Dart thresholds (scaled to device px).
+        // enough — mirrors the desktop Dart thresholds, which are in logical px.
         const double sinceMove = emscripten_get_now() - m->lastMoveMs_;
         const double speed = std::hypot(m->dragVx_, m->dragVy_);
-        if (sinceMove < 100.0 && speed >= kInertiaStartSpeed * m->pixelRatio_) {
+        if (sinceMove < 100.0 && speed >= kInertiaStartSpeed) {
             m->inertia_ = true;
             m->inertiaVx_ = m->dragVx_;
             m->inertiaVy_ = m->dragVy_;
@@ -545,14 +626,15 @@ private:
         auto* m = static_cast<WebMap*>(ud);
         const double factor = std::pow(2.0, -e->deltaY / 120.0 * 0.5);
         m->map_->scaleBy(factor,
-                         mbgl::ScreenCoordinate{e->mouse.targetX * m->pixelRatio_,
-                                                e->mouse.targetY * m->pixelRatio_});
+                         mbgl::ScreenCoordinate{static_cast<double>(e->mouse.targetX),
+                                                static_cast<double>(e->mouse.targetY)});
         m->dirty_ = true;
         return EM_TRUE;
     }
 
     val canvas_;
     std::string target_;
+    bool rotateDragging_ = false;
     float pixelRatio_ = 1.0f;
     mbgl::Size size_{1, 1};
     // Backing-store size currently applied to the canvas (synced lazily in present()
@@ -584,6 +666,10 @@ private:
     static constexpr double kInertiaTau = 0.3;
     static constexpr double kInertiaMinSpeed = 16;    // stop the fling below this
     static constexpr double kInertiaStartSpeed = 120; // min release speed to fling
+    // Mouse drag-rotate sensitivity, matching the Dart desktop tier so the two
+    // feel the same. Tune together during the native-feel A/B.
+    static constexpr double kDragRotateDegreesPerPixel = 0.8;
+    static constexpr double kDragPitchDegreesPerPixel = 0.5;
     bool inertia_ = false;
     double inertiaVx_ = 0, inertiaVy_ = 0; // device px/s
     double dragVx_ = 0, dragVy_ = 0;       // smoothed drag velocity (device px/s)
@@ -658,6 +744,8 @@ EMSCRIPTEN_BINDINGS(maplibre_flutter_core) {
         .function("resizeSync", &WebMap::resizeSync)
         .function("moveBy", &WebMap::moveBy)
         .function("scaleBy", &WebMap::scaleBy)
+        .function("rotateBy", &WebMap::rotateBy)
+        .function("pitchBy", &WebMap::pitchBy)
         .function("animateTo", &WebMap::animateTo)
         .function("onReady", &WebMap::onReady)
         .function("destroy", &WebMap::destroy);

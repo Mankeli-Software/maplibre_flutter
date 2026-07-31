@@ -106,6 +106,17 @@ extension type CoreMap._(JSObject _) implements JSObject {
   /// `mbl_map_scale_by` — shared-desktop-tier zoom primitive (logical pixels).
   external void scaleBy(double scale, double anchorX, double anchorY);
 
+  /// Turns the map content clockwise by [degrees] about the anchor (logical
+  /// pixels, top-left origin — the same space as [scaleBy]).
+  ///
+  /// The web tier's gestures are recognised in C++ inside the module, so this
+  /// exists for programmatic use rather than for the Dart gesture layer, which
+  /// this tier deliberately does not attach.
+  external void rotateBy(double degrees, double anchorX, double anchorY);
+
+  /// Tilts by [degrees] (positive toward the horizon). Clamped by mbgl to 0..60.
+  external void pitchBy(double degrees);
+
   /// Eased camera transition over [durationMs] (the fly-to path), stepped by the
   /// module's render loop.
   external void animateTo(
