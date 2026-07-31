@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -39,6 +39,26 @@ class MapLibreFlutterIosCoreController
         MapLibreMapProjector,
         MapLibreStyleLayers {
   MapLibreFlutterIosCoreController._(this._coreMap, this._textureId) {
+    _pollReady();
+  }
+
+  /// Builds a controller around an already-created core map, bypassing
+  /// [create]'s native texture registration.
+  ///
+  /// Exists so the controller body can be tested on the VM against
+  /// `RecordingCoreMap` (`package:maplibre_flutter_core/testing.dart`) with no
+  /// dylib, GPU or device. [create] is unusable for that: it calls
+  /// `MapLibreCoreMap.create` and a `registerTexture` method channel. The
+  /// ~400 lines below — camera conversion, fly-to stepping, projector batching,
+  /// style pass-through, dispose ordering — are otherwise executed by no test on
+  /// any platform (CLAUDE.md §7 layer 2).
+  @visibleForTesting
+  MapLibreFlutterIosCoreController.forTesting(
+    core.MapLibreCoreMap coreMap, {
+    int textureId = 0,
+  }) : _coreMap = coreMap,
+       // ignore: prefer_initializing_formals
+       _textureId = textureId {
     _pollReady();
   }
 
@@ -176,7 +196,13 @@ class MapLibreFlutterIosCoreController
   }
 
   @override
-  Future<void> setStyle(String styleUri) async => _coreMap.setStyle(styleUri);
+  Future<void> setStyle(String styleUri) async {
+    // Guarded like every other forward: the core throws StateError once
+    // disposed, and the widget pushes its declarative `style` prop from
+    // didUpdateWidget, which can land during teardown.
+    if (_disposed) return;
+    _coreMap.setStyle(styleUri);
+  }
 
   @override
   Future<void> resize(Size size, double devicePixelRatio) async {

@@ -31,6 +31,10 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
+  # For RecordingCoreMap in test/core_controller_conformance_test.dart. This is
+  # the only package that depends on all five mbgl-core platform packages, so it
+  # is the only place one conformance suite can cover every tier at once.
+  maplibre_flutter_core: ^0.0.3
 
 flutter:
   plugin:

@@ -2,6 +2,14 @@ import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 
 import 'src/maplibre_flutter_linux_controller.dart';
 
+/// The controller is exported so the shared core-controller conformance suite
+/// (packages/maplibre_flutter/test/core_controller_conformance_test.dart) can
+/// drive it against a recording fake. One suite covering all five tiers beats
+/// five near-identical copies, and only `maplibre_flutter` depends on every
+/// platform package, so the suite has to live there and the type has to be
+/// reachable without an implementation import.
+export 'src/maplibre_flutter_linux_controller.dart';
+
 /// The Linux implementation of `maplibre_flutter`.
 ///
 /// Registered automatically via `dartPluginClass` in pubspec.yaml. Linux is part
