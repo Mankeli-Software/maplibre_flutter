@@ -1,12 +1,15 @@
 # maplibre_flutter
 
 > ⚠️ **Work in progress — pre-release, not production-ready.** Every target platform
-> (Android, iOS, macOS, Windows, Linux, Web) renders a real MapLibre map, but only a small
-> slice of the API is wired so far — map creation, camera (get / move / jump / fly), style
-> switching, gestures, resize, and lifecycle. Layers, sources, annotations, events, and
-> queries are **not** exposed yet. The public API will change without notice; pin an exact
-> version. ⭐ the [repository](https://github.com/Mankeli-Software/maplibre_flutter) to follow
-> along.
+> (Android, iOS, macOS, Windows, Linux, Web) renders a real MapLibre map. On the five **native**
+> platforms the API now covers camera, gestures, widget markers, engine sources / layers /
+> images, a generated typed style API, rendered-feature queries and 3D models — but **only macOS
+> has been verified on hardware**; the other four share the identical binding and are awaiting a
+> device run. **Web** is camera / style / gestures only. The public API will change without
+> notice; pin an exact version — and note that
+> [building from source](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/docs/building-from-source.md)
+> is required today. ⭐ the [repository](https://github.com/Mankeli-Software/maplibre_flutter)
+> to follow along.
 
 A Flutter plugin that renders [MapLibre](https://maplibre.org) vector maps **natively on every
 platform** — Android, iOS, macOS, Windows, Linux, and Web.
@@ -34,8 +37,9 @@ become the *stable*, well-tested MapLibre binding for Flutter.
 
 ## Platforms
 
-Every platform renders a map today. Only camera, style, gestures, resize, and lifecycle are
-wired through the API so far (see [status](#status) and the
+Every platform renders a map today. The five native platforms additionally share a substantial
+annotation and styling API — verified on macOS, not yet run on the other four (see
+[status](#status) and the
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)).
 
 Every platform renders the same `mbgl-core` engine. Zero-copy GPU present is the default
@@ -139,6 +143,45 @@ Gestures work out of the box: a shared Dart gesture tier drives pan / zoom / fly
 engine on every platform (the engine owns gestures itself on web). The opt-in native-SDK and
 maplibre-gl-js renderers use their own native gestures instead.
 
+### Markers and layers
+
+Two ways to put things on the map, on the five native platforms
+([status](#status) — verified on macOS):
+
+**Widget markers** are real Flutter widgets glued to a point — full gestures and animation,
+good to roughly the high hundreds:
+
+```dart
+MapLibreMap(
+  style: _style,
+  markers: [
+    MapLibreMarker(
+      point: const LatLng(60.17, 24.94),
+      alignment: Alignment.bottomCenter,   // marker's bottom sits on the point
+      child: GestureDetector(
+        onTap: _openStop,                  // the marker's own gestures work
+        child: const SizedBox(width: 24, height: 24, child: _Pin()),
+      ),
+    ),
+  ],
+  onTap: (LatLng point) => print('tapped map at $point'),  // taps that miss a marker
+)
+```
+
+**Engine layers** put the points in the style itself, so mbgl draws them with the map —
+glued by construction, GPU-scaled to 100k+, clustering built in, but pictures rather than
+widgets (no per-marker gestures):
+
+```dart
+await _controller.onReady;
+_controller.layers.addPoints('stops', stops, cluster: true);
+```
+
+For full control, `controller.layers` also takes the typed style API (`CircleLayer`,
+`SymbolLayer`, `GeoJsonSource`, `Expr…`) or raw Style Spec JSON. Check
+`controller.layers.isSupported` before using it — it is `false` on renderers that don't bind
+the layer API (web, and the opt-in native-SDK packages).
+
 ## Packages
 
 This is a federated plugin. App code uses only the first package; the rest are implementation
@@ -193,14 +236,36 @@ style, …) is identical everywhere. Each per-package README goes deep on how th
 
 ## Status
 
-What works on every platform today: **map creation, camera (`getCamera` / `moveCamera` /
-jump / fly), style switching (`setStyle`), gestures, `resize`, `onReady`, and `dispose`.**
+**Every platform** (including web): map creation, camera (`getCamera` / `moveCamera` / jump /
+fly), style switching, gestures, `resize`, `onReady`, `dispose`.
 
-Not yet wired: layers, sources, runtime styling/expressions, annotations & controls, events &
-queries, images/sprites/glyphs, 3D/terrain, and offline. These are binding work, not engine
-limitations — the underlying engines support them. The
+**The five native platforms** (Android, iOS, macOS, Windows, Linux) additionally:
+
+- **Widget markers** — real Flutter widgets glued to a `LatLng`; tappable, draggable,
+  animatable. Positioned from a projection snapshot correlated to the frame actually on
+  screen, so they don't swim during movement.
+- **Engine sources / layers / images** — `controller.layers` takes Style Spec JSON for any
+  source or layer type, plus `setGeoJsonData`, `addImage`, and `addWidgetIcon` (a Flutter
+  widget rasterised into a style image). In-engine clustering works.
+- **Typed style API** — generated from the vendored style spec: all 10 layer types, 6 source
+  types, 33 enums and all 84 expression operators, serialising to the JSON path above.
+- **Queries** — `queryRenderedFeatures(rect)`, returning what the engine actually drew.
+- **Style transitions** and **`onCameraChanged`** (a `Listenable` ticked on every camera change).
+- **3D `.glb` models** drawn inside the engine, depth-occluding against buildings —
+  **macOS/Metal only** so far.
+
+> **Read the verification caveat.** Everything in that second list is verified on **macOS**.
+> The other four native platforms share the *identical* binding and shared Dart tier, so the
+> code is equally present — but it has not been run there, and this project treats untested
+> code as untested. The feature matrix marks that distinction explicitly (✅ verified vs
+> 🧪 wired-but-unrun). **Web binds none of it** — no projector, no layers, no models — which is
+> the single largest gap.
+
+Still unbound everywhere: rotate / pitch / double-tap gestures, offline storage, terrain and
+hillshade, the location component, and built-in controls. These are binding work, not engine
+limitations — the engines underneath support them. The
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)
-tracks the full parity backlog, feature by feature, per platform.
+tracks the full parity backlog feature by feature, per platform.
 
 ## Example
 
