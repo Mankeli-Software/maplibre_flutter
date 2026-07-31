@@ -551,6 +551,38 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // off the cursor. We keep the prior position so the gesture start can undo it.
   Offset _prevPointerPos = Offset.zero;
 
+  // Every pointer currently down, by id. Two things need it:
+  //
+  //  1. Telling a TOUCH pinch (two real pointers) from a TRACKPAD pinch (zero
+  //     pointers down — the gesture arrives as PointerPanZoom). Only the latter
+  //     may anchor on the cursor; see [_anchorOnCursor].
+  //  2. Recognising a two-finger vertical "shove" for tilt, which
+  //     `ScaleUpdateDetails` cannot express — it carries a focal point, a scale
+  //     and a rotation, but no per-pointer positions, and a shove is otherwise
+  //     indistinguishable from a two-finger pan.
+  final Map<int, Offset> _pointers = <int, Offset>{};
+
+  // Whether the pinch may zoom about the live cursor rather than the frozen
+  // focal anchor.
+  //
+  // The cursor override exists for ONE case: a trackpad pinch's gesture focal
+  // carries GTK's bogus initial pan offset, so it sits ~tens of px off the
+  // cursor while the cursor itself is on the right point (see [_lastPointerPos]).
+  // It must NOT apply to a real touch pinch: there is no cursor on a touchscreen,
+  // only `PointerMoveEvent`s from both fingers, so [_lastPointerPos] becomes
+  // "whichever finger moved last" and the anchor alternates between the two on
+  // every frame — the map then chases the fingers instead of zooming about a
+  // stable point.
+  //
+  // Both halves of the condition are deliberate, because they disagree exactly
+  // where it matters. `_inTrackpadPanZoom` alone would silently drop back to the
+  // frozen focal — reverting the Linux fix — under an embedder that synthesises
+  // the scale gesture without emitting `PointerPanZoomStart`. A pointer-count
+  // test alone would keep the cursor anchor for a mouse click-drag that left a
+  // pointer down. Either regression is invisible on macOS, where the cursor and
+  // the focal are the same point.
+  bool get _anchorOnCursor => _inTrackpadPanZoom || _pointers.length <= 1;
+
   // Global-route fallback state. A trackpad pinch / two-finger pan / scroll fires at
   // the cursor position; if an overlay widget (e.g. app controls) sits on top of the
   // map there, the event hit-tests to the overlay and the map's own gesture layer
@@ -655,7 +687,10 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         // pinch's focal carries GTK's bogus initial pan offset so it sits ~tens of
         // px off the cursor. The live pointer position (hover/move-tracked) is on
         // the cursor; on macOS cursor == focal so this is equivalent. Fall back to
-        // the frozen focal anchor only if no pointer position is known yet.
+        // the frozen focal anchor if no pointer position is known yet, or when
+        // this is a real multi-touch pinch, where there is no cursor to speak of
+        // and [_lastPointerPos] would alternate between the fingers — see
+        // [_anchorOnCursor].
         //
         // TODO(pinch-zoom): smooth / springy pinch-to-zoom is not implemented yet
         // (a missing feature, not a bug). The pinch applies the raw per-frame
@@ -663,9 +698,9 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         // interpolation toward the target and no release momentum — unlike the pan
         // fling below. Add gesture interpolation + a zoom-release inertia/spring so
         // the zoom eases and settles smoothly.
-        final anchor = _lastPointerPos == Offset.zero
-            ? _zoomAnchor
-            : _lastPointerPos;
+        final anchor = (_anchorOnCursor && _lastPointerPos != Offset.zero)
+            ? _lastPointerPos
+            : _zoomAnchor;
         widget.handler.scaleBy(relative, anchor.dx, anchor.dy);
       }
       _lastScale = details.scale;
@@ -876,11 +911,21 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onPointerDown(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
   }
 
   void _onPointerMove(PointerMoveEvent e) {
+    _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
+  }
+
+  void _onPointerUp(PointerUpEvent e) {
+    _pointers.remove(e.pointer);
+  }
+
+  void _onPointerCancel(PointerCancelEvent e) {
+    _pointers.remove(e.pointer);
   }
 
   @override
@@ -892,6 +937,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       onPointerHover: _onPointerHover,
       onPointerDown: _onPointerDown,
       onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
       child: GestureDetector(
         onScaleStart: _onScaleStart,
         onScaleUpdate: _onScaleUpdate,

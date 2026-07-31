@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
@@ -446,4 +447,164 @@ void main() {
       );
     },
   );
+
+  // The three tests below, together with the touch pinch above, pin the zoom
+  // anchor for every input shape that can reach it. They exist because the two
+  // anchor rules in this file were fixed independently and the second silently
+  // defeated the first: commit 55ee9d4 froze the anchor for the Windows/Linux
+  // trackpad focal drift, then commit 1963302 made the anchor follow the live
+  // cursor for the Linux GTK focal offset — and since a real pinch always
+  // produces pointer moves, the frozen anchor became dead code and a two-finger
+  // touch pinch started chasing whichever finger moved last.
+  //
+  // Each case anchors at a DIFFERENT off-centre position, so no two can pass by
+  // coincidence, and none is at the viewport centre — where a dropped anchor and
+  // a correct one are indistinguishable.
+
+  testWidgets('trackpad pinch zooms about the live cursor, not the focal', (
+    tester,
+  ) async {
+    // Pins the Linux/GTK fix: a trackpad pinch's gesture focal carries a bogus
+    // initial pan offset, so the cursor — not the focal — is the true anchor.
+    final platform = _FakePlatform(
+      const TextureHandle(textureId: 9),
+      gestures: true,
+    );
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(style: _style, options: _options),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final controller = platform.lastController! as _FakeGestureController;
+
+    const cursor = Offset(120, 90);
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    // Two hovers, a few px apart: one large jump would look like GTK's
+    // pointer warp and _onPanZoomStart would (correctly) undo it.
+    await tester.sendEventToBinding(mouse.hover(cursor - const Offset(3, 2)));
+    await tester.sendEventToBinding(mouse.hover(cursor));
+    await tester.pump();
+
+    // The pan-zoom gesture reports a focal far from the cursor — the bug being
+    // guarded against — so the two are never confusable.
+    const focal = Offset(500, 400);
+    final pad = TestPointer(2, PointerDeviceKind.trackpad);
+    await tester.sendEventToBinding(pad.panZoomStart(focal));
+    await tester.pump();
+    await tester.sendEventToBinding(pad.panZoomUpdate(focal, scale: 2));
+    await tester.pump();
+    await tester.sendEventToBinding(pad.panZoomEnd());
+    await tester.pump();
+
+    expect(controller.scaleCalls, isNotEmpty, reason: 'trackpad pinch zooms');
+    for (final call in controller.scaleCalls) {
+      expect(
+        call.anchor,
+        cursor,
+        reason: 'trackpad pinch must anchor on the cursor, not the focal',
+      );
+    }
+  });
+
+  testWidgets('scroll-wheel zoom anchors on the scroll event, not the cursor', (
+    tester,
+  ) async {
+    final platform = _FakePlatform(
+      const TextureHandle(textureId: 9),
+      gestures: true,
+    );
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(style: _style, options: _options),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final controller = platform.lastController! as _FakeGestureController;
+
+    // Hover somewhere, then scroll somewhere ELSE. If the anchor came from the
+    // tracked cursor rather than the scroll event this reads (140, 110).
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(const Offset(140, 110)));
+    await tester.pump();
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        position: Offset(650, 470),
+        scrollDelta: Offset(0, -120),
+      ),
+    );
+    await tester.pump();
+
+    expect(controller.scaleCalls, hasLength(1));
+    expect(controller.scaleCalls.single.anchor, const Offset(650, 470));
+    expect(
+      controller.scaleCalls.single.scale,
+      greaterThan(1),
+      reason: 'scrolling up zooms in',
+    );
+  });
+
+  testWidgets('a touch pinch anchors on one frozen point per gesture', (
+    tester,
+  ) async {
+    // The narrow regression guard for the anchor rule itself: on a touchscreen
+    // there is no cursor, only PointerMoveEvents from both fingers, so anchoring
+    // on the last-moved pointer alternates between them every frame. Distinct
+    // from the drift test above, which also asserts the no-pan-while-zooming
+    // rule; this one isolates "exactly one anchor, and it is not a finger".
+    final platform = _FakePlatform(
+      const TextureHandle(textureId: 9),
+      gestures: true,
+    );
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(style: _style, options: _options),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final controller = platform.lastController! as _FakeGestureController;
+
+    // Start centroid (600, 200) — clear of both other cases' anchors and of the
+    // viewport centre. Only the RIGHT finger spreads, so the centroid drifts
+    // steadily rightward: an anchor that tracks the fingers ends up far from
+    // where the pinch began, and a symmetric fixture could not tell the two
+    // apart.
+    const left = Offset(560, 200);
+    const rightStart = Offset(640, 200);
+    final f1 = await tester.startGesture(left, pointer: 11);
+    final f2 = await tester.startGesture(rightStart, pointer: 12);
+    await tester.pump();
+    var right = rightStart;
+    for (var i = 1; i <= 8; i++) {
+      right = rightStart + Offset(30.0 * i, 0);
+      await f2.moveTo(right);
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+
+    expect(controller.scaleCalls, isNotEmpty, reason: 'touch pinch zooms');
+    final anchors = controller.scaleCalls.map((c) => c.anchor).toSet();
+    expect(anchors, hasLength(1), reason: 'one frozen anchor for the gesture');
+
+    // The bug anchored on whichever finger moved last — here, the right one at
+    // its ever-growing x. Assert the anchor is neither finger and stayed put
+    // near the pinch's origin while the centroid drifted ~120px away.
+    final anchor = anchors.single;
+    expect(anchor.dx, isNot(closeTo(left.dx, 5)));
+    expect(anchor.dx, isNot(closeTo(right.dx, 5)));
+    expect(
+      anchor.dx,
+      closeTo((left.dx + rightStart.dx) / 2, 20),
+      reason:
+          'the anchor froze near the starting centroid, not the drifted one',
+    );
+  });
 }
