@@ -49,25 +49,33 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
 
 ### What is not done
 
-- **Feature parity beyond macOS.** Widget markers, engine layers/sources, `queryRenderedFeatures`
-  and the typed style API are *written* on all five native tiers but have only been *run* on
-  macOS. Web has none of them. → `docs/cross-platform-continuation.md`.
-- **3D `.glb` models are Metal-only.** GL/Vulkan/WebGPU shader-patch edits exist but are
-  unverified code, not working code.
-- **Web WASM productionization** — artifact bundling, COOP/COEP serve config, single-thread
-  fallback, a CI emscripten job — before web is publish-ready. → `docs/experimental-web-core-wasm.md`.
-- **CI is `workflow_dispatch`-only** pending a cost review, so the codegen regen-diff checks
-  (ffigen, typed style API) never actually run. Uncommenting those triggers is the single
-  highest-value CI action available.
-- **Native-feel A/B** (gesture inertia/fling) against the SDKs before tagging anything stable.
+- **Running the four unrun tiers.** As of 2026-07-31 all five `mbgl-core` tiers implement every
+  capability macOS does — markers, engine layers, queries, the typed style API, 3D models,
+  rotate/tilt. macOS and **iOS** (Apple-Silicon Simulator, 5/5 integration tests incl. pixel and
+  absolute-direction assertions) have been run; **Android, Windows and Linux have not**. They are
+  covered by a 120-assertion controller conformance suite and per-platform compile gates, which is
+  not the same as working. → `docs/cross-platform-continuation.md`.
+- **3D models unrun off Metal.** Verified on macOS and iOS. The GL attribute-order defect is fixed
+  but the Mesa/llvmpipe run has not happened (needs docker); Vulkan has NO off-target verification
+  path at all until a lavapipe arm exists, and CLAUDE.md §11 forbids extrapolating to it.
+- **Web is the real gap.** Neither web tier implements projector / camera-tick / style-layers, so
+  no markers, no engine layers, no typed style API there. The WASM shim's Size/DPR bug is fixed and
+  a CI job now compiles the Emscripten module, but none of its C++ has been run.
+  → `docs/experimental-web-core-wasm.md`.
+- **Native-feel A/B** (inertia/fling, and now the rotate deadzone + shove and drag sensitivities)
+  against the SDKs before tagging anything stable. Rotate INERTIA is deliberately not implemented:
+  it needs `TickerProviderStateMixin`, and the single-ticker constraint in the gesture state is
+  load-bearing.
 - **Upstream PRs not opened** for the text-centring patch we carry
   (`patches/text-centre-anchor-on-ink.patch`). It fixes a real MapLibre defect — centre-anchored
   text is centred on a hardcoded baseline constant, not on font metrics — that affects the web
   engine identically. Needs an issue + PR on `maplibre-native` and a PR on `maplibre-gl-js`
   (mirror written, untested).
   → `docs/upstream-text-centring/`.
-- Known failing test: `"pinch zoom freezes its anchor…"` in `maplibre_map_test.dart` — fails on
-  `main` too, pre-existing, unrelated to recent work.
+- ~~Known failing test: `"pinch zoom freezes its anchor…"`~~ — FIXED 2026-07-31, and it was never
+  a stale test: two anchor fixes had collided and left a live touch bug where a two-finger pinch
+  anchored on whichever finger moved last. `melos run test` had been red because of it, and
+  `failFast` was cancelling three other packages behind it.
 
 ---
 
@@ -500,12 +508,31 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - Raw `CustomLayer` is a dead end off OpenGL (`CustomLayerFactory` is `#ifdef`-gated);
   `CustomDrawableLayer` is the portable escape hatch.
 - Pitch is clamped to `DEFAULT_PITCH_MAX` = 60°.
+- **Two of mbgl's own camera primitives are broken; do not use either.**
+  `Transform::rotateBy` computes `sqrt(pow(2, offset.x) + pow(2, offset.y))` — 2ˣ+2ʸ, not x²+y² —
+  so its centre-nudge heuristic always fires left/above centre and never right/below.
+  `Map::pitchBy` **subtracts** its argument, so `pitchBy(+10)` tilts down. Build both on
+  `jumpTo(CameraOptions().withBearing(…).withAnchor(…))` / `.withPitch(…)`, as
+  `mbl_map_rotate_by`/`mbl_map_pitch_by` do. Both are upstream-PR candidates.
+- **`CameraOptions::anchor` is silently discarded whenever `center` is set**
+  (`transform.cpp`: `anchor = camera.center ? nullopt : camera.anchor`). Since `mbl_map_set_camera`
+  always sends a centre, an anchored rotate/zoom can never be implemented as get-camera-then-
+  set-camera — and a centre-anchored test cannot detect it, because the centre is a fixed point
+  either way.
+- **`ScaleUpdateDetails.rotation` arrives WRAPPED.** Flutter derives it from `atan2` differences, so
+  a geometric 4.6° twist can be reported as −6.203 rad. Thresholding the raw value means the
+  deadzone is exceeded on the first update of *any* two-finger gesture. Unwrap each frame's delta
+  into (−π, π] and accumulate your own total.
 
 ### Verification traps
 
 - **GDI screen capture cannot capture Flutter's ANGLE/D3D external texture** — `CopyFromScreen`
   and `PrintWindow` show the map area **white** even when it renders correctly. Verify with core
   diagnostics or a harness PNG, never a Windows screenshot.
+- **`Flow` reports the LAYOUT origin for a child it did not paint**, so `tester.getCenter` on a
+  marker the overlay skipped returns ~(0,0) rather than throwing — which reads as "the marker is in
+  the wrong place" instead of "it was culled". Check whether the point is actually on screen before
+  believing a projection failure.
 - **The Android emulator cannot composite a GPU-produced `SurfaceProducer` buffer** (a foreign
   EGL context's HardwareBuffer). Zero-copy reads as white there in *every* configuration; it is a
   documented emulator bug, not ours. Do not chase it — use a physical device. CPU present works.
