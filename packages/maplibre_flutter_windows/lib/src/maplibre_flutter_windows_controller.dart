@@ -174,6 +174,12 @@ class MapLibreFlutterWindowsController
     if (_disposed || _ready.isCompleted) return;
     if (_coreMap.awaitFrame(Duration.zero)) {
       _ready.complete();
+      // The first frame implies the transform snapshot exists; tick so any
+      // glued overlay reprojects from off-screen to its real position.
+      // Without this MapLibreMap(markers:) draws NOTHING until the first pan:
+      // MarkerOverlay only starts repainting on a projector notification, and
+      // its delegate skips every child while the projection generation is 0.
+      notifyCameraChanged();
       return;
     }
     Future<void>.delayed(const Duration(milliseconds: 50), _pollReady);

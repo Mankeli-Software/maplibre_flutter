@@ -153,6 +153,45 @@ void main() {
         expect(controller.renderHandle, isA<TextureHandle>());
       });
 
+      // THE TRAP: MarkerOverlay only starts repainting on a projector
+      // notification, and its delegate skips every child while the projection
+      // generation is 0. So a tier that completes `onReady` without ticking
+      // renders NO markers at all until something else moves the camera —
+      // invisible the moment a user pans, and invisible in every integration
+      // test, all of which move the camera as their first act.
+      //
+      // The "zero camera-mutating calls" half is what makes this asymmetric: a
+      // test that panned first would pass on a broken tier.
+      test(
+        'ticks the camera on the first frame, before any camera call',
+        () async {
+          final fresh = RecordingCoreMap();
+          var ticks = 0;
+          final c = tier.build(fresh);
+          (c as MapLibreCameraTickNotifier).addListener(() => ticks++);
+
+          fresh.frameReady = true; // the first frame lands
+          await c.onReady;
+          await Future<void>.delayed(const Duration(milliseconds: 80));
+
+          expect(
+            ticks,
+            greaterThan(0),
+            reason:
+                'without this tick MapLibreMap(markers:) draws nothing until '
+                'the first pan',
+          );
+          expect(
+            fresh.cameraSets,
+            isEmpty,
+            reason:
+                'and it must come from readiness alone, not from a camera '
+                'move that would mask the omission',
+          );
+          await c.dispose();
+        },
+      );
+
       test('camera round-trips through the core without reordering fields', () {
         core.camera = (
           latitude: 51.5,
