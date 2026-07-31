@@ -103,6 +103,21 @@ melos:
         flutter: false
         dirExists: test
 
+    test:harness:
+      description: >-
+        Build and run the native C++ harness probes (CLAUDE.md §7 layer 4).
+        Asserts what no Dart test can reach: the text-shaping patch against
+        mbgl's own layout, .glb parse invariants, the projection/anchor origin
+        conventions, and that a 3D model renders. First run builds mbgl-core.
+        Pass a ctest label to narrow it: `hermetic` needs no GPU or network.
+      run: packages/maplibre_flutter_core/tool/run_harness.sh
+
+    test:harness:hermetic:
+      description: >-
+        The subset of the native harness needing no GPU, no network and no
+        fonts (shaping_probe, gltf_probe) — safe on any CI runner.
+      run: packages/maplibre_flutter_core/tool/run_harness.sh hermetic
+
     publish:dry-run:
       description: >-
         Dry-run `dart pub publish` in every publishable package (skips the

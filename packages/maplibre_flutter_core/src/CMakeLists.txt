@@ -740,4 +740,39 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   target_include_directories(gltf_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
                                                 "${MLN_ROOT}/src")
   target_link_libraries(gltf_probe PRIVATE mbgl-core mbgl-compiler-options)
+
+  # Make the probes runnable by something. They all return non-zero on failure
+  # and were, until now, built by nothing and run by nothing — CLAUDE.md §7
+  # described them as "ctest-style" but there was no enable_testing(), no
+  # add_test(), and no CI or melos reference.
+  #
+  # Labels matter for CI: `hermetic` needs no GPU, no network and no fonts, so it
+  # can run on any runner; `gpu` drives a real headless map and `network` fetches
+  # a style, so those two want a runner that has both. render_harness and
+  # drive_probe stay out — they are eyeball tools that write a PNG and assert
+  # nothing.
+  enable_testing()
+
+  set(_demo_glb
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../maplibre_flutter/example/assets/models/demo_vehicle.glb")
+
+  add_test(NAME shaping_probe COMMAND shaping_probe)
+  set_tests_properties(shaping_probe PROPERTIES LABELS "hermetic" TIMEOUT 60)
+
+  if(EXISTS "${_demo_glb}")
+    add_test(NAME gltf_probe COMMAND gltf_probe "${_demo_glb}")
+    set_tests_properties(gltf_probe PROPERTIES LABELS "hermetic" TIMEOUT 120)
+  endif()
+
+  add_test(NAME proj_probe COMMAND proj_probe)
+  set_tests_properties(proj_probe PROPERTIES LABELS "gpu;network" TIMEOUT 300)
+
+  # The procedural pyramid, not a .glb: no asset dependency and it is the mesh
+  # the colour assertions are written against. spinDps (arg 9) MUST be non-zero
+  # or the animation check has nothing to observe.
+  add_test(NAME model_harness
+           COMMAND model_harness "${CMAKE_CURRENT_BINARY_DIR}/model-out"
+                   37.7749 -122.4194 15 55 0 200
+                   "https://demotiles.maplibre.org/style.json" 90)
+  set_tests_properties(model_harness PROPERTIES LABELS "gpu;network" TIMEOUT 600)
 endif()
