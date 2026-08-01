@@ -10,6 +10,7 @@ export 'src/fly_animation.dart';
 export 'src/gesture_handler.dart';
 export 'src/attribution.dart';
 export 'src/snapshot.dart';
+export 'src/user_location.dart';
 export 'src/lat_lng.dart';
 export 'src/lat_lng_bounds.dart';
 export 'src/map_events.dart';

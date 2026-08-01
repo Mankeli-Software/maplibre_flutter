@@ -12,6 +12,7 @@ import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 import 'maplibre_map_controller.dart';
 import 'marker.dart';
 import 'attribution_bar.dart';
+import 'user_location_puck.dart';
 import 'marker_overlay.dart';
 
 /// The public map widget.
@@ -40,6 +41,9 @@ class MapLibreMap extends StatefulWidget {
     this.retainRuntimeStyle = false,
     this.showAttribution = true,
     this.onAttributionTap,
+    this.userLocation,
+    this.userTrackingMode = MapUserTrackingMode.none,
+    this.userLocationBuilder,
   });
 
   /// The MapLibre style, in any of three forms:
@@ -177,6 +181,28 @@ class MapLibreMap extends StatefulWidget {
   /// render a credit line — so wiring it is one line in yours.
   final ValueChanged<String>? onAttributionTap;
 
+  /// Where the user is, if you want it drawn.
+  ///
+  /// **This package does not SOURCE location** — Apple's `MLNLocationManager`
+  /// is a protocol for the same reason. Your app already has a location plugin,
+  /// a permission flow and an accuracy/battery policy; a map package taking a
+  /// `geolocator` dependency would duplicate all three badly, on six platforms
+  /// with six different permission rules. Feed this from what you already use,
+  /// and null hides the puck.
+  final MapUserLocation? userLocation;
+
+  /// How the camera follows [userLocation] — Apple `MLNUserTrackingMode`.
+  ///
+  /// Ignored while [userLocation] is null, and **a user gesture does not cancel
+  /// it**: tracking is your state, so you decide when a pan means "stop
+  /// following". Watch `controller.onCameraMoveStart` for a gesture reason and
+  /// set this back to [MapUserTrackingMode.none] if that is what you want —
+  /// making that choice for you is how a map ends up fighting its user.
+  final MapUserTrackingMode userTrackingMode;
+
+  /// Replaces the default puck. Gets the current location; return any widget.
+  final Widget Function(BuildContext, MapUserLocation)? userLocationBuilder;
+
   @override
   State<MapLibreMap> createState() => _MapLibreMapState();
 }
@@ -212,6 +238,69 @@ class _MapLibreMapState extends State<MapLibreMap> {
   /// Bounded, and stops at the first non-empty answer: within one style the
   /// credits can appear but not vanish, so there is nothing to keep watching
   /// for afterwards.
+  /// The app's markers plus the location puck, if there is one.
+  ///
+  /// The puck goes LAST so it draws on top of the app's markers — you are
+  /// always the most important thing on your own map — and at a high zIndex so
+  /// that stays true if the app sets its own.
+  List<MapLibreMarker> _markersWithPuck(BuildContext context) {
+    final location = widget.userLocation;
+    if (location == null) return widget.markers;
+    final builder = widget.userLocationBuilder;
+    return [
+      ...widget.markers,
+      MapLibreMarker(
+        key: const ValueKey('maplibre.user-location'),
+        point: location.position,
+        zIndex: 1 << 20,
+        child: builder != null
+            ? builder(context, location)
+            : UserLocationPuck(
+                location: location,
+                metresPerPixel: _metresPerPixel(location.position.latitude),
+              ),
+      ),
+    ];
+  }
+
+  /// The zoom the accuracy halo is sized against.
+  ///
+  /// Refreshed when the camera SETTLES, not on every tick: `getCamera` is
+  /// async, the halo only has to be right once the map stops, and a
+  /// setState-per-camera-tick at 120 Hz to resize one circle would be a poor
+  /// trade. Seeded from the initial camera so the first frame is not wrong.
+  double _zoomForHalo = 0;
+  StreamSubscription<Object?>? _moveEnds;
+
+  /// Ground resolution at [latitude] for the current zoom, so the accuracy halo
+  /// is drawn at its true size rather than a fixed pixel radius.
+  double _metresPerPixel(double latitude) {
+    final zoom = _zoomForHalo;
+    // Web Mercator: the 512 px tile size mbgl uses, not the 256 px of the
+    // original formula — using 256 here draws every halo at double size.
+    return 40075016.686 *
+        math.cos(latitude * math.pi / 180) /
+        (512 * math.pow(2, zoom));
+  }
+
+  /// Keeps the camera on the user, per [MapLibreMap.userTrackingMode].
+  Future<void> _applyTracking() async {
+    final location = widget.userLocation;
+    final mode = widget.userTrackingMode;
+    if (location == null || mode == MapUserTrackingMode.none) return;
+    final bearing = switch (mode) {
+      MapUserTrackingMode.followWithHeading => location.heading,
+      MapUserTrackingMode.followWithCourse => location.course,
+      _ => null,
+    };
+    // easeTo, not jumpTo: a fix arrives every second or so and jumping makes the
+    // map twitch. Short enough not to lag behind the next one.
+    await _controller.camera.easeTo(
+      CameraOptions(center: location.position, bearing: bearing),
+      duration: const Duration(milliseconds: 300),
+    );
+  }
+
   void _refreshAttributions() {
     _attributionRetry?.cancel();
     _attributionRetry = null;
@@ -251,6 +340,13 @@ class _MapLibreMapState extends State<MapLibreMap> {
       if (!mounted) return;
       _refreshAttributions();
       widget.onStyleLoaded?.call();
+    });
+    _zoomForHalo = widget.options.initialCamera.zoom;
+    _moveEnds = _controller.onCameraMoveEnd.listen((_) async {
+      if (!mounted || widget.userLocation?.accuracy == null) return;
+      final camera = await _controller.camera.getCamera();
+      if (!mounted || camera.zoom == _zoomForHalo) return;
+      setState(() => _zoomForHalo = camera.zoom);
     });
     _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
     _attach = _controller.attach(
@@ -311,6 +407,10 @@ class _MapLibreMapState extends State<MapLibreMap> {
   @override
   void didUpdateWidget(MapLibreMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.userLocation != oldWidget.userLocation ||
+        widget.userTrackingMode != oldWidget.userTrackingMode) {
+      unawaited(_applyTracking());
+    }
     if (widget.controller != oldWidget.controller) {
       // The controller was swapped. Release the old binding (dispose if we
       // owned it, else just detach the native map), then attach the new one.
@@ -352,6 +452,8 @@ class _MapLibreMapState extends State<MapLibreMap> {
   void dispose() {
     _attributionRetry?.cancel();
     _attributionRetry = null;
+    _moveEnds?.cancel();
+    _moveEnds = null;
     _styleLoads?.cancel();
     _styleLoads = null;
     // Dispose the controller only if we created it; otherwise just tear down the
@@ -375,7 +477,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
         }
         final embed = _MapEmbed(
           controller: _controller,
-          markers: widget.markers,
+          markers: _markersWithPuck(context),
           onTap: widget.onTap,
           rotateGesturesEnabled: widget.rotateGesturesEnabled,
           tiltGesturesEnabled: widget.tiltGesturesEnabled,

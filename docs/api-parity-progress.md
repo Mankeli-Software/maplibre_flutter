@@ -224,7 +224,8 @@ Highest row count in the backlog, correctly last among the core stages.
       `MLNOfflinePack`, `MLNTilePyramidOfflineRegion` / `MLNShapeOfflineRegion`.
 - [x] 8.4 `MapLibreSnapshotter.take` / `.takeImage` over `MapSnapshotOptions` — a real off-screen
       render with no map on screen, verified on hardware.
-- [ ] 8.5 Location component: `MLNUserLocation`, `MLNLocationManager`, `MLNUserTrackingMode`.
+- [x] 8.5 `MapUserLocation` / `MapUserTrackingMode` / `UserLocationPuck`, fed by the app.
+      **We render location; we deliberately do not SOURCE it** — see the run log.
 - [x] 8.6 Attribution read from every source, parsed into text + links, and rendered over the map by
       `MapLibreAttributionBar` — **on by default**, because for most providers this is a licence
       condition.
@@ -1292,4 +1293,32 @@ never existed.
   `setGeoJsonData`) and duplicated `docs/cross-platform-continuation.md`. Two distinctions from it
   were worth keeping and survive as prose: wired-is-not-verified, and missing-is-not-impossible.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / generator is idempotent.
+
+### 2026-08-01 — Stage 8 (8.5) — the location component, without a location dependency
+
+- **We render location; the app sources it. That is a decision, not a gap.** Apple's
+  `MLNLocationManager` is a *protocol* for the same reason. Every real app already has a location
+  plugin, a permission flow and an accuracy/battery policy — a map package taking a `geolocator`
+  dependency would duplicate all three badly, across six platforms with six different permission
+  regimes, and force it on apps that never show a puck. `MapLibreMap.userLocation` takes a fix from
+  whatever you already use.
+- **`heading` and `course` are separate fields**, as Apple splits them. A passenger holding a phone
+  sideways in a moving car has a heading with nothing to do with their course, and
+  `MapUserTrackingMode` lets you pick which drives the camera — `followWithCourse` is the one for
+  turn-by-turn, where the phone's orientation is irrelevant.
+- **The accuracy halo is sized in METRES, not pixels.** 50 m of uncertainty is most of the screen at
+  street level and invisible at country level; drawing it at a fixed pixel radius tells the user
+  nothing. Uses the 512 px Web-Mercator tile size mbgl actually uses — the textbook 256 px formula
+  draws every halo at double size. Null accuracy draws NO halo rather than a guessed one.
+- **The zoom behind that is refreshed on camera-SETTLE, not per tick.** `getCamera` is async and the
+  halo only has to be right once the map stops; a setState per camera tick at 120 Hz to resize one
+  circle is a poor trade.
+- **A user gesture does NOT cancel tracking**, and the dartdoc says so. Tracking is the app's state;
+  deciding for them that a pan means "stop following" is how a map ends up fighting its user. The
+  hook to do it yourself is `onCameraMoveStart`'s reason.
+- **The puck is `IgnorePointer`.** A large accuracy halo covers a lot of map, and swallowing taps
+  under it would make the map feel broken exactly when the fix is worst. Tested — and the test had
+  to model the map's OPAQUE gesture listener, because with Flutter's default `deferToChild` the
+  assertion would have passed or failed for the wrong reason.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 5 unit tests.
 
