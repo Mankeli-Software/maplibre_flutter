@@ -111,9 +111,46 @@ class MapLibreStyleController {
   void addLayerJson(String json, {String? beforeId}) =>
       _layers?.addLayerJson(json, beforeId: beforeId);
 
-  /// Replaces a geojson source's data — the cheap path for live datasets.
+  /// Replaces a source's data — the cheap path for live datasets.
+  ///
+  /// gl-js spells this `getSource(id).setData(...)`, and [getSource] gives you
+  /// that shape; this is the flat form underneath. Only a GeoJSON source can
+  /// have its data replaced (mbgl has no setter on a vector or raster one), and
+  /// asking for anything else reports on `controller.onError`.
+  void setSourceData(String sourceId, Object data) => _layers?.setSourceData(
+    sourceId,
+    data is String ? data : jsonEncode(encodeStyleJson(data)),
+  );
+
+  /// Replaces a geojson source's data.
+  @Deprecated(
+    'Renamed to setSourceData: the verb should not bake in the format, which '
+    'reads wrong the moment an image or computed source needs an equivalent. '
+    'Will be removed in a future release.',
+  )
   void setGeoJsonData(String sourceId, String geoJson) =>
-      _layers?.setGeoJsonData(sourceId, geoJson);
+      setSourceData(sourceId, geoJson);
+
+  /// A handle to one source — gl-js `map.getSource(id)`.
+  ///
+  /// Null when the source does not exist. The handle is a thin view, not a
+  /// snapshot: [MapLibreSource.setData] talks to the live map.
+  MapLibreSource? getSource(String sourceId) {
+    final json = _layers?.getSourceJson(sourceId);
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map<String, Object?>) return null;
+    return MapLibreSource._(
+      this,
+      id: sourceId,
+      type: decoded['type'] as String? ?? 'unknown',
+      attribution: decoded['attribution'] as String?,
+      isVolatile: decoded['volatile'] as bool? ?? false,
+    );
+  }
+
+  /// The style's source ids — the read side [getSource] iterates.
+  List<String> getSourceIds() => _layers?.getSourceIds() ?? const [];
 
   void removeLayer(String id) => _layers?.removeLayer(id);
 
@@ -637,3 +674,51 @@ class MapLibreStyleController {
   'than a layer list. Will be removed in a future release.',
 )
 typedef MapLibreLayersController = MapLibreStyleController;
+
+/// One source of the current style — gl-js `map.getSource(id)`'s return.
+///
+/// A thin view onto the live map rather than a snapshot: [setData] reaches the
+/// engine. Obtained from [MapLibreStyleController.getSource].
+class MapLibreSource {
+  const MapLibreSource._(
+    this._style, {
+    required this.id,
+    required this.type,
+    required this.attribution,
+    required this.isVolatile,
+  });
+
+  final MapLibreStyleController _style;
+
+  /// The source's id in the style document.
+  final String id;
+
+  /// Its style-spec type: `geojson`, `vector`, `raster`, `raster-dem`, …
+  final String type;
+
+  /// The attribution string the tile provider requires be shown, if it declares
+  /// one.
+  ///
+  /// **Reading it is not displaying it.** Nothing renders attribution today,
+  /// which is a legal obligation for many providers — tracked as its own task.
+  /// This at least makes the string reachable, which it was not before.
+  final String? attribution;
+
+  /// Whether mbgl keeps this source's data out of persistent storage.
+  final bool isVolatile;
+
+  /// Whether this source's data can be replaced with [setData].
+  ///
+  /// Only GeoJSON sources can: mbgl has no data setter on a vector or raster
+  /// one, so this is an engine limit rather than a missing binding.
+  bool get supportsSetData => type == 'geojson';
+
+  /// Replaces this source's data — gl-js `source.setData(...)`.
+  ///
+  /// Takes a [GeoJsonData], a typed `GeoJsonFeatureCollection`, or a raw JSON
+  /// string. Reports on `controller.onError` if this source cannot take it.
+  void setData(Object data) => _style.setSourceData(id, data);
+
+  @override
+  String toString() => 'MapLibreSource($id, type: $type)';
+}

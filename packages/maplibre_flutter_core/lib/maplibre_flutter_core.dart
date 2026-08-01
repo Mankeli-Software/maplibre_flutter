@@ -1183,6 +1183,48 @@ class MapLibreCoreMap {
     previous?.close();
   }
 
+  // --- Sources ----------------------------------------------------------------
+
+  /// One source as JSON — id, type, attribution, volatile — or null if absent.
+  ///
+  /// Not the full style-spec document: `mbgl::style::Source` has no
+  /// `serialize()` the way `Layer` does, so this reports what the public API
+  /// exposes rather than fabricating the rest.
+  String? getSourceJson(
+    String sourceId, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final result = bindings.mbl_map_get_source_json(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast(),
+        timeout.inMilliseconds,
+      );
+      if (result == ffi.nullptr) return null;
+      final json = result.cast<Utf8>().toDartString();
+      bindings.mbl_string_free(result);
+      return json;
+    });
+  }
+
+  /// The style's source ids. Null on timeout.
+  List<String>? getSourceIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    final result = bindings.mbl_map_get_source_ids(
+      _handle,
+      timeout.inMilliseconds,
+    );
+    if (result == ffi.nullptr) return null;
+    final json = result.cast<Utf8>().toDartString();
+    bindings.mbl_string_free(result);
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return null;
+    return decoded.whereType<String>().toList();
+  }
+
   // --- Layer properties -------------------------------------------------------
 
   /// Sets one style-spec property on [layerId] by its spec [name].

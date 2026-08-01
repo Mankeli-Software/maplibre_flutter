@@ -278,6 +278,16 @@ class MapLibreCoreWebController
   }
 
   @override
+  void setSourceData(String sourceId, String data) =>
+      setGeoJsonData(sourceId, data);
+
+  @override
+  String? getSourceJson(String sourceId) => null;
+
+  @override
+  List<String>? getSourceIds() => null;
+
+  @override
   void setGeoJsonData(String sourceId, String geoJson) {
     final map = _map;
     if (map == null || _disposed) return;

@@ -47,6 +47,12 @@ class _FullController extends _BareController
   @override
   void addLayerJson(String json, {String? beforeId}) {}
   @override
+  void setSourceData(String sourceId, String data) {}
+  @override
+  String? getSourceJson(String sourceId) => null;
+  @override
+  List<String>? getSourceIds() => null;
+  @override
   void setGeoJsonData(String sourceId, String geoJson) {}
   @override
   void removeLayer(String id) {}

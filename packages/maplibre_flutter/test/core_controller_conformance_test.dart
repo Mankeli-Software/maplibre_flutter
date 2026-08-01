@@ -614,7 +614,7 @@ void main() {
         final layers = controller as MapLibreStyleLayers
           ..addSourceJson('src', '{"type":"geojson"}')
           ..addLayerJson('{"id":"a"}', beforeId: 'b')
-          ..setGeoJsonData('src', '{"type":"FeatureCollection"}')
+          ..setSourceData('src', '{"type":"FeatureCollection"}')
           ..removeLayer('a')
           ..removeSource('src')
           ..removeImage('icon')

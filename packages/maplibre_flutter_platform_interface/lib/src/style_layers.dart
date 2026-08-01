@@ -33,7 +33,26 @@ abstract interface class MapLibreStyleLayers {
   /// Replaces the data of an existing geojson source — the cheap path for
   /// dynamic datasets: the engine re-tiles and re-clusters, and layers reading
   /// the source pick it up with no rebuild.
+  /// Replaces a source's data.
+  ///
+  /// Only a GeoJSON source can have its data replaced — mbgl has no setter on a
+  /// vector or raster one — and asking for anything else reports on the error
+  /// stream rather than failing quietly.
+  void setSourceData(String sourceId, String data);
+
+  /// Replaces a geojson source's data.
+  @Deprecated(
+    'Renamed to setSourceData: the verb should not bake in the format, which '
+    'reads wrong the moment an image or computed source needs an equivalent. '
+    'Will be removed in a future release.',
+  )
   void setGeoJsonData(String sourceId, String geoJson);
+
+  /// One source as JSON — id, type, attribution, volatile — or null if absent.
+  String? getSourceJson(String sourceId);
+
+  /// The style's source ids.
+  List<String>? getSourceIds();
 
   void removeLayer(String id);
 

@@ -21,6 +21,23 @@ class _RecordingLayers implements MapLibreStyleLayers {
     beforeIds.add(beforeId);
   }
 
+  /// Recorded source-data replacements.
+  final List<({String sourceId, String data})> sourceData = [];
+  String? sourceJsonResult;
+  List<String>? sourceIdsResult;
+
+  @override
+  void setSourceData(String sourceId, String data) {
+    sourceData.add((sourceId: sourceId, data: data));
+    lastData = data;
+  }
+
+  @override
+  String? getSourceJson(String sourceId) => sourceJsonResult;
+
+  @override
+  List<String>? getSourceIds() => sourceIdsResult;
+
   @override
   void setGeoJsonData(String sourceId, String geoJson) => lastData = geoJson;
   @override

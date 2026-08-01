@@ -152,7 +152,8 @@ Highest row count in the backlog, correctly last among the core stages.
       `getFilter`. Note `Style::getJSON()` returns the document **as loaded**, not a live
       serialisation — use `getLayers()` + `Layer::serialize()` for the live view.
 - [x] 5.5 `setLayerZoomRange`.
-- [ ] 5.6 `getSource(id)` handle with `setData` (renaming `setGeoJsonData`), `isSourceLoaded`.
+- [x] 5.6 `getSource(id)` handle with `setData` (renaming `setGeoJsonData`); **`isSourceLoaded`
+      REJECTED** — mbgl cannot answer it, see the run log.
 - [ ] 5.7 `hasImage`, `listImages`, `updateImage`.
 - [ ] 5.8 Style from **inline JSON** and from a Flutter asset. `Style::loadJSON` exists
       (`style.hpp:29`) and is never called; five doc comments — including the C header at
@@ -744,3 +745,27 @@ never existed.
   ffigen regenerated on macOS.
 - **Next:** 5.6 (`getSource` handle + `setSourceData`), 5.7 (image surface), 5.8 (inline-JSON and
   asset styles — five doc comments already promise this works), then 5.9-5.11.
+
+### 2026-08-01 — Stage 5 (5.6) — the source handle, and one half rejected
+
+- **Done:** `getSource(id)` returns a `MapLibreSource` handle — id, type, attribution, volatile
+  flag, and `setData` — which is gl-js's `map.getSource(id).setData(...)` shape over a flat
+  `setSourceData` on the contract (CLAUDE.md §3: flat at the interface, handle-shaped app-side, so a
+  new source type costs zero contract churn). `setGeoJsonData` renamed with `@Deprecated` aliases at
+  both levels.
+- **`isSourceLoaded` is REJECTED — the engine cannot answer it.** `RenderSource::isLoaded()` exists
+  but only inside `src/mbgl/renderer/`; the public `Renderer` exposes nothing for it, and
+  `mbgl::style::Source` has no loaded state at all. Exposing it through `Renderer` would be a small,
+  self-contained upstream PR — worth weighing alongside the two patches this project already
+  carries. Recorded here rather than shipped as something that always returns true.
+- **Two findings:**
+  - `mbgl::style::Source` has no `serialize()` the way `Layer` does, so `getSource` reports what the
+    public API actually exposes rather than inventing a style-spec document for it.
+  - **`Source::getAttribution()` is reachable, and is now surfaced.** That is the string many tile
+    providers legally require be displayed, and it had no route to Dart at all before — which is
+    half of why 8.6 was filed. Reading it is still not displaying it, but the data is no longer
+    unreachable.
+- Also: `setSourceData`'s two failure paths (no such source; source is not GeoJSON, which is an
+  engine limit rather than a missing binding) moved off `fprintf(stderr)` onto the diagnostic
+  channel, which is where 2.3 put the rest of them.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / ffigen regenerated.

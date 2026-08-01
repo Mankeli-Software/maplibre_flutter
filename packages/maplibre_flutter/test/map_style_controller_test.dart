@@ -20,6 +20,24 @@ class _RecordingLayers implements MapLibreStyleLayers {
   void addSourceJson(String id, String json) => sources[id] = json;
   @override
   void addLayerJson(String json, {String? beforeId}) => layers.add(json);
+
+  /// Recorded source-data replacements.
+  final List<({String sourceId, String data})> sourceData = [];
+  String? sourceJsonResult;
+  List<String>? sourceIdsResult;
+
+  @override
+  void setSourceData(String sourceId, String data) {
+    sourceData.add((sourceId: sourceId, data: data));
+    lastData = data;
+  }
+
+  @override
+  String? getSourceJson(String sourceId) => sourceJsonResult;
+
+  @override
+  List<String>? getSourceIds() => sourceIdsResult;
+
   @override
   void setGeoJsonData(String sourceId, String geoJson) => lastData = geoJson;
   @override
@@ -615,6 +633,84 @@ void main() {
 
       rec.layerJsonResult = null;
       expect(style.getLayer('nope'), isNull);
+    });
+  });
+
+  group('sources', () {
+    test('getSource returns a handle, or null when absent', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      rec.sourceJsonResult =
+          '{"id":"p","type":"geojson","attribution":"© Someone",'
+          '"volatile":false}';
+      final source = style.getSource('p');
+      expect(source, isNotNull);
+      expect(source!.id, 'p');
+      expect(source.type, 'geojson');
+      expect(source.attribution, '© Someone');
+      expect(source.isVolatile, isFalse);
+      expect(source.supportsSetData, isTrue);
+
+      rec.sourceJsonResult = null;
+      expect(style.getSource('nope'), isNull);
+    });
+
+    test('a non-geojson source reports that its data cannot be replaced', () {
+      // An engine limit, not a missing binding: mbgl has no data setter on a
+      // vector or raster source.
+      final rec = _RecordingLayers()
+        ..sourceJsonResult =
+            '{"id":"v","type":"vector","attribution":null,"volatile":false}';
+      final source = (MapLibreStyleController()..attachTo(rec)).getSource('v')!;
+      expect(source.supportsSetData, isFalse);
+      expect(source.type, 'vector');
+    });
+
+    test('setData accepts typed GeoJSON, and encodes it verbatim', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      style.setSourceData(
+        'p',
+        GeoJsonData.featureCollection(
+          const GeoJsonFeatureCollection([
+            GeoJsonFeature(geometry: GeoJsonPoint(LatLng(60.45, 22.27))),
+          ]),
+        ),
+      );
+      // Coordinates must survive as doubles — these bytes are the one path into
+      // mbgl's GeoJSON parser, so the style encoder's 6.0 -> 6 rewrite must not
+      // apply to them.
+      expect(rec.sourceData.single.data, contains('22.27'));
+      expect(rec.sourceData.single.data, contains('60.45'));
+
+      // A raw string passes straight through, unwrapped.
+      style.setSourceData('p', '{"type":"FeatureCollection","features":[]}');
+      expect(
+        rec.sourceData.last.data,
+        '{"type":"FeatureCollection","features":[]}',
+      );
+    });
+
+    test('the handle setData reaches the same call', () {
+      final rec = _RecordingLayers()
+        ..sourceJsonResult =
+            '{"id":"p","type":"geojson","attribution":null,"volatile":false}';
+      final style = MapLibreStyleController()..attachTo(rec);
+      style.getSource('p')!.setData('{"type":"FeatureCollection"}');
+      expect(rec.sourceData.single.sourceId, 'p');
+    });
+
+    test('getSourceIds, and every source call is safe before attach', () {
+      final rec = _RecordingLayers()..sourceIdsResult = const ['a', 'b'];
+      final style = MapLibreStyleController()..attachTo(rec);
+      expect(style.getSourceIds(), ['a', 'b']);
+
+      final unbound = MapLibreStyleController();
+      expect(unbound.getSourceIds(), isEmpty);
+      expect(unbound.getSource('a'), isNull);
+      unbound.setSourceData('a', '{}');
     });
   });
 }

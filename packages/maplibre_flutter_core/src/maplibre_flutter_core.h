@@ -476,6 +476,23 @@ FFI_PLUGIN_EXPORT void mbl_map_remove_layer(MblMap *map, const char *id);
 // now) and the mutation is posted. A property the layer does not have is
 // therefore reported asynchronously, through the diagnostic channel as
 // MBL_DIAG_COMMAND_FAILED.
+// One source as JSON: `{"id":…,"type":…,"attribution":…,"volatile":…}`, or
+// NULL if absent or timed out. Release with mbl_string_free.
+//
+// NOT the source's full style-spec document: `mbgl::style::Source` has no
+// serialize() the way Layer does, so this reports what the public API actually
+// exposes rather than fabricating the rest.
+//
+// `attribution` is the string a tile provider requires be shown — see the
+// attribution work in stage 8, which has no other route to it today.
+FFI_PLUGIN_EXPORT char *mbl_map_get_source_json(MblMap *map,
+                                                const char *source_id,
+                                                uint32_t timeout_ms);
+
+// The style's source ids, as a JSON array. Release with mbl_string_free.
+FFI_PLUGIN_EXPORT char *mbl_map_get_source_ids(MblMap *map,
+                                               uint32_t timeout_ms);
+
 FFI_PLUGIN_EXPORT int mbl_map_set_layer_property(MblMap *map,
                                                  const char *layer_id,
                                                  const char *name,

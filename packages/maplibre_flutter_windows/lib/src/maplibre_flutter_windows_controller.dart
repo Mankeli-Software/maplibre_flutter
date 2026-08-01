@@ -453,6 +453,20 @@ class MapLibreFlutterWindowsController
   }
 
   @override
+  void setSourceData(String sourceId, String data) {
+    if (_disposed) return;
+    _coreMap.setGeoJsonData(sourceId, data);
+  }
+
+  @override
+  String? getSourceJson(String sourceId) =>
+      _disposed ? null : _coreMap.getSourceJson(sourceId);
+
+  @override
+  List<String>? getSourceIds() => _disposed ? null : _coreMap.getSourceIds();
+
+  @Deprecated('Use setSourceData.')
+  @override
   void setGeoJsonData(String sourceId, String geoJson) {
     if (_disposed) return;
     _coreMap.setGeoJsonData(sourceId, geoJson);

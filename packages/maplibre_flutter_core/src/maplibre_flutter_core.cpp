@@ -2209,14 +2209,19 @@ int mbl_map_set_geojson_data(MblMap *m, const char *source_id,
   m->post([m, holder, id] {
     auto *src = m->map->getStyle().getSource(id);
     if (src == nullptr) {
-      fprintf(stderr, "maplibre_flutter_core: no such source '%s'\n",
-              id.c_str());
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "setSourceData: no source with id '" + id + "'");
       return;
     }
     auto *geo = src->as<mbgl::style::GeoJSONSource>();
     if (geo == nullptr) {
-      fprintf(stderr, "maplibre_flutter_core: source '%s' is not geojson\n",
-              id.c_str());
+      // mbgl only lets you replace the data of a GeoJSON source — there is no
+      // setter on a vector or raster one — so this is a real limit rather than
+      // a missing binding, and worth saying out loud instead of printing.
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "setSourceData: source '" + id +
+                             "' is not a geojson source, so its data cannot "
+                             "be replaced");
       return;
     }
     geo->setGeoJSON(*holder);
@@ -2407,6 +2412,74 @@ char *mbl_map_get_layer_json(MblMap *m, const char *layer_id,
       });
   if (!ok || !*found) return nullptr;
   return dupToHeap(*result);
+}
+
+namespace {
+
+const char *sourceTypeName(mbgl::style::SourceType type) {
+  switch (type) {
+    case mbgl::style::SourceType::Vector: return "vector";
+    case mbgl::style::SourceType::Raster: return "raster";
+    case mbgl::style::SourceType::RasterDEM: return "raster-dem";
+    case mbgl::style::SourceType::GeoJSON: return "geojson";
+    case mbgl::style::SourceType::Video: return "video";
+    case mbgl::style::SourceType::Annotations: return "annotations";
+    case mbgl::style::SourceType::Image: return "image";
+    case mbgl::style::SourceType::CustomVector: return "custom-vector";
+  }
+  return "unknown";
+}
+
+std::string sourceToJson(const mbgl::style::Source &source) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("id");
+  writer.String(source.getID().c_str());
+  writer.Key("type");
+  writer.String(sourceTypeName(source.getType()));
+  writer.Key("attribution");
+  const auto attribution = source.getAttribution();
+  if (attribution) {
+    writer.String(attribution->c_str());
+  } else {
+    writer.Null();
+  }
+  writer.Key("volatile");
+  writer.Bool(source.isVolatile());
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+} // namespace
+
+char *mbl_map_get_source_json(MblMap *m, const char *source_id,
+                              uint32_t timeout_ms) {
+  if (m == nullptr || source_id == nullptr) return nullptr;
+  const std::string id(source_id);
+  auto result = std::make_shared<std::string>();
+  auto found = std::make_shared<bool>(false);
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, id, result, found] {
+    const auto *source = m->map->getStyle().getSource(id);
+    if (source == nullptr) return;
+    *result = sourceToJson(*source);
+    *found = true;
+  });
+  if (!ok || !*found) return nullptr;
+  return dupToHeap(*result);
+}
+
+char *mbl_map_get_source_ids(MblMap *m, uint32_t timeout_ms) {
+  if (m == nullptr) return nullptr;
+  auto result = std::make_shared<std::string>();
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, result] {
+    std::vector<mbgl::Value> ids;
+    for (const auto *source : m->map->getStyle().getSources()) {
+      ids.emplace_back(source->getID());
+    }
+    *result = styleValueToJson(mbgl::Value{ids});
+  });
+  return ok ? dupToHeap(*result) : nullptr;
 }
 
 void mbl_map_add_image(MblMap *m, const char *id, const uint8_t *rgba,

@@ -454,6 +454,27 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 
+  // --- sources ---------------------------------------------------------------
+
+  /// What [getSourceJson] returns; null simulates absent or timed out.
+  String? sourceJson =
+      '{"id":"p","type":"geojson","attribution":null,'
+      '"volatile":false}';
+
+  /// What [getSourceIds] returns; null simulates a timeout.
+  List<String>? sourceIds = const ['p'];
+
+  @override
+  String? getSourceJson(
+    String sourceId, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => sourceJson;
+
+  @override
+  List<String>? getSourceIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => sourceIds;
+
   // --- layer properties ------------------------------------------------------
 
   /// Every setLayerProperty call, in order.
