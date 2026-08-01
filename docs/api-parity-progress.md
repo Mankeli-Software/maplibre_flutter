@@ -235,13 +235,10 @@ Highest row count in the backlog, correctly last among the core stages.
 
 ### Stage 9 — Retire the hand-maintained matrix
 
-- [ ] 9.1 `tool/generate_feature_matrix.dart` deriving rows from code: the `implements` clauses of the
-      six platform controllers, the members of the base contract + capability interfaces, the
-      `FFI_PLUGIN_EXPORT` list in `maplibre_flutter_core.h`, the `EMSCRIPTEN_BINDINGS` `.function()`
-      list, and `v8.json`. Output committed and regen-diffed in CI like ffigen.
-- [ ] 9.2 Delete or shrink the hand-maintained tables in `FEATURE_MATRIX.md` to the judgement-bearing
-      prose only. An audit found ~44% of sampled cells wrong, and the file had been hand-fixed five
-      hours before that audit.
+- [x] 9.1 `packages/maplibre_flutter/tool/generate_feature_matrix.dart` → `FEATURE_MATRIX.generated.md`,
+      regen-diffed in CI beside ffigen and the typed style API.
+- [x] 9.2 `FEATURE_MATRIX.md` cut from 723 lines to ~110: the nine tables and the stale legend are
+      gone, the judgement-bearing prose stays.
 
 ## Run log
 
@@ -1270,4 +1267,29 @@ never existed.
   refused up front rather than handed to the engine.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 4 macOS integration tests
   green on hardware.
+
+### 2026-08-01 — Stage 9 — the matrix is generated. Stage 9 closed.
+
+- **483 hand-maintained cells replaced by a generator.** `FEATURE_MATRIX.generated.md` is derived
+  from three things that cannot lie: each tier's `implements` clause, the `abstract interface class`
+  declarations in the platform interface, and the `FFI_PLUGIN_EXPORT` list in the C header. Committed
+  and regen-diffed in CI beside ffigen, so it fails the build rather than rotting.
+- **Deliberately syntactic — no analyzer.** The point is a check that cannot drift from the source;
+  adding a resolution step makes it the sort of tool people skip when it breaks.
+- **The generated file has no verified/unverified axis, on purpose.** Whether a tier has been RUN is
+  evidence, not a property of the source, and a generator that invented it would recreate exactly the
+  failure being fixed. Hardware runs stay in `docs/cross-platform-continuation.md`.
+- **The first output already contradicted a belief:** the web tier shows `—` for `MapLibreMapEvents`,
+  which is correct and is precisely the 7.1 gap — no error stream and no style-loaded event there.
+  Checked against the source rather than assumed, because a wrong cell is the whole thing this tool
+  exists to prevent.
+- **The legend went with the tables.** It had drifted into asserting "nothing else is plumbed through
+  the platform interface yet" — true when the contract was camera-and-style, still standing after
+  queries, feature state, clusters, the typed style API and 3D models had landed. A legend for
+  symbols nobody emits is rot, and it was part of what made the tables look trustworthy.
+- **REMOVED, and worth stating plainly:** the "Current reality" narrative section also went. It was
+  stale in several particulars (3D models "macOS/Metal only", `controller.layers`,
+  `setGeoJsonData`) and duplicated `docs/cross-platform-continuation.md`. Two distinctions from it
+  were worth keeping and survive as prose: wired-is-not-verified, and missing-is-not-impossible.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / generator is idempotent.
 

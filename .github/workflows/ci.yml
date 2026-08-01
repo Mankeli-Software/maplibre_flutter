@@ -99,6 +99,18 @@ jobs:
           git add --intent-to-add lib/src/style/generated
           git diff --exit-code lib/src/style/generated
 
+      # The feature matrix is DERIVED from the source (implements clauses, the
+      # capability interfaces, the FFI_PLUGIN_EXPORT list), so a capability
+      # added to a tier must show up here. The hand-maintained tables this
+      # replaced were audited at ~44% wrong; the whole point is that the
+      # generated one cannot drift without failing the build.
+      - name: Generated feature matrix is up to date
+        working-directory: packages/maplibre_flutter
+        run: |
+          dart run tool/generate_feature_matrix.dart
+          git add --intent-to-add ../../FEATURE_MATRIX.generated.md
+          git diff --exit-code ../../FEATURE_MATRIX.generated.md
+
   # Web tier: pure Dart + maplibre-gl-js (no native toolchain, no submodule),
   # so it runs on the cheapest runner. Builds the example for the web and runs
   # the browser tests + the real-browser integration test.
