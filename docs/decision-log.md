@@ -1778,4 +1778,78 @@ Run the workflow by hand after a core bump or a change to a native tier.
 No runs were triggered by the branch push, incidentally — the trigger was scoped to
 `push: branches: [main]` plus `pull_request`, and a feature branch with no PR matches neither.
 
+## 2026-08-01 — The iOS-Simulator tile seams were never a "translation quirk": mbgl never attaches the stencil buffer there
+
+Reported as doubled grey lines on every tile seam in the Carta Polaris PoC on the iPhone-17
+Simulator, and suspected to be a regression from the parity push. **It is neither a regression
+nor a simulator rendering quirk — it is a real upstream mbgl bug, and it is now fixed.**
+
+**What the pixels said.** Measured off the Simulator screenshot rather than eyeballed: two
+near-vertical lines at x=563.2/576.7 and two near-horizontal at y=1827.3/1840.8, spacing
+**13.48 px in both axes** (and identical at every band sampled), on a tile pitch of ~1739 px.
+Each pair straddles the boundary symmetrically at ±6.74 px, each line hard-edged on the OUTSIDE
+and antialiased on the INSIDE, with the fill between them **bit-identical** to the fill outside.
+That geometry is not a duplicated scene and not a per-line casing — it is two tiles each drawing
+their clip-BUFFER overhang into the other, i.e. tile clipping masks doing nothing.
+
+**Root cause**, all upstream, all `TARGET_OS_SIMULATOR`-gated:
+
+1. `mtl::HeadlessBackend` (platform/default, line 22) asks for an offscreen texture with depth
+   **and stencil**.
+2. `mtl::OffscreenTextureResource` builds the stencil texture inside `#if !TARGET_OS_SIMULATOR`
+   — deliberately, because Metal requires a pipeline's depth and stencil attachment formats to
+   match, which is precisely why the DEPTH texture is allocated as the combined
+   `PixelFormatDepth32Float_Stencil8` there (`Texture2D::getMetalPixelFormat`).
+3. But `bind()` only ever sets `stencilAttachment` from `stencilTexture`. Those combined stencil
+   bits are never attached, so the attachment's texture is nil.
+4. `Context::makeDepthStencilState` guards with `if (stencilTarget->texture())` — false — so **no
+   stencil descriptor is applied to any state**, and every stencil test passes.
+5. `renderTileClippingMasks` therefore clips nothing. Same-colour fills hide it; geometry lying
+   along the tile-clip edge (a `fill-outline-color`, a polygon boundary) is drawn on both sides
+   of every boundary. Hence a pair of seam lines ~2x the tile buffer apart.
+
+**This supersedes the 2026-06-19 finding** that recorded the faint 1-px sim seams as "a simulator
+Metal-translation quirk … no mbgl `mtl::HeadlessBackend` patch needed". That bisect was sound as
+far as it went (macOS headless clean, iOS on-screen clean, all four present configs identical) but
+it stopped at *which tier*, never asking what the simulator `#if`s exclude. Same root cause; the
+sea-chart style just makes it obvious where demotiles only showed hairlines.
+
+**Proof, on macOS, with no device.** Forcing both simulator `#if`s on (the `offscreen_texture`
+stencil skip and the `texture2d` combined format) and rendering Liberty at z14:
+
+| build | vs the correct frame |
+| --- | --- |
+| simulator conditions, unfixed | **2.05 % of pixels differ**, concentrated in exactly one 16-px band per tile boundary (x≈412, y≈93) |
+| simulator conditions + the fix | **0 pixels differ** (max channel delta 1) |
+| macOS with the patch applied | **0 pixels differ** — the new branch is dead off-Simulator |
+
+**The fix**: `patches/metal-simulator-stencil-attachment.patch`, marker `MBL_SIM_STENCIL_ATTACHMENT`
+— attach the combined depth texture as the stencil attachment when no separate stencil texture
+exists. Simulator-only by construction. Verified to apply to a pristine submodule.
+**Upstream-PR candidate**, alongside the text-centring patch.
+
+**Not from this branch, and worth being precise about why:** the submodule pin is byte-identical
+between `main` and `HEAD` (`git diff main...HEAD -- third_party/maplibre-native` is empty) and no
+patch of ours touches `offscreen_texture.cpp`. What changed was visibility, not behaviour.
+
+### Found in the same pass: `_isShove` thresholded the raw wrapped rotation (this one IS from the branch)
+
+`maplibre_map.dart:805` compared `details.rotation` against the rotate deadzone — the exact trap
+§11 documents and that the rotate latch 40 lines below already avoids by using the unwrapped
+`_rotationAccum`. Flutter derives that value from `atan2` differences, so the first update of any
+two-finger gesture can report ~-6.2 rad; any shove whose fingers were not parallel to the pixel was
+rejected outright, making **shove-to-tilt unusable on a device while every test stayed green** —
+the existing test moves both fingers by identical deltas, pinning `rotation` at exactly 0.0.
+Fixed to use `_rotationAccum`, plus a regression test that puts one finger a single pixel out of
+step. Introduced by `6f9fc7e`.
+
+### Reported, deliberately NOT changed: the rotate deadzone leaves a residual bearing
+
+Once the rotate mode latches, per-frame deltas are applied from the latch frame on, so the
+deadzone slop is never given back: a pinch that grazes 8° and ends just past it leaves a permanent
+sub-degree bearing. The Simulator screenshot was at **+0.33°** with no rotation intended, which is
+exactly this. It is a behavioural choice (subtract-the-deadzone vs clamp-the-deadzone), not an
+unambiguous defect, and gesture feel is still pending the native-feel A/B — so it is recorded here
+rather than changed unasked.
+
 _Append new decisions here with date and rationale._
