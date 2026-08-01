@@ -278,6 +278,27 @@ struct MblMap {
   };
   std::unordered_map<std::string, ModelEntry> models;
 
+  // Runtime images by id (render thread only), retained for the same reason the
+  // meshes above are.
+  //
+  // Style::Impl::parse() does `images = makeMutable<ImageImpls>()`
+  // (style_impl.cpp:104), so EVERY style load wipes every runtime image — and
+  // unlike a source or a layer, an image has no representation in the style
+  // document the app could have put it in. It is a pure runtime registration,
+  // so if we do not replay it nobody can: an app that rasterised a Flutter
+  // widget into an icon would have to rasterise it again on every style change,
+  // and would only find out it needed to because its symbols went blank.
+  //
+  // The pixels are already heap-held (mbl_map_add_image copies out of the
+  // caller's buffer, which is Dart-owned and may be gone by the time the render
+  // thread runs), so retaining costs one shared_ptr, not one more copy.
+  struct ImageEntry {
+    std::shared_ptr<const mbgl::PremultipliedImage> pixels;
+    float pixelRatio;
+    bool sdf;
+  };
+  std::unordered_map<std::string, ImageEntry> images;
+
   // Uploaded textures per .glb path, SHARED by every model this map draws from
   // that mesh (24 instances of one vehicle upload its 10 images once, not 240
   // times).
@@ -421,11 +442,17 @@ std::string describeException(std::exception_ptr error) {
 // missing sprite is a blank map and total silence.
 //
 // Used as-is in Static mode; the Continuous map uses the FrameObserver subclass.
+void replayRetainedStyleState(MblMap *m);
+
 class DiagnosticObserver : public mbgl::MapObserver {
 public:
   explicit DiagnosticObserver(MblMap *map) : m(map) {}
 
   void onDidFinishLoadingStyle() override {
+    // Put back what the load just wiped, BEFORE telling anyone the style is in
+    // — a listener that re-applies its own layers should run on a style that
+    // already has ours back.
+    replayRetainedStyleState(m);
     m->styleLoadCount.fetch_add(1, std::memory_order_relaxed);
     dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
   }
@@ -1110,28 +1137,13 @@ public:
   // model — is dropped. Re-add them here rather than making callers notice and
   // re-add by hand. Free: the parsed mesh is retained and shared, so nothing is
   // re-read or re-parsed.
-  void onDidFinishLoadingStyle() override {
-    applyTransitionOptions(m);
-    for (const auto &entry : m->models) {
-      addModelLayerNow(m, entry.first, entry.second.mesh, entry.second.gpu,
-                       entry.second.placement);
-    }
-    if (!m->models.empty()) {
-      requestModelRender(m);
-    }
-    // Delegate rather than re-dispatch. Duplicating the dispatch here is what
-    // broke the app: the base ALSO bumps styleLoadCount, which is what lets a
-    // late-registering callback be told about a style that already loaded — and
-    // a real tier always registers late, because the controller can only do it
-    // after mbl_map_create returns and, on the texture tiers, after the
-    // registrar handshake. Continuous mode uses THIS observer, so the count
-    // never moved, the replay never fired, and the live event had already been
-    // missed. The map rendered and the app waited for a style load forever.
-    //
-    // Called AFTER the re-adds, so a listener that re-applies its own layers
-    // runs on a style that already has ours back.
-    DiagnosticObserver::onDidFinishLoadingStyle();
-  }
+  // NOTE: no onDidFinishLoadingStyle override. There used to be one, doing the
+  // re-adds and then dispatching, and it did NOT delegate — so the base's
+  // styleLoadCount never moved, the replay for a late-registering callback
+  // never fired, and since every shipped tier runs Continuous the example app
+  // waited for a style load forever over a map that had rendered fine. The
+  // whole job now lives in the base, where both modes get it and there is no
+  // override left to forget to delegate.
 };
 
 void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
@@ -1298,6 +1310,47 @@ void requestModelRender(MblMap *m) {
   m->renderRequested = true;
   if (m->map != nullptr) {
     m->map->triggerRepaint();
+  }
+}
+
+// Put back everything a style load just destroyed that ONLY this layer can put
+// back. Runs on the render thread from the style-load observer, in both map
+// modes.
+//
+// The line drawn here is deliberate, and it is not "everything the app added".
+// A source or a layer has a representation in a style document, so an app can
+// re-add it from onStyleLoaded (that is what gl-js, the Apple SDK and the
+// Android SDK all require, and MLNStyle.h:32-36 says so explicitly). These
+// three cannot be re-added that way by anyone:
+//
+//   * transition options — style-global state with no document form in our API;
+//   * runtime images — pure registrations; Style::Impl::parse() wipes them with
+//     `images = makeMutable<ImageImpls>()` (style_impl.cpp:104);
+//   * model layers — CustomDrawableLayers over an uploaded GPU mesh; re-adding
+//     one from Dart would re-read and re-parse a .glb, tens of megabytes for a
+//     real asset.
+//
+// Anything whose replay would merely save the app a call belongs in the app,
+// behind MapLibreMap.retainRuntimeStyle, not here.
+void replayRetainedStyleState(MblMap *m) {
+  if (m == nullptr || m->map == nullptr) return;
+  applyTransitionOptions(m);
+
+  // Images BEFORE model layers, and before the app's own re-adds: a symbol
+  // layer whose icon-image is not registered when it is added reports
+  // onStyleImageMissing and draws nothing, so this order is not cosmetic.
+  for (const auto &entry : m->images) {
+    m->map->getStyle().addImage(std::make_unique<mbgl::style::Image>(
+        entry.first, entry.second.pixels->clone(), entry.second.pixelRatio,
+        entry.second.sdf));
+  }
+
+  for (const auto &entry : m->models) {
+    addModelLayerNow(m, entry.first, entry.second.mesh, entry.second.gpu,
+                     entry.second.placement);
+  }
+  if (!m->models.empty()) {
+    requestModelRender(m);
   }
 }
 
@@ -2555,12 +2608,16 @@ void mbl_map_add_image(MblMap *m, const char *id, const uint8_t *rgba,
   const size_t bytes = static_cast<size_t>(width) * height * 4;
   mbgl::PremultipliedImage img({width, height});
   std::memcpy(img.data.get(), rgba, bytes);
-  auto holder = std::make_shared<mbgl::PremultipliedImage>(std::move(img));
+  auto holder =
+      std::make_shared<const mbgl::PremultipliedImage>(std::move(img));
   std::string imageId(id);
   const bool isSdf = sdf != 0;
   m->post([m, holder, imageId, pixel_ratio, isSdf] {
+    // clone(), not move: the retained copy has to outlive this call so the
+    // style-load observer can put the image back. mbgl takes the Image by value.
+    m->images[imageId] = MblMap::ImageEntry{holder, pixel_ratio, isSdf};
     m->map->getStyle().addImage(std::make_unique<mbgl::style::Image>(
-        imageId, std::move(*holder), pixel_ratio, isSdf));
+        imageId, holder->clone(), pixel_ratio, isSdf));
     m->renderRequested = true;
   });
 }
@@ -2583,6 +2640,10 @@ void mbl_map_remove_image(MblMap *m, const char *id) {
   if (m == nullptr || id == nullptr) return;
   std::string imageId(id);
   m->post([m, imageId] {
+    // Drop the retention FIRST. Without this the next style load replays an
+    // image the app explicitly removed — the failure mode of any replay cache
+    // that only ever grows.
+    m->images.erase(imageId);
     m->map->getStyle().removeImage(imageId);
     m->renderRequested = true;
   });

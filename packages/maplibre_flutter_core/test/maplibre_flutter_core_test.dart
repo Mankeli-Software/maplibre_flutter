@@ -1101,6 +1101,74 @@ void main() {
     );
   });
 
+  // 5.9. Style::Impl::parse() does `images = makeMutable<ImageImpls>()`
+  // (style_impl.cpp:104), so every style load wipes every runtime image. Unlike
+  // a source or a layer, an image has no form in a style document — nobody but
+  // this layer can put it back, so an app that rasterised a widget into an icon
+  // would have found its symbols blank after any style change.
+  //
+  // Run in BOTH modes on purpose. The last mode-shaped bug here shipped green
+  // because the only test used Static and every real tier is Continuous.
+  for (final continuous in [false, true]) {
+    final mode = continuous ? 'Continuous' : 'Static';
+    test('a runtime image survives a style load ($mode mode)', () async {
+      const first =
+          '{'
+          '"version":8,"sources":{},'
+          '"layers":[{"id":"bg","type":"background",'
+          '"paint":{"background-color":"#101010"}}]'
+          '}';
+      const second =
+          '{'
+          '"version":8,"sources":{},'
+          '"layers":[{"id":"bg","type":"background",'
+          '"paint":{"background-color":"#202020"}}]'
+          '}';
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: first,
+        continuous: continuous,
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+
+      final pixels = Uint8List(8 * 8 * 4)..fillRange(0, 8 * 8 * 4, 200);
+      map.addImage('icon', pixels, 8, 8);
+      map.addImage('doomed', Uint8List(4 * 4 * 4), 4, 4);
+      await settle(map);
+      expect(map.hasImage('icon'), isTrue, reason: 'precondition');
+
+      // An image the app REMOVED must not come back. A replay cache that only
+      // ever grows resurrects exactly what was deliberately deleted.
+      map.removeImage('doomed');
+      await settle(map);
+
+      map.setStyle(second);
+      await settle(map);
+      // Prove the load actually happened, rather than asserting on a style that
+      // never changed — otherwise this passes for the wrong reason.
+      expect(
+        map.getLayerProperty('bg', 'background-color'),
+        contains('32'),
+        reason: 'the second document must be the live one (0x20 == 32)',
+      );
+
+      expect(
+        map.hasImage('icon'),
+        isTrue,
+        reason: 'the retained image must be re-registered after the load',
+      );
+      expect(
+        map.hasImage('doomed'),
+        isFalse,
+        reason: 'a removed image must stay removed across a style load',
+      );
+    });
+  }
+
   test(
     'getLayerIds reports the DOCUMENT, not mbgl\'s annotation plumbing',
     () async {

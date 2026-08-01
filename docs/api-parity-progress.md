@@ -158,8 +158,13 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 5.8 Style from **inline JSON** and from a Flutter asset. Both forms work and are verified on
       macOS hardware; `asset://` is ours, resolved in Dart. Also fixed `getLayersOrder` reporting
       mbgl's own annotation layer — found by this task's integration test, see the run log.
-- [ ] 5.9 Re-apply app-added sources, layers and images after a style load (today the shim re-applies
-      **only** models and transition options, `maplibre_flutter_core.cpp:890-899`).
+- [x] 5.9a Runtime **images** survive a style load, in both render modes. Split from 5.9b below
+      because only images are un-re-addable by the app: `Style::Impl::parse()` wipes them
+      (`style_impl.cpp:104`) and an image has no form in a style document.
+- [ ] 5.9b Opt-in `MapLibreMap.retainRuntimeStyle` replaying app-added **sources and layers**.
+      Design settled (see the 5.9a run-log entry); deliberately NOT automatic — every upstream
+      binding requires the app to re-add from the style-loaded event, which we surfaced in 2.5, and
+      an automatic replay collides with an app that does re-add (double-add ⇒ `onError` noise).
 - [ ] 5.10 Demote `addPoints`/`setPoints`/`removePoints` to a clearly-named recipe — they have no
       upstream equivalent and currently read as spec API.
 - [ ] 5.11 Namespace model layers internally (`mbl:model:<id>`) inside the C shim, closing three live
@@ -821,3 +826,36 @@ never existed.
   `example_app_test.dart` green.
 - **Harness note:** two integration-test FILES in one `flutter test -d macos` invocation fails the
   second app launch ("Unable to start the app on the device"). Run them one file at a time.
+
+### 2026-08-01 — Stage 5 (5.9a) — runtime images survive a style load
+
+- **The defect:** `Style::Impl::parse()` does `images = makeMutable<ImageImpls>()`
+  (`style_impl.cpp:104` — verified against the pinned submodule, not quoted from the spec), so every
+  style load wiped every runtime image. An app that rasterised a Flutter widget into an engine icon
+  (`addWidgetIcon`, the whole point of the engineIcons scenario) got blank symbols the moment
+  `MapLibreMap.style` changed, with no error — `onStyleImageMissing` fires, but nothing was
+  listening for a case that used to be impossible.
+- **Where the line is drawn, and why it is not "everything the app added".** A source or a layer has
+  a form in a style document, so an app can re-add it from the style-loaded event — that is what
+  gl-js, Apple (`MLNStyle.h:32-36`) and Android all require. These three cannot be re-added by
+  anyone else: transition options (style-global, no document form in our API), runtime images (pure
+  registrations), and model layers (`CustomDrawableLayer`s over an uploaded GPU mesh — re-adding one
+  from Dart re-reads and re-parses a .glb). So the shim replays exactly those, and
+  `replayRetainedStyleState()` says so in a comment rather than growing by accretion.
+- **The replay moved into the BASE observer, and `FrameObserver`'s override is gone.** Static mode
+  had no re-apply at all — not even the models it has retained since the 3D work — because the
+  re-adds lived in the Continuous-only subclass. That is the same shape as the bug that made the
+  app hang last run: an override that forgot to delegate. There is now no override to forget.
+- **A retained image must also stay REMOVED.** `mbl_map_remove_image` drops the retention first;
+  without that the next style load resurrects exactly what the app deleted, which is the standard
+  failure of a replay cache that only ever grows. Tested.
+- **Both render modes are tested, deliberately.** Last run's mode-shaped bug shipped green because
+  the only test used Static and every shipped tier is Continuous. The test also asserts the second
+  document is actually live before checking the image, so it cannot pass by the style never having
+  changed.
+- **5.9b (sources/layers) split out, not silently dropped.** Automatic replay collides with an app
+  that follows the documented pattern and re-adds from `onStyleLoaded` — the second add reports
+  through `onError`. It belongs behind an opt-in `MapLibreMap.retainRuntimeStyle`, which is what the
+  spec recommends (row at `api-parity-binding-spec.md:2087`).
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (50) / `format` clean.
+
