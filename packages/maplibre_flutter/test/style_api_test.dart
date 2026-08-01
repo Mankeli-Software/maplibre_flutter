@@ -371,6 +371,38 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('the typed constructors emit RFC 7946 with no number rewriting', () {
+      // The style encoder turns 6.0 into 6; GeoJsonData deliberately opts out,
+      // because these bytes are the one path into mbgl's GeoJSON parser.
+      final feature = GeoJsonData.feature(
+        const GeoJsonFeature(
+          id: 'probe',
+          geometry: GeoJsonPoint(LatLng(60.45, 6)),
+        ),
+      );
+      expect(jsonEncode(feature.toJson()), contains('[6.0,60.45]'));
+      expect(jsonEncode(feature.toJson()), contains('"id":"probe"'));
+
+      final collection = GeoJsonData.featureCollection(
+        const GeoJsonFeatureCollection([
+          GeoJsonFeature(geometry: GeoJsonPoint(LatLng(60.45, 22.27))),
+        ]),
+      );
+      final decoded =
+          jsonDecode(jsonEncode(collection.toJson())) as Map<String, Object?>;
+      expect(decoded['type'], 'FeatureCollection');
+      expect((decoded['features']! as List), hasLength(1));
+
+      final geometry = GeoJsonData.geometry(
+        const GeoJsonLineString([LatLng(60.45, 22.27), LatLng(59.33, 18.06)]),
+      );
+      final line = geometry.toJson()! as Map<String, Object?>;
+      expect(line['type'], 'LineString');
+      // Absolute directions: the first vertex is the northern, eastern one,
+      // and GeoJSON puts longitude first.
+      expect((line['coordinates']! as List).first, [22.27, 60.45]);
+    });
   });
 
   group('value encoding', () {

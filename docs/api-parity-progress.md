@@ -53,23 +53,23 @@ No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
 - [ ] 1.3 `CameraOptions` (partial camera, every field nullable, incl. `padding` and `anchor`) +
       `CameraAnimation` (duration/curve/speed/minZoom/maxDuration), mirroring
       `include/mbgl/map/camera.hpp:55-115`.
-- [ ] 1.4 Typed GeoJSON in a `geojson.dart` sub-library: sealed `GeoJsonGeometry` (all seven RFC 7946
+- [x] 1.4 Typed GeoJSON in a `geojson.dart` sub-library: sealed `GeoJsonGeometry` (all seven RFC 7946
       types), `GeoJsonFeature` (id + geometry + properties), `GeoJsonFeatureCollection`, and
-      `QueriedFeature` carrying gl-js `MapGeoJSONFeature`'s extras (`layer`, `source`, `sourceLayer`,
-      `state`).
+      `QueriedFeature` carrying gl-js `MapGeoJSONFeature`'s extras (~~`layer`~~, `source`,
+      `sourceLayer`, `state` — **no `layer`**, mbgl destroys it; see the run log).
 - [ ] 1.5 `MapCameraChangeReason` — Apple `MLNCameraChangeReason.h:30-64` values, as a Dart `Set`.
 - [ ] 1.6 `MapLibreCapabilities` + re-export the capability interfaces from
       `packages/maplibre_flutter/lib/maplibre_flutter.dart` (today an app cannot even write
       `if (controller is MapLibreModelHost)`).
 - [ ] 1.7 Harden `LatLng`: normalise/assert NaN, inf, |lat| > 90, wrap longitude. `mbgl::LatLng`
       throws on these and a throw across `extern "C"` is UB.
-- [ ] 1.8 **P0 defect** — `map_layers_controller.dart:215` drops every non-Point geometry from
+- [x] 1.8 **P0 defect** — `map_layers_controller.dart:215` drops every non-Point geometry from
       `queryRenderedFeatures`. The C shim already returns the full FeatureCollection.
-- [ ] 1.9 **P0 defect** — the same method parses and discards the feature `id`.
-- [ ] 1.10 **P0 defect** — the same method catches `FormatException` while its unchecked casts throw
+- [x] 1.9 **P0 defect** — the same method parses and discards the feature `id`.
+- [x] 1.10 **P0 defect** — the same method catches `FormatException` while its unchecked casts throw
       `TypeError`, breaking its own documented promise never to throw into a camera-tick caller.
-- [ ] 1.11 **P0 defect** — `map_layers_controller.dart:365` `setPoints` drops `properties`, making
-      data-driven styling impossible through it.
+- [x] 1.11 **P0 defect** — `map_layers_controller.dart:365` `setPoints` drops `properties`, making
+      data-driven styling impossible through it. (`addPoints` had the same gap; both fixed.)
 
 ### Stage 2 — Observer + diagnostics channel (one C ABI callback, one Dart fan-out)
 
@@ -274,3 +274,54 @@ Append one entry per run. Newest last.
   smallest, are pure Dart, and are testable device-free. Then 1.1/1.2 (`LatLngBounds` + `EdgeInsets`)
   as the value-type spine. Note the trap for 1.4: `GeoJsonFeature.toJson()` must **not** use
   `encodeStyleJson` (it rewrites `6.0` → `6`); test that `60.45` survives byte-identically.
+
+### 2026-08-01 — Stage 1 (1.4, 1.8, 1.9, 1.10, 1.11) — the typed GeoJSON types and the four P0 query defects
+
+- **Done:** 1.4, 1.8, 1.9, 1.10, 1.11.
+  - **1.4** — new `geojson.dart` sub-library. The types live in the platform interface
+    (`lib/src/geojson/{geometry,feature}.dart`) because stage 6's `setFeatureState` needs them at the
+    contract level, and are re-exported as `package:maplibre_flutter/geojson.dart` — the import path
+    the spec names — and from `package:maplibre_flutter` itself, since `queryRenderedFeatures`
+    returns one. `sealed GeoJsonGeometry` + all seven RFC 7946 types, `GeoJsonFeature`,
+    `GeoJsonFeatureCollection`, `QueriedFeature`. Every position flips `[lng, lat]` ⇄
+    `LatLng(lat, lng)` exactly once, at parse/serialise. `GeoJsonData` gained matching typed
+    constructors (`.feature`, `.featureCollection`, `.geometry`) so the same types work inbound.
+    26 new tests in the platform interface, asserted against **absolute directions** (Turku is north
+    and east of Stockholm; Rio is south and west of both) rather than round-trips.
+  - **1.8/1.9** — `queryRenderedFeatures` now returns `List<QueriedFeature>` with the full geometry
+    and the feature `id`. `MapLibreQueriedFeature` survives as a `@Deprecated` typedef, so
+    `List<MapLibreQueriedFeature>` still type-checks; the one source-level break is that `.point` is
+    now `LatLng?`, which it had to become once non-point geometries stopped being dropped. The
+    example is updated.
+  - **1.10** — the parser no longer casts. Every read is checked and every failure inside the
+    geometry/feature parsers is a `FormatException`, so the method's "never throws into a camera-tick
+    caller" promise now actually holds; a single unreadable feature is skipped rather than costing
+    the whole frame's results. Tested with strings-for-numbers, a bare string in place of a feature,
+    an empty coordinate array and an unknown geometry type — all of which used to throw `TypeError`
+    straight past the `on FormatException`.
+  - **1.11** — `properties` added to both `setPoints` **and** `addPoints`; the ledger named only
+    `setPoints`, but with `addPoints` unable to attach them the feature was half-usable.
+- **Left half-done:** none.
+- **Deferred / rejected:** `QueriedFeature.source` / `.sourceLayer` / `.state` parse correctly but
+  are **null/empty on every native tier today** — `mbgl::Feature` carries all three, but the C shim
+  copies the query result into a `mapbox::feature::feature_collection<double>` before
+  `stringify` (`maplibre_flutter_core.cpp`, in `mbl_map_query_rendered_features`), which slices them
+  off. That is a C ABI change and stage 1's gate forbids one, so it is stage 6's. Documented on the
+  fields themselves.
+- **Spec corrections found:** two, both from reading the engine rather than the spec.
+  1. **`QueriedFeature` must not have a `layer` field**, though ledger 1.4 and spec `:184`/`:231`
+     both list one. `RenderOrchestrator::queryRenderedFeatures` builds `resultsByLayer` and then
+     flattens it into a single `std::vector<Feature>` before returning, so per-feature layer
+     attribution is destroyed inside the engine — the Apple SDK returns the same flattened array.
+     Spec `:2564` already said this and is the row that is right. Per-layer querying via `layerIds`
+     is the only honest way to get attribution, and the dartdoc says so.
+  2. **`mbgl::Feature` *does* carry `source`/`sourceLayer`/`state`** (`include/mbgl/util/feature.hpp`
+     — it is `GeoJSONFeature` plus exactly those three), so spec `:2564`'s wider claim that the
+     engine destroys all provenance is too strong. Only the `layer` grouping is lost; the other
+     three are lost in **our** shim, and are recoverable there. Spec `:3565` has this right.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green (203 in `maplibre_flutter`, 32
+  in the platform interface) / `format` clean / stage-1 gate satisfied — no `*_generated.dart` and no
+  `maplibre_flutter_core.{h,cpp}` in the diff.
+- **Next run:** 1.1 (`LatLngBounds`, mbgl `geo.hpp:82` shape, `southwest`/`northeast`), 1.2
+  (adopt `EdgeInsets`), 1.3 (`CameraOptions` + `CameraAnimation`) and 1.7 (`LatLng` hardening) —
+  the value-type spine, all pure Dart. 1.5 and 1.6 close the stage after that.

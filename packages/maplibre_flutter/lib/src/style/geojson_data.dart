@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart' show immutable;
+import 'package:maplibre_flutter_platform_interface/geojson.dart'
+    show GeoJsonFeature, GeoJsonFeatureCollection, GeoJsonGeometry;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
     show LatLng;
 
@@ -17,6 +19,20 @@ final class GeoJsonData implements StyleJson {
 
   /// Inline GeoJSON in map form — a Feature, FeatureCollection or geometry.
   const GeoJsonData.inline(Map<String, Object?> geoJson) : _value = geoJson;
+
+  /// One typed [GeoJsonFeature], inline.
+  ///
+  /// The typed counterpart to [GeoJsonData.inline], and the way in for the
+  /// same types `queryRenderedFeatures` hands back.
+  GeoJsonData.feature(GeoJsonFeature feature) : _value = feature.toJson();
+
+  /// A typed [GeoJsonFeatureCollection], inline.
+  GeoJsonData.featureCollection(GeoJsonFeatureCollection collection)
+    : _value = collection.toJson();
+
+  /// A bare typed [GeoJsonGeometry], inline. RFC 7946 allows a source's data to
+  /// be a geometry with no feature wrapper, and so does mbgl.
+  GeoJsonData.geometry(GeoJsonGeometry geometry) : _value = geometry.toJson();
 
   /// A `FeatureCollection` of plain points built from [points].
   ///

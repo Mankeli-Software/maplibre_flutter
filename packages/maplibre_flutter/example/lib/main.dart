@@ -207,7 +207,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   int _engineCountIndex = 1;
 
   // Hybrid state: what the engine reports drawing, promoted to real widgets.
-  List<MapLibreQueriedFeature> _liveFeatures = const [];
+  List<QueriedFeature> _liveFeatures = const [];
 
   /// The dataset every engine scenario draws. Deterministic, so runs compare.
   static List<LatLng> _dataset(int count) {
@@ -1167,15 +1167,18 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.hybrid:
         // Animated widgets, but only for what is on screen.
         return [
+          // `point` is null for a line or polygon feature; these layers only
+          // ever draw points, so anything else is not ours to promote.
           for (final f in _liveFeatures)
-            MapLibreMarker(
-              point: f.point,
-              // Clusters become animated bubbles carrying the engine's own
-              // point_count; single points become animated pins.
-              child: f.isCluster
-                  ? _PulsingCluster(count: f.pointCount)
-                  : const _PulsingMarker(),
-            ),
+            if (f.point case final point?)
+              MapLibreMarker(
+                point: point,
+                // Clusters become animated bubbles carrying the engine's own
+                // point_count; single points become animated pins.
+                child: f.isCluster
+                    ? _PulsingCluster(count: f.pointCount)
+                    : const _PulsingMarker(),
+              ),
         ];
 
       case Scenario.enginePoints:

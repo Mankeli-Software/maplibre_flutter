@@ -4,35 +4,27 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+import 'package:maplibre_flutter_platform_interface/geojson.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
 import 'style/style.dart';
 
-/// One feature the engine drew, as returned by
-/// [MapLibreLayersController.queryRenderedFeatures].
-@immutable
-class MapLibreQueriedFeature {
-  const MapLibreQueriedFeature({required this.point, required this.properties});
-
-  /// Where the engine placed it. For a cluster this is the cluster's own
-  /// position, which is not any one of the underlying points.
-  final LatLng point;
-
-  /// The feature's properties. Clustered sources add `point_count`,
-  /// `point_count_abbreviated` and `cluster_id`.
-  final Map<String, Object?> properties;
-
-  /// True when this is a cluster rather than a single point.
-  bool get isCluster => properties['point_count'] != null;
-
-  /// How many points this cluster stands for; 1 for a single point.
-  int get pointCount => (properties['point_count'] as num?)?.toInt() ?? 1;
-
-  @override
-  String toString() =>
-      'MapLibreQueriedFeature($point, cluster: $isCluster, count: $pointCount)';
-}
+/// One feature the engine drew.
+///
+/// Renamed to [QueriedFeature], which mirrors gl-js's `MapGeoJSONFeature` and
+/// carries the full [GeoJsonFeature.geometry] and [GeoJsonFeature.id] this type
+/// never had.
+///
+/// One source-compatibility note: [QueriedFeature.point] is now `LatLng?`,
+/// because a line or polygon feature has no single point — it used to be
+/// non-null only because every non-point geometry was silently dropped.
+@Deprecated(
+  'Renamed to QueriedFeature (gl-js MapGeoJSONFeature). Note that .point is '
+  'now nullable, since non-point geometries are no longer dropped. '
+  'Will be removed in a future release.',
+)
+typedef MapLibreQueriedFeature = QueriedFeature;
 
 /// Engine-drawn map data: the scalable half of the annotation story.
 ///
@@ -186,14 +178,23 @@ class MapLibreLayersController {
   ///
   /// This is how you find out what is on screen without duplicating the
   /// engine's work. On a clustered source it returns the **clusters**
-  /// themselves — each with [MapLibreQueriedFeature.pointCount] and the
-  /// position mbgl placed it at — so cluster bubbles can be drawn as Flutter
-  /// widgets over the top, or hit-tested for a tap, without reimplementing
-  /// clustering in Dart.
+  /// themselves — each with [QueriedFeature.pointCount] and the position mbgl
+  /// placed it at — so cluster bubbles can be drawn as Flutter widgets over the
+  /// top, or hit-tested for a tap, without reimplementing clustering in Dart.
+  ///
+  /// Every geometry type comes back, so a fill or line layer answers as well as
+  /// a circle one; reach for [QueriedFeature.point] when you know it is a point
+  /// and [GeoJsonFeature.geometry] otherwise.
   ///
   /// Empty when nothing matched, and when the renderer is unavailable or the
-  /// query timed out. Restrict to specific [layerIds] to keep results small.
-  List<MapLibreQueriedFeature> queryRenderedFeatures(
+  /// query timed out — those cases are not distinguished today. Restrict to
+  /// specific [layerIds] to keep results small; that is also the only way to
+  /// learn which layer a feature came from, because mbgl flattens its
+  /// per-layer results before returning them.
+  ///
+  /// Mirrors gl-js `map.queryRenderedFeatures(geometry?, options?)` and Apple's
+  /// `-visibleFeaturesInRect:` (`MLNMapView.h`).
+  List<QueriedFeature> queryRenderedFeatures(
     Rect rect, {
     List<String>? layerIds,
   }) {
@@ -205,36 +206,29 @@ class MapLibreLayersController {
       layerIds: layerIds,
     );
     if (json == null || json.isEmpty) return const [];
+    // Runs on camera ticks, so this must not throw into its caller — and that
+    // promise only holds because every read below is checked. Unchecked casts
+    // throw TypeError, which `on FormatException` would not have caught.
+    final Object? decoded;
     try {
-      final decoded = jsonDecode(json) as Map<String, Object?>;
-      final features = decoded['features'] as List<Object?>? ?? const [];
-      final out = <MapLibreQueriedFeature>[];
-      for (final f in features) {
-        final feature = f as Map<String, Object?>;
-        final geometry = feature['geometry'] as Map<String, Object?>?;
-        if (geometry == null || geometry['type'] != 'Point') continue;
-        final coords = geometry['coordinates'] as List<Object?>?;
-        if (coords == null || coords.length < 2) continue;
-        final properties =
-            (feature['properties'] as Map<String, Object?>?) ??
-            const <String, Object?>{};
-        out.add(
-          MapLibreQueriedFeature(
-            // GeoJSON is [lng, lat].
-            point: LatLng(
-              (coords[1] as num).toDouble(),
-              (coords[0] as num).toDouble(),
-            ),
-            properties: properties,
-          ),
-        );
-      }
-      return out;
+      decoded = jsonDecode(json);
     } on FormatException {
-      // Malformed payload should degrade to "nothing found", never throw into a
-      // caller that is likely running this on a camera tick.
       return const [];
     }
+    if (decoded is! Map<String, Object?>) return const [];
+    final features = decoded['features'];
+    if (features is! List<Object?>) return const [];
+    final out = <QueriedFeature>[];
+    for (final f in features) {
+      if (f is! Map<String, Object?>) continue;
+      try {
+        out.add(QueriedFeature.fromJson(f));
+      } on FormatException {
+        // One unreadable feature should not lose the rest of the frame's.
+        continue;
+      }
+    }
+    return out;
   }
 
   // --- Convenience ------------------------------------------------------------
@@ -255,9 +249,13 @@ class MapLibreLayersController {
   ///
   /// Ids are derived from [id] (`<id>`, `<id>-clusters`, `<id>-count`,
   /// `<id>-points`), so [removePoints] can clean them all up.
+  ///
+  /// [properties] attaches one property map per point, parallel to [points],
+  /// which is what data-driven styling reads (`Expr.get('…')`).
   void addPoints(
     String id,
     List<LatLng> points, {
+    List<Map<String, Object?>>? properties,
     bool cluster = false,
     double radius = 5,
     Color color = const Color(0xFF1565C0),
@@ -272,7 +270,7 @@ class MapLibreLayersController {
     addSource(
       id,
       GeoJsonSource(
-        data: GeoJsonData.points(points),
+        data: GeoJsonData.points(points, properties: properties),
         cluster: cluster ? true : null,
         clusterRadius: cluster ? clusterRadius.toDouble() : null,
         clusterMaxZoom: cluster ? clusterMaxZoom.toDouble() : null,
@@ -362,8 +360,19 @@ class MapLibreLayersController {
 
   /// Replaces the points of a layer added with [addPoints], without rebuilding
   /// it — the engine re-tiles and re-clusters.
-  void setPoints(String id, List<LatLng> points) =>
-      setGeoJsonData(id, jsonEncode(GeoJsonData.points(points).toJson()));
+  ///
+  /// [properties] attaches one property map per point, parallel to [points], so
+  /// data-driven styling (`Expr.get('…')`) keeps working across an update.
+  /// Omitting it clears the properties, exactly as passing new data does in
+  /// gl-js `source.setData`.
+  void setPoints(
+    String id,
+    List<LatLng> points, {
+    List<Map<String, Object?>>? properties,
+  }) => setGeoJsonData(
+    id,
+    jsonEncode(GeoJsonData.points(points, properties: properties).toJson()),
+  );
 
   /// Removes everything [addPoints] created for [id].
   void removePoints(String id) {

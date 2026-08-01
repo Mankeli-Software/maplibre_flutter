@@ -216,6 +216,42 @@ void main() {
     expect((data['features'] as List), hasLength(2));
   });
 
+  test('addPoints and setPoints carry per-point properties', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+
+    // Without these, data-driven styling — the whole point of an engine layer —
+    // is unreachable through this API.
+    layers.addPoints(
+      'p',
+      const [LatLng(60.45, 22.27)],
+      properties: const [
+        {'kind': 'harbour'},
+      ],
+    );
+    final added =
+        ((jsonDecode(rec.sources['p']!) as Map<String, Object?>)['data']
+                as Map)['features']
+            as List;
+    expect(((added.single as Map)['properties'] as Map)['kind'], 'harbour');
+
+    layers.setPoints(
+      'p',
+      const [LatLng(59.33, 18.06)],
+      properties: const [
+        {'kind': 'city'},
+      ],
+    );
+    final updated =
+        (jsonDecode(rec.lastData!) as Map<String, Object?>)['features'] as List;
+    expect(((updated.single as Map)['properties'] as Map)['kind'], 'city');
+
+    // The bytes are the one path into mbgl's GeoJSON parser, so no number
+    // rewriting: 60.45 must not come out as 60 (the style encoder does that).
+    expect(rec.lastData, contains('18.06'));
+    expect(rec.lastData, contains('59.33'));
+  });
+
   test('queryRenderedFeatures parses clusters and single points', () {
     final rec = _RecordingLayers();
     final layers = MapLibreLayersController()..attachTo(rec);
@@ -250,12 +286,81 @@ void main() {
 
     expect(found[0].isCluster, isTrue);
     expect(found[0].pointCount, 42);
+    expect(found[0].clusterId, 7);
     // Flipped back from GeoJSON's [lng, lat].
-    expect(found[0].point.latitude, closeTo(60.45, 1e-9));
-    expect(found[0].point.longitude, closeTo(22.27, 1e-9));
+    expect(found[0].point!.latitude, closeTo(60.45, 1e-9));
+    expect(found[0].point!.longitude, closeTo(22.27, 1e-9));
 
     expect(found[1].isCluster, isFalse);
     expect(found[1].pointCount, 1, reason: 'a lone point counts as one');
+    expect(found[1].clusterId, isNull);
+  });
+
+  test('queryRenderedFeatures keeps every geometry type, not just points', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+    // Turku (north-east) and Stockholm (south-west of it) — asymmetric on both
+    // axes, so a swapped or mirrored coordinate cannot pass by symmetry.
+    rec.queryJson = jsonEncode({
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'id': 'road-7',
+          'geometry': {
+            'type': 'LineString',
+            'coordinates': [
+              [22.27, 60.45],
+              [18.06, 59.33],
+            ],
+          },
+          'properties': {'name': 'E18'},
+        },
+        {
+          'type': 'Feature',
+          'id': 12,
+          'geometry': {
+            'type': 'Polygon',
+            'coordinates': [
+              [
+                [22.0, 60.0],
+                [23.0, 60.0],
+                [23.0, 61.0],
+                [22.0, 60.0],
+              ],
+            ],
+          },
+          'properties': <String, Object?>{},
+        },
+      ],
+    });
+
+    final found = layers.queryRenderedFeatures(Rect.largest);
+    expect(found, hasLength(2), reason: 'a line and a fill both answer now');
+
+    final line = found[0];
+    expect(line.id, 'road-7', reason: 'the feature id used to be discarded');
+    expect(line.properties['name'], 'E18');
+    expect(line.point, isNull, reason: 'a line has no single point');
+    final geometry = line.geometry;
+    expect(geometry, isA<GeoJsonLineString>());
+    final coordinates = (geometry! as GeoJsonLineString).coordinates;
+    // Absolute directions, not a round-trip: the first vertex is the NORTHERN
+    // and EASTERN one. A symmetric flip would survive a round-trip test.
+    expect(coordinates.first.latitude, closeTo(60.45, 1e-9));
+    expect(coordinates.first.longitude, closeTo(22.27, 1e-9));
+    expect(coordinates.first.latitude, greaterThan(coordinates.last.latitude));
+    expect(
+      coordinates.first.longitude,
+      greaterThan(coordinates.last.longitude),
+    );
+
+    expect(found[1].id, 12, reason: 'a numeric id stays a number');
+    expect(found[1].geometry, isA<GeoJsonPolygon>());
+    expect(
+      (found[1].geometry! as GeoJsonPolygon).coordinates.single,
+      hasLength(4),
+    );
   });
 
   test('queryRenderedFeatures degrades to empty, never throws', () {
@@ -267,24 +372,54 @@ void main() {
     expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
     rec.queryJson = '{not json';
     expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
-    // Non-point geometry is skipped rather than mis-parsed.
+    // Valid JSON, wrong shape at the top level.
+    rec.queryJson = '[]';
+    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
+    rec.queryJson = jsonEncode({'type': 'FeatureCollection', 'features': 3});
+    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
+  });
+
+  test('one unreadable feature does not lose the readable ones', () {
+    final rec = _RecordingLayers();
+    final layers = MapLibreLayersController()..attachTo(rec);
+    // These used to throw TypeError, which the `on FormatException` catch did
+    // not cover — the method's own dartdoc promised it never throws.
     rec.queryJson = jsonEncode({
       'type': 'FeatureCollection',
       'features': [
+        'not a feature at all',
         {
           'type': 'Feature',
           'geometry': {
-            'type': 'LineString',
-            'coordinates': [
-              [0, 0],
-              [1, 1],
-            ],
+            'type': 'Point',
+            'coordinates': ['22.27', '60.45'], // strings, not numbers
           },
           'properties': <String, Object?>{},
         },
+        {
+          'type': 'Feature',
+          'geometry': {'type': 'Point', 'coordinates': <Object?>[]},
+          'properties': <String, Object?>{},
+        },
+        {
+          'type': 'Feature',
+          'geometry': {'type': 'Sphere', 'coordinates': <Object?>[]},
+          'properties': <String, Object?>{},
+        },
+        {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [22.27, 60.45],
+          },
+          'properties': {'ok': true},
+        },
       ],
     });
-    expect(layers.queryRenderedFeatures(Rect.largest), isEmpty);
+
+    final found = layers.queryRenderedFeatures(Rect.largest);
+    expect(found, hasLength(1));
+    expect(found.single.properties['ok'], isTrue);
   });
 
   // NOTE both rasterizer tests run inside tester.runAsync. RenderRepaintBoundary
