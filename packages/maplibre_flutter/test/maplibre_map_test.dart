@@ -1142,13 +1142,7 @@ void main() {
     expect(controller.scaleCalls.single.scale, greaterThan(1));
   });
 
-  // NOTE: there is deliberately NO widget-level test here for the overlay
-  // stopping the map. One was written and removed: with a real MapLibreMap
-  // under an AbsorbPointerSignal in a Stack, the map recorded a zoom anchored
-  // at the surface CENTRE rather than at the scrolled point, which neither the
-  // absorber claiming nor the absorber failing explains. Rather than tune it
-  // until it went green, the behaviour is covered by
-  // test/scroll_over_overlay_test.dart, whose stand-in is wired identically to
-  // the gesture layer's handler. The anomaly is recorded in
-  // docs/api-parity-progress.md as an open question, not as a passing test.
+  // NOTE: the overlay-vs-map arbitration tests live in
+  // test/gestures_over_overlay_test.dart — they are a matrix over real overlay
+  // widgets and belong together, not scattered through this file.
 }

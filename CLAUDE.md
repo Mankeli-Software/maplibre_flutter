@@ -531,6 +531,21 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - The **input device matters**. Trackpad pinch (`onScaleUpdate`, a drifting focal centroid on
   Windows/Linux) and mouse wheel (`onPointerSignal`) are different code paths with different
   bugs. Confirm *how* the user reproduces before diagnosing.
+- **The map must never outrank Flutter's own arbitration, and the thing that can is the GLOBAL
+  POINTER ROUTE** in `_DesktopMapGestures`. It bypasses hit testing entirely, so while it fired on
+  "the pointer is inside the map's rectangle" no widget an app could place above the map was able to
+  stop the map stealing the wheel and the trackpad. It is now gated on the true cursor
+  *hit-testing* to the map, which is all it was ever for (GTK reports a stale pan-zoom position).
+  **Keep it that narrow.** An overlay that hit-tests opaquely then stops the map by itself, and apps
+  need nothing in their widget tree — which is the bar for this API. Note web is a different
+  mechanism entirely: the map is a DOM element there, so overlays need `PointerInterceptor`.
+- **A stand-in test that reproduces the HANDLER proves nothing about a widget that also registers a
+  global route.** One passed while the real `MapLibreMap` still zoomed, and the mismatch was written
+  off as an unexplained anomaly for half a day. Arbitration is a property of everything registered,
+  not of the handler — so a fix about arbitration must be tested against the real widget.
+- **Decoration is paint; paint has no bearing on hit testing.** A `DecoratedBox` looks solid and
+  hit-tests as a hole — that is why the attribution bar leaked gestures to the map. `Container(color:)`
+  and `ColoredBox` are opaque; `DecoratedBox` is not.
 - mbgl's **model matrix takes X/Y in world pixels but Z in metres**, and map model space is
   **left-handed** (X east, Y south, Z up) — so the standard `rotate_z` is already clockwise from
   above; negating it runs headings backwards.

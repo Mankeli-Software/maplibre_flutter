@@ -1166,6 +1166,12 @@ never existed.
 
 ### 2026-08-01 — Reported bug: scrolling over an overlay moved the map
 
+> **SUPERSEDED the same day** by "The overlay gesture leak" entry at the end of this file. Cause (2)
+> below is wrong and `AbsorbPointerSignal` is deleted: the leak was a global pointer route, and an
+> ordinary opaque overlay stops the map once that route is gated. Kept because the reasoning that
+> produced the wrong answer is the useful part — it is a worked example of a stand-in test agreeing
+> with a theory that the real widget disproved.
+
 - **Two independent causes, both real.**
   1. `_DesktopMapGestures._onPointerSignal` acted on the scroll DIRECTLY instead of registering with
      `PointerSignalResolver`. A pointer signal is offered to every `Listener` under the cursor and
@@ -1181,13 +1187,13 @@ never existed.
   as a test, because the first version of that test used an opaque coloured `Container`, which stops
   the hit test and so hides the bug by accident — the shapes that actually bite are the translucent
   ones (a modal barrier, an unpainted panel).
-- **An OPEN QUESTION, deliberately not papered over.** A widget-level test driving a real
+- ~~**An OPEN QUESTION, deliberately not papered over.**~~ A widget-level test driving a real
   `MapLibreMap` under an `AbsorbPointerSignal` recorded a zoom anchored at the surface CENTRE rather
   than at the scrolled point — which neither "the absorber claimed" nor "the absorber failed"
-  explains, and which the equivalent stand-in test does not reproduce. Rather than tune it until it
-  went green, it was removed and a comment in `maplibre_map_test.dart` says why. The map-side change
-  is covered by the stand-in (wired identically) and by the example app; the anomaly needs a look
-  with the real widget before that gap is closed.
+  explains, and which the equivalent stand-in test does not reproduce. **ANSWERED the same day, see
+  below: the real widget carries a global pointer route the stand-in does not, and the centre anchor
+  was that route's fallback.** Trusting the stand-in was the mistake — it was wired identically to
+  the *handler*, which is exactly the part that was not at fault.
 
 ### 2026-08-01 — Stage 8 (8.6) — attribution, and a bug only a real tile server could show
 
@@ -1346,4 +1352,62 @@ never existed.
   exists, so every later test pointed at a directory that was gone. The offline group was simply the
   first thing running late enough to notice — the fragility predates it.
 - **Gates:** `test:native` green (77) after the revert.
+
+
+### 2026-08-01 — The overlay gesture leak: the map was overriding Flutter, and now does not
+
+Second look at the same user report, after the wheel fix above turned out to be treating a symptom.
+The conclusion reverses part of it: `AbsorbPointerSignal` is **deleted**, and apps need nothing in
+their widget tree.
+
+- **The real cause was a GLOBAL POINTER ROUTE, not signal arbitration.** `_DesktopMapGestures`
+  registers one (`ad0a944`), and it drove the map whenever a pan-zoom or scroll landed inside the
+  map's BOX while the map's render box was not in the hit path. An overlay blocking the pointer is
+  *precisely* that condition — so the route re-drove the map for every panel above it. That is why
+  the bug survived a correct-looking resolver fix: a global route does not consult the widget tree,
+  so nothing placed in the tree could ever have stopped it.
+- **It also explains the anomaly recorded above.** The old anchor helper fell back to the map CENTRE
+  when the cursor was genuinely over an overlay — the `Offset(400, 300)` the removed test saw on an
+  800×600 surface. Never unexplained behaviour; a second code path.
+- **The fix is one gate.** The route takes over only when the TRUE CURSOR hit-tests to the map
+  (`_hits(box, cursor)`), not when it merely falls inside the map's rectangle. That keeps exactly
+  what `ad0a944` was for — GTK reporting a STALE pan-zoom position, so the event hit-tests to the
+  control last clicked while the cursor has already moved onto the map — and drops what it had
+  accidentally also been doing.
+- **`AbsorbPointerSignal` is deleted, not deprecated.** Measured after the gate landed: `Card`,
+  `Container(color:)`, `IconButton`, `ElevatedButton` and `ListView` all stop the wheel, the
+  trackpad and a drag with no wrapper at all — because they hit-test opaquely, and an opaque hit
+  test stops a pointer signal from ever reaching the map. It was added the same day and never
+  released, so there is nothing to deprecate. **A binding that needs the app to wrap its own
+  widgets to stop the map stealing input has a bug, not an API.**
+- **The one shape that still passes through is an unpainted, unclaiming box** (a bare `SizedBox`),
+  and that is correct: Flutter treats it as transparent to taps and we match. An app that wants
+  otherwise sets `HitTestBehavior.opaque` on its own widget — plain Flutter, no map-specific widget.
+- **The map's own attribution bar needed the same treatment** and is the tidy illustration: it was a
+  `DecoratedBox`, so it *looked* solid and hit-tested as a hole. Decoration is paint, and paint has
+  no bearing on hit testing. Now wrapped in an opaque `Listener`.
+- **It reverses one behaviour `ad0a944` verified on Linux by hand:** pinching with the cursor still
+  ON a control used to zoom about the map centre, and now does nothing. Right call then, wrong one
+  now — gl-js does not zoom when you scroll its nav control, and neither do the native SDKs. Worth
+  re-checking on the Linux box, since the stale-position defect that justifies the route at all
+  lives there and no unit test can see it.
+- **Tests: a matrix over real overlay widgets, driving a real `MapLibreMap`**
+  (`test/gestures_over_overlay_test.dart`, replacing `scroll_over_overlay_test.dart`). The
+  predecessor tested a stand-in wired like the map's scroll HANDLER and passed while the real widget
+  still zoomed. **The rule that cost us: where a fix is about arbitration, the test must drive the
+  real widget — arbitration is a property of everything registered, not of the handler.** Both
+  directions are asserted, since a gate that simply deleted the route would pass every "must not
+  reach the map" case.
+- **The same trap bit a second time, one layer down, and the control caught it.** The tap assertions
+  passed instantly — because the fake controller did not implement `MapLibreMapProjector`, and
+  `MapLibreMap` only builds its tap detector when the controller can project. There was no tap to
+  eat. Only the paired "the bare map still reports taps" case failed and exposed it. **A fake that
+  omits a capability silently deletes the feature under test; assert the positive case in the same
+  breath as the negative one, always.**
+- **Web is a different mechanism and is now documented as such.** On both web tiers the map is a DOM
+  element, so nothing painted over it blocks anything and an opaque hit test buys nothing; that
+  needs `PointerInterceptor`, which the example app already uses.
+- **Gates:** `analyze --fatal-infos` clean / 336 unit tests green in `maplibre_flutter`, workspace
+  `test --no-select` green / `format` clean. **Hands-on still owed on Linux**, which is the only
+  place the stale-position path that justifies the route at all can be exercised.
 

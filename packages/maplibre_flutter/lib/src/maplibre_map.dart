@@ -532,12 +532,17 @@ class _MapEmbed extends StatelessWidget {
       case PlatformViewHandle():
         map = _PlatformView(handle: handle);
       case ElementViewHandle(:final viewType):
-        // Web tier: the maplibre-gl-js map is the host `<div>` registered under
-        // [viewType] by the web controller's view factory. It is the top DOM
-        // element, so it receives pointer/scroll/gesture events natively — no
-        // Dart gesture layer (web mirrors the mobile tier, CLAUDE.md §3).
-        // Flutter widgets drawn *over* the map need `PointerInterceptor`
-        // (handled by the app, e.g. the example's controls), not the map itself.
+        // Web tier (BOTH web packages): the map is the host DOM element
+        // registered under [viewType] by the web controller's view factory. It
+        // receives pointer/scroll/gesture events natively — no Dart gesture
+        // layer (web mirrors the mobile tier, CLAUDE.md §3).
+        //
+        // So overlays here need `PointerInterceptor`, and an opaque hit test
+        // will NOT do what it does on the other tiers: the leak is not Flutter
+        // arbitration but the DOM, and a Flutter widget painted over a platform
+        // view puts nothing in front of it as far as the browser is concerned.
+        // `PointerInterceptor` inserts the blocking element the browser needs.
+        // This is the app's call — the map cannot wrap widgets it does not own.
         map = HtmlElementView(viewType: viewType);
     }
 
@@ -1360,21 +1365,19 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     return false;
   }
 
-  // Resolve the zoom anchor (map-local) for a blocked gesture: the true cursor when
-  // it is over the map, otherwise the map centre (cursor is over an overlay → no map
-  // point under it, so zoom about centre like the +/- buttons).
-  Offset _blockedAnchorFor(
-    RenderBox box,
-    Offset origin,
-    Offset cursor,
-    int viewId,
-  ) => _hits(box, cursor, viewId)
-      ? cursor - origin
-      : Offset(box.size.width / 2, box.size.height / 2);
-
-  // See [_blockedPanZoom]: drive the map from a global route when an overlay blocks
-  // the pointer from reaching the map's own gesture layer (or when the embedder
-  // reports a stale pan-zoom position, see [_globalCursorPos]).
+  // See [_blockedPanZoom]: drive the map from a global route when the embedder
+  // reports a STALE pointer position (see [_globalCursorPos]) — the event
+  // hit-tests somewhere the cursor no longer is, so the map's own gesture layer
+  // never sees a gesture the user is making over the map.
+  //
+  // The gate is the TRUE CURSOR, and it is load-bearing: this route is the one
+  // thing here that can override the arbitration everything else obeys, so it
+  // must only fire where the cursor is genuinely over the map. It used to fire
+  // on `mapRect.contains(cursor)` — anywhere within the map's BOX, overlays
+  // included — which quietly made the map win over every panel above it. That
+  // was the whole of the reported bug: scrolling or two-fingering over a
+  // control drove the map, and no amount of blocking in the widget tree could
+  // stop it, because this route does not consult the widget tree.
   void _globalPointerRoute(PointerEvent event) {
     // Track the true cursor everywhere (the global route sees hovers over overlays
     // too); pan-zoom/scroll positions can be stale on Linux.
@@ -1390,7 +1393,6 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
     final origin = box.localToGlobal(Offset.zero);
-    final mapRect = origin & box.size;
     final cursor = _globalCursorPos ?? event.position; // prefer the true cursor
 
     if (event is PointerPanZoomStartEvent) {
@@ -1399,9 +1401,11 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         _blockedPanZoom = false;
         return;
       }
-      // Else an overlay (or a stale pan-zoom position) blocked the map. Take over,
-      // but only if the true cursor is within the map.
-      if (!mapRect.contains(cursor)) {
+      // Else take over ONLY if the true cursor hit-tests to the map: the
+      // position was stale, and the gesture really is over the map. If the
+      // cursor is over an overlay, that overlay owns the pixel and the map does
+      // nothing — two fingers over a panel scroll the panel.
+      if (!_hits(box, cursor, event.viewId)) {
         _blockedPanZoom = false;
         return;
       }
@@ -1411,7 +1415,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _blockedLastScale = 1;
       _blockedLastRotation = 0;
       _blockedRotationAccum = 0;
-      _blockedAnchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
+      // Always the cursor: we only get here when it hit-tests to the map.
+      _blockedAnchor = cursor - origin;
     } else if (event is PointerPanZoomUpdateEvent) {
       if (!_blockedPanZoom) return;
       final zooming = (event.scale - 1.0).abs() > 0.02;
@@ -1462,11 +1467,14 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _inTrackpadPanZoom = false;
       _endReasons();
     } else if (event is PointerScrollEvent) {
-      // Local path handles it when the event routes to the map.
+      // Local path handles it when the event routes to the map — and that path
+      // goes through PointerSignalResolver, so anything above the map that
+      // claims the signal beats us there. Here we are the ONLY handler, so the
+      // true-cursor gate is what keeps an overlay's wheel from reaching the map.
       if (_hits(box, event.position, event.viewId)) return;
-      if (!mapRect.contains(cursor)) return;
+      if (!_hits(box, cursor, event.viewId)) return;
       _stopInertia();
-      final anchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
+      final anchor = cursor - origin;
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
       if (factor != 1.0) {
         // A wheel notch is a whole gesture: report it and end it at once, since
@@ -1490,9 +1498,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     // dropdown, a panel or a button sitting above it. Scrollable does exactly
     // this; a map is no more entitled to a scroll than a list is.
     //
-    // NOTE this only defers to widgets that CLAIM the signal. A plain Container
-    // above the map registers nothing, so wrap overlays in [AbsorbPointerSignal]
-    // — that is what it is for.
+    // NOTE this only arbitrates among widgets the signal actually REACHES, and
+    // it is the weaker of the two mechanisms: an overlay that hit-tests
+    // opaquely stops the signal before it ever gets here, which is why apps
+    // need nothing in their tree. This matters for the translucent case — a
+    // Scrollable overlapping the map claims the signal and wins on its own
+    // terms, and the map must not be able to outrank it.
     GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
       _handleScroll(resolved as PointerScrollEvent);
     });

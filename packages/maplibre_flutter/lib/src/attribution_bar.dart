@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
-import 'absorb_pointer_signal.dart';
-
 /// The credit line drawn over the bottom of the map.
 ///
 /// **On by default, because for most tile providers this is a licence
@@ -43,9 +41,13 @@ class MapLibreAttributionBar extends StatelessWidget {
       alignment: alignment,
       child: Padding(
         padding: const EdgeInsets.all(4),
-        // Scroll over the credit must not zoom the map underneath — the same
-        // pointer-signal trap every other overlay hits.
-        child: AbsorbPointerSignal(
+        // Opaque, so the credit behaves like the solid thing it looks like:
+        // gestures over it do not reach the map. A DecoratedBox alone would not
+        // do it — decoration is paint, and paint has no bearing on hit testing,
+        // so without this the bar is a coloured hole the map sees straight
+        // through.
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: const Color(0xCCFFFFFF),
