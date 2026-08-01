@@ -447,6 +447,29 @@ class MapLibreFlutterAndroidCoreController
   }
 
   @override
+  bool setLayerProperty(String layerId, String name, String valueJson) {
+    if (_disposed) return false;
+    return _coreMap.setLayerProperty(layerId, name, valueJson);
+  }
+
+  @override
+  void moveLayer(String layerId, {String? beforeId}) {
+    if (_disposed) return;
+    _coreMap.moveLayer(layerId, beforeId: beforeId);
+  }
+
+  @override
+  String? getLayerProperty(String layerId, String name) =>
+      _disposed ? null : _coreMap.getLayerProperty(layerId, name);
+
+  @override
+  List<String>? getLayerIds() => _disposed ? null : _coreMap.getLayerIds();
+
+  @override
+  String? getLayerJson(String layerId) =>
+      _disposed ? null : _coreMap.getLayerJson(layerId);
+
+  @override
   void removeLayer(String id) {
     if (_disposed) return;
     _coreMap.removeLayer(id);

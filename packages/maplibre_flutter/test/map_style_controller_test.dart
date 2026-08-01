@@ -24,6 +24,34 @@ class _RecordingLayers implements MapLibreStyleLayers {
   void setGeoJsonData(String sourceId, String geoJson) => lastData = geoJson;
   @override
   void removeLayer(String id) => removedLayers.add(id);
+
+  /// Recorded per-property mutations, so a test can assert the exact JSON.
+  final List<({String layerId, String name, String valueJson})> properties = [];
+  final List<({String layerId, String? beforeId})> moves = [];
+
+  /// Reads a test can steer.
+  String? propertyResult;
+  List<String>? layerIdsResult;
+  String? layerJsonResult;
+
+  @override
+  bool setLayerProperty(String layerId, String name, String valueJson) {
+    properties.add((layerId: layerId, name: name, valueJson: valueJson));
+    return true;
+  }
+
+  @override
+  void moveLayer(String layerId, {String? beforeId}) =>
+      moves.add((layerId: layerId, beforeId: beforeId));
+
+  @override
+  String? getLayerProperty(String layerId, String name) => propertyResult;
+
+  @override
+  List<String>? getLayerIds() => layerIdsResult;
+
+  @override
+  String? getLayerJson(String layerId) => layerJsonResult;
   @override
   void removeSource(String id) => removedSources.add(id);
   @override
@@ -474,6 +502,119 @@ void main() {
         16 * 16 * 4,
         reason: 'raw RGBA of the rasterized image',
       );
+    });
+  });
+
+  group('per-property mutation', () {
+    test('gl-js names all funnel to ONE engine call', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      // gl-js splits these four ways; mbgl's Layer::setProperty handles them
+      // all, so the split is a naming convenience and nothing more.
+      style
+        ..setPaintProperty('dots', 'circle-color', const Color(0xFF00FF00))
+        ..setLayoutProperty('dots', 'circle-sort-key', 3)
+        ..setLayerVisible('dots', visible: false)
+        ..setFilter('dots', Expr.has('point_count'))
+        ..setLayerZoomRange('dots', minZoom: 4, maxZoom: 12);
+
+      expect(rec.properties.map((p) => p.name), [
+        'circle-color',
+        'circle-sort-key',
+        'visibility',
+        'filter',
+        'minzoom',
+        'maxzoom',
+      ]);
+      // Encoded by the SAME serialiser the typed layers use, so there is no
+      // second encoder to drift: a Color becomes #rrggbb, an Expression becomes
+      // its JSON array.
+      expect(rec.properties[0].valueJson, '"#00ff00"');
+      expect(rec.properties[2].valueJson, '"none"');
+      expect(rec.properties[3].valueJson, '["has","point_count"]');
+      expect(rec.properties[4].valueJson, '4');
+    });
+
+    test('setLayerVisible(true) sets visible, not the absence of none', () {
+      final rec = _RecordingLayers();
+      MapLibreStyleController()
+        ..attachTo(rec)
+        ..setLayerVisible('dots', visible: true);
+      expect(rec.properties.single.valueJson, '"visible"');
+    });
+
+    test('moveLayer forwards its beforeId, and null means the top', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+      style
+        ..moveLayer('a', beforeId: 'b')
+        ..moveLayer('a');
+      expect(rec.moves, [
+        (layerId: 'a', beforeId: 'b'),
+        (layerId: 'a', beforeId: null),
+      ]);
+    });
+
+    test('every mutator is a no-op before attach', () {
+      // The whole surface has to survive being called on an unbound controller,
+      // because an app cannot always know when attach happened.
+      final style = MapLibreStyleController();
+      expect(style.isSupported, isFalse);
+      style
+        ..setPaintProperty('a', 'circle-color', const Color(0xFF000000))
+        ..setLayerVisible('a', visible: true)
+        ..setFilter('a', null)
+        ..setLayerZoomRange('a', minZoom: 1)
+        ..moveLayer('a');
+      expect(style.getLayersOrder(), isEmpty);
+      expect(style.getLayer('a'), isNull);
+      expect(style.getPaintProperty('a', 'circle-color'), isNull);
+    });
+  });
+
+  group('the read side', () {
+    test('decodes JSON, and reports absence as null', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      rec.propertyResult = '["rgba",0.0,0.0,255.0,1.0]';
+      expect(style.getPaintProperty('dots', 'circle-color'), [
+        'rgba',
+        0.0,
+        0.0,
+        255.0,
+        1.0,
+      ]);
+
+      rec.propertyResult = '["has","point_count"]';
+      expect(style.getFilter('dots'), ['has', 'point_count']);
+
+      rec.propertyResult = null;
+      expect(style.getLayoutProperty('dots', 'visibility'), isNull);
+
+      // Malformed JSON must not throw into a caller that is probably rebuilding
+      // a widget.
+      rec.propertyResult = '{not json';
+      expect(style.getPaintProperty('dots', 'circle-color'), isNull);
+    });
+
+    test('getLayersOrder and getLayer', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      rec.layerIdsResult = const ['background', 'water', 'dots'];
+      expect(style.getLayersOrder(), ['background', 'water', 'dots']);
+
+      rec.layerJsonResult = '{"id":"dots","type":"circle","source":"p"}';
+      expect(style.getLayer('dots'), {
+        'id': 'dots',
+        'type': 'circle',
+        'source': 'p',
+      });
+
+      rec.layerJsonResult = null;
+      expect(style.getLayer('nope'), isNull);
     });
   });
 }

@@ -1069,6 +1069,178 @@ void main() {
     );
   });
 
+  // --- Layer properties ------------------------------------------------------
+
+  test('ONE entry point sets paint, layout, filter and zoom range', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 5);
+    await settle(map);
+
+    map.addSourceJson(
+      'p',
+      '{"type":"geojson","data":${pointsAround(60.45, 22.27, 40, 0.4)}}',
+    );
+    map.addLayerJson(
+      '{"id":"dots","type":"circle","source":"p",'
+      '"paint":{"circle-radius":6,"circle-color":"#ff00ff"}}',
+    );
+    await settle(map);
+    expect(countColor(map.copyFrame()!, 255, 0, 255), greaterThan(20));
+
+    // PAINT — the generated setter path.
+    expect(map.setLayerProperty('dots', 'circle-color', '"#00ff00"'), isTrue);
+    await settle(map);
+    expect(countColor(map.copyFrame()!, 0, 255, 0), greaterThan(20));
+    expect(countColor(map.copyFrame()!, 255, 0, 255), 0);
+
+    // LAYOUT / visibility — Layer::setProperty's OWN fallback, not a paint
+    // property, reached through the same call.
+    expect(map.setLayerProperty('dots', 'visibility', '"none"'), isTrue);
+    await settle(map);
+    expect(
+      countColor(map.copyFrame()!, 0, 255, 0),
+      0,
+      reason: 'a hidden layer draws nothing',
+    );
+    expect(map.setLayerProperty('dots', 'visibility', '"visible"'), isTrue);
+    await settle(map);
+    expect(countColor(map.copyFrame()!, 0, 255, 0), greaterThan(20));
+
+    // ZOOM RANGE — the same entry point again.
+    expect(map.setLayerProperty('dots', 'minzoom', '10'), isTrue);
+    await settle(map);
+    expect(
+      countColor(map.copyFrame()!, 0, 255, 0),
+      0,
+      reason: 'at zoom 5, a minzoom-10 layer is out of range',
+    );
+    expect(map.setLayerProperty('dots', 'minzoom', '0'), isTrue);
+    await settle(map);
+    expect(countColor(map.copyFrame()!, 0, 255, 0), greaterThan(20));
+
+    // FILTER — the fourth thing gl-js gives a separate method and mbgl does not.
+    expect(
+      map.setLayerProperty('dots', 'filter', '["==",["get","nope"],1]'),
+      isTrue,
+    );
+    await settle(map);
+    expect(
+      countColor(map.copyFrame()!, 0, 255, 0),
+      0,
+      reason: 'a filter that matches nothing hides everything',
+    );
+  });
+
+  test('bad JSON fails now; a bad property name reports later', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    final failures = <CoreDiagnostic>[];
+    map.setDiagnosticCallback((d) {
+      if (d.kind == CoreDiagnosticKind.commandFailed) failures.add(d);
+    });
+    map.addSourceJson(
+      'p',
+      '{"type":"geojson","data":${pointsAround(0, 0, 3, 0.1)}}',
+    );
+    map.addLayerJson(
+      '{"id":"dots","type":"circle","source":"p","paint":{"circle-radius":3}}',
+    );
+    await settle(map);
+
+    // Malformed JSON is knowable without the render thread, so it fails here.
+    expect(map.setLayerProperty('dots', 'circle-radius', '{not json'), isFalse);
+    // These need the layer, so they can only be reported asynchronously.
+    expect(map.setLayerProperty('dots', 'no-such-property', '1'), isTrue);
+    expect(map.setLayerProperty('no-such-layer', 'circle-radius', '1'), isTrue);
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 10) && failures.length < 2) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    final messages = failures.map((d) => d.message).toList();
+    expect(messages.any((m) => m.contains('no-such-property')), isTrue);
+    expect(
+      messages.any((m) => m.contains("no layer with id 'no-such-layer'")),
+      isTrue,
+    );
+  });
+
+  test('moveLayer reorders, and getLayer reads the LIVE layer', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 0, longitude: 0, zoom: 3);
+
+    map.addSourceJson(
+      'p',
+      '{"type":"geojson","data":${pointsAround(0, 0, 30, 0.6)}}',
+    );
+    // Two layers over the same points: the one added LAST wins the overlap.
+    map.addLayerJson(
+      '{"id":"under","type":"circle","source":"p",'
+      '"paint":{"circle-radius":12,"circle-color":"#ff00ff"}}',
+    );
+    map.addLayerJson(
+      '{"id":"over","type":"circle","source":"p",'
+      '"paint":{"circle-radius":12,"circle-color":"#00ff00"}}',
+    );
+    await settle(map);
+    expect(countColor(map.copyFrame()!, 0, 255, 0), greaterThan(30));
+
+    final order = map.getLayerIds();
+    expect(order, isNotNull);
+    expect(order!.indexOf('over'), greaterThan(order.indexOf('under')));
+
+    // Put 'over' BENEATH 'under': magenta should now win the overlap.
+    map.moveLayer('over', beforeId: 'under');
+    await settle(map);
+    expect(
+      countColor(map.copyFrame()!, 255, 0, 255),
+      greaterThan(30),
+      reason: 'the draw order actually changed',
+    );
+    final reordered = map.getLayerIds()!;
+    expect(reordered.indexOf('over'), lessThan(reordered.indexOf('under')));
+
+    // getLayer must reflect the LIVE layer, not the document as loaded —
+    // Style::getJSON() would still say magenta here.
+    map.setLayerProperty('under', 'circle-color', '"#0000ff"');
+    await settle(map);
+
+    // NOTE the read side hands back mbgl's NORMALISED form, not the text that
+    // went in: a colour comes out as ["rgba",r,g,b,a] with doubles, whatever
+    // notation set it. Anything round-tripping getLayerProperty into
+    // setLayerProperty has to expect that, so it is pinned here rather than
+    // discovered later.
+    expect(
+      map.getLayerJson('under'),
+      contains('"rgba",0.0,0.0,255.0,1.0'),
+      reason: '#0000ff normalises to rgba blue',
+    );
+    expect(map.getLayerProperty('under', 'circle-color'), contains('rgba'));
+    expect(map.getLayerProperty('under', 'circle-radius'), '12.0');
+    expect(map.getLayerJson('no-such-layer'), isNull);
+    expect(map.getLayerProperty('under', 'no-such-property'), isNull);
+  });
+
   // --- Camera commands -------------------------------------------------------
 
   test('jumpTo applies a PARTIAL camera, leaving the rest alone', () async {

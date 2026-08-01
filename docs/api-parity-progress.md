@@ -143,15 +143,15 @@ Highest row count in the backlog, correctly last among the core stages.
 
 - [ ] 5.1 Rename the namespace `controller.layers` → `controller.style` (it owns sources, images and
       transitions — it is `MLNStyle`, not layers); move queries off it.
-- [ ] 5.2 `mbl_map_set_layer_property(map, layerId, name, valueJson)` over `Layer::setProperty`
+- [x] 5.2 `mbl_map_set_layer_property(map, layerId, name, valueJson)` over `Layer::setProperty`
       (`layer.hpp:144`). **One entry point** covers paint, layout, `visibility`, `minzoom`, `maxzoom`
       **and** `filter` (`layer.cpp:165-190`) — the ABI needs no gl-js-style split.
-- [ ] 5.3 `moveLayer(id, beforeId)` — ~15 lines: `Style::removeLayer` returns the owning `unique_ptr`
+- [x] 5.3 `moveLayer(id, beforeId)` — ~15 lines: `Style::removeLayer` returns the owning `unique_ptr`
       and `addLayer` takes `before`; the `Layer` object survives intact.
-- [ ] 5.4 Read side: `getLayer(id)`, `getLayersOrder()`, `getPaintProperty`, `getLayoutProperty`,
+- [x] 5.4 Read side: `getLayer(id)`, `getLayersOrder()`, `getPaintProperty`, `getLayoutProperty`,
       `getFilter`. Note `Style::getJSON()` returns the document **as loaded**, not a live
       serialisation — use `getLayers()` + `Layer::serialize()` for the live view.
-- [ ] 5.5 `setLayerZoomRange`.
+- [x] 5.5 `setLayerZoomRange`.
 - [ ] 5.6 `getSource(id)` handle with `setData` (renaming `setGeoJsonData`), `isSourceLoaded`.
 - [ ] 5.7 `hasImage`, `listImages`, `updateImage`.
 - [ ] 5.8 Style from **inline JSON** and from a Flutter asset. `Style::loadJSON` exists
@@ -708,3 +708,39 @@ and counts seconds, so a wait can never again be indistinguishable from a hang.
 - **Lesson worth keeping:** the harness default (Static) differed from every shipped configuration
   (Continuous), and that gap hid a P0 for two commits. When a mode flag exists, at least one test
   must use the one that ships.
+
+### 2026-08-01 — Stage 5 (5.2, 5.3, 5.4, 5.5) — the layer surface stops being write-once
+
+Before this, changing one property meant removing the layer and adding it back, and there was **no
+getter of any kind** — which is why the spec has no rows for the read side: you cannot regress what
+never existed.
+
+- **5.2** — `mbl_map_set_layer_property(map, layerId, name, valueJson)`. The finding the ledger
+  predicted holds up: **one entry point covers paint, layout, `visibility`, `minzoom`, `maxzoom`
+  AND `filter`**, because `Layer::setProperty` dispatches to the generated setters and then handles
+  the rest itself (`layer.cpp:165-190`). gl-js's four-way split is a naming convenience, and the C
+  ABI needed none of it. Verified by a native test that drives all four through the same call and
+  counts pixels after each.
+  Malformed JSON fails **synchronously** (it is knowable without the render thread); an unknown
+  property or layer reports on the diagnostic channel, since those need the layer.
+- **5.3** — `moveLayer`. ~20 lines, as predicted: `Style::removeLayer` returns the owning
+  `unique_ptr` and `addLayer` takes a `before`, so the layer object survives the move with nothing
+  re-parsed. Tested by overlapping two circle layers and asserting which colour wins.
+- **5.4** — `getLayer` / `getLayersOrder` / `getPaintProperty` / `getLayoutProperty` / `getFilter`,
+  over `Layer::getProperty` and `Layer::serialize()`. **Not `Style::getJSON()`** — that returns the
+  document as LOADED and would not show anything the app changed, which the test pins by setting a
+  colour and reading it back.
+- **5.5** — `setLayerZoomRange`, which falls out of 5.2.
+- **Finding worth carrying:** the read side returns mbgl's **normalised** form, not the text that
+  went in. `"#0000ff"` comes back as `["rgba",0.0,0.0,255.0,1.0]`, and numbers come back as doubles.
+  Round-tripping a read into a write is fine; comparing it to the input string is not. Documented on
+  `getPaintProperty` and pinned by a test, because it is exactly the kind of thing that looks like a
+  bug the first time someone hits it.
+- **The interface break was the intended kind.** Adding five members to `MapLibreStyleLayers` broke
+  all six controllers plus three test doubles at compile time, which is the mechanism CLAUDE.md §3
+  describes. The web tier gets honest no-ops and nulls rather than plausible lies — an app can tell
+  through the null returns; a fabricated value would silently be wrong.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (44) / `format` clean /
+  ffigen regenerated on macOS.
+- **Next:** 5.6 (`getSource` handle + `setSourceData`), 5.7 (image surface), 5.8 (inline-JSON and
+  asset styles — five doc comments already promise this works), then 5.9-5.11.

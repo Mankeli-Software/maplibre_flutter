@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
@@ -1180,6 +1181,111 @@ class MapLibreCoreMap {
       ffi.nullptr,
     );
     previous?.close();
+  }
+
+  // --- Layer properties -------------------------------------------------------
+
+  /// Sets one style-spec property on [layerId] by its spec [name].
+  ///
+  /// [valueJson] is a JSON fragment: `12`, `"#ff0000"`, `["get","population"]`.
+  /// Returns false if that JSON is malformed — the one failure knowable without
+  /// the render thread. A property the layer does not have is reported
+  /// asynchronously on the diagnostic channel instead.
+  ///
+  /// **One call covers paint, layout, `visibility`, `minzoom`, `maxzoom` and
+  /// `filter`**, because `mbgl::style::Layer::setProperty` falls through to each
+  /// in turn. gl-js splits these into four methods; the ABI does not need to.
+  bool setLayerProperty(String layerId, String name, String valueJson) {
+    _checkAlive();
+    return using((arena) {
+      final err = arena<ffi.Char>(512);
+      return bindings.mbl_map_set_layer_property(
+            _handle,
+            layerId.toNativeUtf8(allocator: arena).cast(),
+            name.toNativeUtf8(allocator: arena).cast(),
+            valueJson.toNativeUtf8(allocator: arena).cast(),
+            err,
+            512,
+          ) !=
+          0;
+    });
+  }
+
+  /// Moves [layerId] beneath [beforeId], or to the top when [beforeId] is null.
+  ///
+  /// Cheap: `Style::removeLayer` returns the owning pointer and `addLayer` takes
+  /// a `before`, so the layer object survives the move — nothing is re-parsed.
+  void moveLayer(String layerId, {String? beforeId}) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_move_layer(
+        _handle,
+        layerId.toNativeUtf8(allocator: arena).cast(),
+        beforeId == null
+            ? ffi.nullptr
+            : beforeId.toNativeUtf8(allocator: arena).cast(),
+      );
+    });
+  }
+
+  /// One property of [layerId] as JSON, or null if absent or timed out.
+  String? getLayerProperty(
+    String layerId,
+    String name, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final result = bindings.mbl_map_get_layer_property(
+        _handle,
+        layerId.toNativeUtf8(allocator: arena).cast(),
+        name.toNativeUtf8(allocator: arena).cast(),
+        timeout.inMilliseconds,
+      );
+      if (result == ffi.nullptr) return null;
+      final json = result.cast<Utf8>().toDartString();
+      bindings.mbl_string_free(result);
+      return json;
+    });
+  }
+
+  /// The style's layer ids, bottom-most first. Null on timeout.
+  List<String>? getLayerIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    final result = bindings.mbl_map_get_layer_ids(
+      _handle,
+      timeout.inMilliseconds,
+    );
+    if (result == ffi.nullptr) return null;
+    final json = result.cast<Utf8>().toDartString();
+    bindings.mbl_string_free(result);
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return null;
+    return decoded.whereType<String>().toList();
+  }
+
+  /// One layer as its full style-spec JSON, or null if absent or timed out.
+  ///
+  /// From `Layer::serialize()`, so it reflects the LIVE layer rather than the
+  /// style document as it was loaded.
+  String? getLayerJson(
+    String layerId, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final result = bindings.mbl_map_get_layer_json(
+        _handle,
+        layerId.toNativeUtf8(allocator: arena).cast(),
+        timeout.inMilliseconds,
+      );
+      if (result == ffi.nullptr) return null;
+      final json = result.cast<Utf8>().toDartString();
+      bindings.mbl_string_free(result);
+      return json;
+    });
   }
 
   // --- Camera commands --------------------------------------------------------

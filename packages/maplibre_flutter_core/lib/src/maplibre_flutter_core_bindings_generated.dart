@@ -408,6 +408,72 @@ external void mbl_map_remove_layer(
   ffi.Pointer<ffi.Char> id,
 );
 
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external int mbl_map_set_layer_property(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  ffi.Pointer<ffi.Char> name,
+  ffi.Pointer<ffi.Char> value_json,
+  ffi.Pointer<ffi.Char> err,
+  int err_len,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external void mbl_map_move_layer(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  ffi.Pointer<ffi.Char> before_id,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_get_layer_property(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  ffi.Pointer<ffi.Char> name,
+  int timeout_ms,
+);
+
+@ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<MblMap>, ffi.Uint32)>()
+external ffi.Pointer<ffi.Char> mbl_map_get_layer_ids(
+  ffi.Pointer<MblMap> map,
+  int timeout_ms,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_get_layer_json(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
+  int timeout_ms,
+);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>)>()
 external void mbl_map_remove_source(
   ffi.Pointer<MblMap> map,

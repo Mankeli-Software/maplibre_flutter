@@ -51,6 +51,17 @@ class _FullController extends _BareController
   @override
   void removeLayer(String id) {}
   @override
+  bool setLayerProperty(String layerId, String name, String valueJson) => true;
+  @override
+  void moveLayer(String layerId, {String? beforeId}) {}
+  @override
+  String? getLayerProperty(String layerId, String name) => null;
+  @override
+  List<String>? getLayerIds() => null;
+  @override
+  String? getLayerJson(String layerId) => null;
+
+  @override
   void removeSource(String id) {}
   @override
   void addImage(

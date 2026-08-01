@@ -40,6 +40,34 @@ class _RecordingLayers implements MapLibreStyleLayers {
   void removeImage(String id) {}
 
   ({Duration? duration, Duration? delay, bool placement})? transitions;
+
+  /// Recorded per-property mutations, so a test can assert the exact JSON.
+  final List<({String layerId, String name, String valueJson})> properties = [];
+  final List<({String layerId, String? beforeId})> moves = [];
+
+  /// Reads a test can steer.
+  String? propertyResult;
+  List<String>? layerIdsResult;
+  String? layerJsonResult;
+
+  @override
+  bool setLayerProperty(String layerId, String name, String valueJson) {
+    properties.add((layerId: layerId, name: name, valueJson: valueJson));
+    return true;
+  }
+
+  @override
+  void moveLayer(String layerId, {String? beforeId}) =>
+      moves.add((layerId: layerId, beforeId: beforeId));
+
+  @override
+  String? getLayerProperty(String layerId, String name) => propertyResult;
+
+  @override
+  List<String>? getLayerIds() => layerIdsResult;
+
+  @override
+  String? getLayerJson(String layerId) => layerJsonResult;
   @override
   void setTransitionOptions({
     Duration? duration,

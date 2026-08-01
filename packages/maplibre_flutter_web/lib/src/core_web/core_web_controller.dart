@@ -285,6 +285,27 @@ class MapLibreCoreWebController
     if (error.isNotEmpty) throw ArgumentError(error);
   }
 
+  // The WASM shim does not export these yet — the embind module predates them
+  // (stage 7.1 brings this tier up to the contract). Honest no-ops and nulls
+  // rather than a plausible-looking lie: an app can tell the difference through
+  // MapLibreCapabilities and the null returns, whereas a fabricated value would
+  // silently be wrong.
+
+  @override
+  bool setLayerProperty(String layerId, String name, String valueJson) => false;
+
+  @override
+  void moveLayer(String layerId, {String? beforeId}) {}
+
+  @override
+  String? getLayerProperty(String layerId, String name) => null;
+
+  @override
+  List<String>? getLayerIds() => null;
+
+  @override
+  String? getLayerJson(String layerId) => null;
+
   @override
   void removeLayer(String id) {
     if (_disposed) return;

@@ -458,6 +458,63 @@ FFI_PLUGIN_EXPORT int mbl_map_set_geojson_data(MblMap *map,
                                                uint32_t err_len);
 
 FFI_PLUGIN_EXPORT void mbl_map_remove_layer(MblMap *map, const char *id);
+
+// Set ONE style-spec property on an existing layer, by its spec name.
+//
+// `value_json` is a JSON fragment: `12`, `"#ff0000"`, `["get","population"]`,
+// `"none"`. Returns 1 if the JSON parsed, 0 otherwise (message in `err`).
+//
+// **One entry point covers the lot.** `mbgl::style::Layer::setProperty`
+// (include/mbgl/style/layer.hpp:144) dispatches to the generated paint/layout
+// setters and then, on miss, handles `visibility`, `minzoom`, `maxzoom`,
+// `filter` and `source-layer` itself (src/mbgl/style/layer.cpp:165-190). So
+// this ABI needs none of gl-js's split into setPaintProperty /
+// setLayoutProperty / setFilter / setLayerZoomRange — those are Dart-side
+// names over this one call.
+//
+// The JSON is parsed on the CALLING thread (so bad JSON is reported here and
+// now) and the mutation is posted. A property the layer does not have is
+// therefore reported asynchronously, through the diagnostic channel as
+// MBL_DIAG_COMMAND_FAILED.
+FFI_PLUGIN_EXPORT int mbl_map_set_layer_property(MblMap *map,
+                                                 const char *layer_id,
+                                                 const char *name,
+                                                 const char *value_json,
+                                                 char *err, uint32_t err_len);
+
+// Move `layer_id` in the draw order: directly beneath `before_id`, or to the
+// top when `before_id` is NULL/empty.
+//
+// Cheap by construction: `Style::removeLayer` hands back the owning unique_ptr
+// and `addLayer` takes a `before`, so the Layer object survives the move — no
+// re-parse, no re-upload. Reports through the diagnostic channel if the layer
+// does not exist.
+FFI_PLUGIN_EXPORT void mbl_map_move_layer(MblMap *map, const char *layer_id,
+                                          const char *before_id);
+
+// Read one property back as JSON — gl-js `getPaintProperty` /
+// `getLayoutProperty` / `getFilter`, which are all `Layer::getProperty`.
+//
+// Returns a heap string the caller must release with mbl_string_free, or NULL
+// if the layer or property does not exist, or the read timed out. BLOCKS up to
+// `timeout_ms`: the style lives on the render thread.
+FFI_PLUGIN_EXPORT char *mbl_map_get_layer_property(MblMap *map,
+                                                   const char *layer_id,
+                                                   const char *name,
+                                                   uint32_t timeout_ms);
+
+// The style's layer ids, top-most last, as a JSON array of strings — gl-js
+// `getLayersOrder`. Release with mbl_string_free; NULL on timeout.
+FFI_PLUGIN_EXPORT char *mbl_map_get_layer_ids(MblMap *map, uint32_t timeout_ms);
+
+// One layer as its full style-spec JSON — gl-js `getLayer`.
+//
+// Uses `Layer::serialize()`, NOT `Style::getJSON()`: the latter returns the
+// document AS LOADED and so would not reflect anything the app added or
+// changed. Release with mbl_string_free; NULL if absent or timed out.
+FFI_PLUGIN_EXPORT char *mbl_map_get_layer_json(MblMap *map,
+                                               const char *layer_id,
+                                               uint32_t timeout_ms);
 FFI_PLUGIN_EXPORT void mbl_map_remove_source(MblMap *map, const char *id);
 
 // Registers an icon usable as `icon-image` in a symbol layer, from raw

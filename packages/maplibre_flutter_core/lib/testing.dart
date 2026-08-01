@@ -454,6 +454,55 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 
+  // --- layer properties ------------------------------------------------------
+
+  /// Every setLayerProperty call, in order.
+  final List<({String layerId, String name, String valueJson})>
+  layerProperties = [];
+
+  /// Every moveLayer call.
+  final List<({String layerId, String? beforeId})> layerMoves = [];
+
+  /// What [setLayerProperty] returns; false simulates malformed JSON.
+  bool setLayerPropertyResult = true;
+
+  /// What [getLayerProperty] returns; null simulates absent or timed out.
+  String? layerPropertyResult = '12';
+
+  /// What [getLayerIds] returns; null simulates a timeout.
+  List<String>? layerIds = const ['background', 'dots'];
+
+  /// What [getLayerJson] returns; null simulates absent or timed out.
+  String? layerJson = '{"id":"dots","type":"circle"}';
+
+  @override
+  bool setLayerProperty(String layerId, String name, String valueJson) {
+    layerProperties.add((layerId: layerId, name: name, valueJson: valueJson));
+    return setLayerPropertyResult;
+  }
+
+  @override
+  void moveLayer(String layerId, {String? beforeId}) =>
+      layerMoves.add((layerId: layerId, beforeId: beforeId));
+
+  @override
+  String? getLayerProperty(
+    String layerId,
+    String name, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => layerPropertyResult;
+
+  @override
+  List<String>? getLayerIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => layerIds;
+
+  @override
+  String? getLayerJson(
+    String layerId, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => layerJson;
+
   // --- camera commands -------------------------------------------------------
 
   /// Every partial camera the controller applied, in order, with how.

@@ -38,6 +38,12 @@
 #include <mbgl/style/conversion/geojson.hpp>
 #include <mbgl/style/conversion/json.hpp>
 #include <mbgl/style/conversion/layer.hpp>
+#include <mbgl/style/conversion/stringify.hpp>
+#include <mbgl/style/rapidjson_conversion.hpp>
+#include <mbgl/style/style_property.hpp>
+#include <mbgl/util/rapidjson.hpp>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <mbgl/style/conversion/source.hpp>
 #include <mbgl/style/image.hpp>
 #include <mbgl/style/layer.hpp>
@@ -2255,6 +2261,152 @@ void mbl_map_remove_source(MblMap *m, const char *id) {
     }
     m->renderRequested = true;
   });
+}
+
+int mbl_map_set_layer_property(MblMap *m, const char *layer_id,
+                               const char *name, const char *value_json,
+                               char *err, uint32_t err_len) {
+  if (m == nullptr || layer_id == nullptr || name == nullptr ||
+      value_json == nullptr) {
+    mbl_set_err(err, err_len, "null argument");
+    return 0;
+  }
+  // Parse HERE, on the calling thread, so malformed JSON is a synchronous
+  // failure like the other two JSON entry points rather than a silent drop.
+  // The document is shared into the lambda because Convertible borrows it.
+  auto holder = std::make_shared<mbgl::JSDocument>();
+  holder->Parse<0>(value_json);
+  if (holder->HasParseError()) {
+    mbl_set_err(err, err_len,
+                mbgl::formatJSONParseError(*holder));
+    return 0;
+  }
+  const std::string id(layer_id);
+  const std::string property(name);
+  m->post([m, holder, id, property] {
+    auto *layer = m->map->getStyle().getLayer(id);
+    if (layer == nullptr) {
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "setLayerProperty: no layer with id '" + id + "'");
+      return;
+    }
+    // One call covers paint, layout, visibility, minzoom, maxzoom and filter —
+    // Layer::setProperty falls through to each in turn.
+    // ConversionTraits is specialised for `const JSValue*`; JSDocument derives
+    // from GenericValue, so this is the upcast rather than a reinterpretation.
+    const mbgl::JSValue *value = holder.get();
+    const auto failure = layer->setProperty(
+        property, mbgl::style::conversion::Convertible(value));
+    if (failure) {
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "setLayerProperty '" + property + "' on '" + id +
+                             "': " + failure->message);
+      return;
+    }
+    m->renderRequested = true;
+  });
+  return 1;
+}
+
+void mbl_map_move_layer(MblMap *m, const char *layer_id,
+                        const char *before_id) {
+  if (m == nullptr || layer_id == nullptr) return;
+  const std::string id(layer_id);
+  const std::string before =
+      before_id != nullptr ? std::string(before_id) : std::string();
+  m->post([m, id, before] {
+    // removeLayer returns the owning unique_ptr, so the Layer object itself
+    // survives — nothing is re-parsed or re-uploaded to move it.
+    auto layer = m->map->getStyle().removeLayer(id);
+    if (layer == nullptr) {
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "moveLayer: no layer with id '" + id + "'");
+      return;
+    }
+    try {
+      if (before.empty()) {
+        m->map->getStyle().addLayer(std::move(layer));
+      } else {
+        m->map->getStyle().addLayer(std::move(layer), before);
+      }
+      m->renderRequested = true;
+    } catch (const std::exception &e) {
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_ERROR,
+                         "moveLayer '" + id + "': " + e.what());
+    }
+  });
+}
+
+namespace {
+
+// Serialises an mbgl style Value to JSON, for the read side.
+std::string styleValueToJson(const mbgl::Value &value) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  mbgl::style::conversion::stringify(writer, value);
+  return std::string(buffer.GetString(), buffer.GetSize());
+}
+
+char *dupToHeap(const std::string &text) {
+  char *out = static_cast<char *>(std::malloc(text.size() + 1));
+  if (out == nullptr) return nullptr;
+  std::memcpy(out, text.data(), text.size());
+  out[text.size()] = '\0';
+  return out;
+}
+
+} // namespace
+
+char *mbl_map_get_layer_property(MblMap *m, const char *layer_id,
+                                 const char *name, uint32_t timeout_ms) {
+  if (m == nullptr || layer_id == nullptr || name == nullptr) return nullptr;
+  const std::string id(layer_id);
+  const std::string property(name);
+  auto result = std::make_shared<std::string>();
+  auto found = std::make_shared<bool>(false);
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, id, property, result,
+                                                    found] {
+    auto *layer = m->map->getStyle().getLayer(id);
+    if (layer == nullptr) return;
+    const auto read = layer->getProperty(property);
+    if (read.getKind() == mbgl::style::StyleProperty::Kind::Undefined) return;
+    *result = styleValueToJson(read.getValue());
+    *found = true;
+  });
+  if (!ok || !*found) return nullptr;
+  return dupToHeap(*result);
+}
+
+char *mbl_map_get_layer_ids(MblMap *m, uint32_t timeout_ms) {
+  if (m == nullptr) return nullptr;
+  auto result = std::make_shared<std::string>();
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, result] {
+    std::vector<mbgl::Value> ids;
+    for (const auto *layer : m->map->getStyle().getLayers()) {
+      ids.emplace_back(layer->getID());
+    }
+    *result = styleValueToJson(mbgl::Value{ids});
+  });
+  return ok ? dupToHeap(*result) : nullptr;
+}
+
+char *mbl_map_get_layer_json(MblMap *m, const char *layer_id,
+                             uint32_t timeout_ms) {
+  if (m == nullptr || layer_id == nullptr) return nullptr;
+  const std::string id(layer_id);
+  auto result = std::make_shared<std::string>();
+  auto found = std::make_shared<bool>(false);
+  const bool ok =
+      runOnRenderThread(m, timeout_ms, [m, id, result, found] {
+        auto *layer = m->map->getStyle().getLayer(id);
+        if (layer == nullptr) return;
+        // serialize(), not Style::getJSON(): the latter returns the document as
+        // LOADED, so it would not show anything the app added or changed.
+        *result = styleValueToJson(layer->serialize());
+        *found = true;
+      });
+  if (!ok || !*found) return nullptr;
+  return dupToHeap(*result);
 }
 
 void mbl_map_add_image(MblMap *m, const char *id, const uint8_t *rgba,

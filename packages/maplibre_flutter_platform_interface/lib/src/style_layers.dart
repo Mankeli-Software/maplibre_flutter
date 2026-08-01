@@ -37,6 +37,31 @@ abstract interface class MapLibreStyleLayers {
 
   void removeLayer(String id);
 
+  /// Sets one style-spec property on [layerId], by its spec [name].
+  ///
+  /// [valueJson] is a JSON fragment. **One method covers paint, layout,
+  /// `visibility`, `minzoom`, `maxzoom` and `filter`** — `Layer::setProperty`
+  /// falls through to each in turn, so the contract needs none of gl-js's split
+  /// into four. The app-facing names sit on top of this.
+  ///
+  /// Returns false only when [valueJson] is malformed, which is the one failure
+  /// knowable without the render thread; anything else is reported on the error
+  /// stream.
+  bool setLayerProperty(String layerId, String name, String valueJson);
+
+  /// Moves [layerId] beneath [beforeId], or to the top when null.
+  void moveLayer(String layerId, {String? beforeId});
+
+  /// One property of [layerId] as JSON, or null if absent.
+  String? getLayerProperty(String layerId, String name);
+
+  /// The style's layer ids, bottom-most first.
+  List<String>? getLayerIds();
+
+  /// One layer's full style-spec JSON, from the LIVE layer rather than the
+  /// document as loaded.
+  String? getLayerJson(String layerId);
+
   void removeSource(String id);
 
   /// Registers an icon for use as `icon-image` in a symbol layer, from raw

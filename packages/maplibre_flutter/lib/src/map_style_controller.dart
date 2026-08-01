@@ -9,6 +9,7 @@ import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 import 'package:meta/meta.dart';
 
 import 'style/style.dart';
+import 'style/style_encoding.dart';
 
 /// One feature the engine drew.
 ///
@@ -115,6 +116,113 @@ class MapLibreStyleController {
       _layers?.setGeoJsonData(sourceId, geoJson);
 
   void removeLayer(String id) => _layers?.removeLayer(id);
+
+  // --- Per-property mutation --------------------------------------------------
+  //
+  // gl-js splits this into setPaintProperty / setLayoutProperty / setFilter /
+  // setLayerZoomRange, so those names are here — but they are ONE engine call.
+  // `Layer::setProperty` dispatches to the generated paint/layout setters and
+  // then handles visibility, minzoom, maxzoom and filter itself, so the C ABI
+  // needed no split at all.
+  //
+  // Before this, changing one property meant removing the layer and adding it
+  // back.
+
+  /// Sets a paint property — gl-js `setPaintProperty`.
+  ///
+  /// ```dart
+  /// controller.style.setPaintProperty('dots', 'circle-color', Colors.teal);
+  /// controller.style.setPaintProperty(
+  ///   'dots', 'circle-radius', Expr.get('magnitude'),
+  /// );
+  /// ```
+  ///
+  /// [value] is anything the typed style API accepts — a constant, a [Color],
+  /// an [Expression] — encoded by the same serialiser the layer classes use, so
+  /// there is no second encoder to drift.
+  void setPaintProperty(String layerId, String name, Object? value) =>
+      _setProperty(layerId, name, value);
+
+  /// Sets a layout property — gl-js `setLayoutProperty`. Same call underneath
+  /// as [setPaintProperty]; the split is gl-js's, not the engine's.
+  void setLayoutProperty(String layerId, String name, Object? value) =>
+      _setProperty(layerId, name, value);
+
+  /// Shows or hides a layer — the `visibility` layout property.
+  void setLayerVisible(String layerId, {required bool visible}) =>
+      _setProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+
+  /// Replaces a layer's filter — gl-js `setFilter`. Pass null to clear it.
+  void setFilter(String layerId, Expression? filter) =>
+      _setProperty(layerId, 'filter', filter);
+
+  /// The zoom range a layer draws in — gl-js `setLayerZoomRange`.
+  void setLayerZoomRange(String layerId, {double? minZoom, double? maxZoom}) {
+    if (minZoom != null) _setProperty(layerId, 'minzoom', minZoom);
+    if (maxZoom != null) _setProperty(layerId, 'maxzoom', maxZoom);
+  }
+
+  /// Moves [layerId] beneath [beforeId], or to the top when [beforeId] is null
+  /// — gl-js `moveLayer`.
+  ///
+  /// Cheap: the engine hands the layer object between positions rather than
+  /// rebuilding it, so nothing is re-parsed or re-uploaded.
+  void moveLayer(String layerId, {String? beforeId}) =>
+      _layers?.moveLayer(layerId, beforeId: beforeId);
+
+  void _setProperty(String layerId, String name, Object? value) => _layers
+      ?.setLayerProperty(layerId, name, jsonEncode(encodeStyleJson(value)));
+
+  // --- The read side ----------------------------------------------------------
+  //
+  // There was none at all before this: you could add a layer and never ask the
+  // engine anything about it again.
+
+  /// One paint property as decoded JSON, or null if the layer or property does
+  /// not exist — gl-js `getPaintProperty`.
+  ///
+  /// **The engine's NORMALISED form comes back, not what you set.** A colour
+  /// returns as `['rgba', r, g, b, a]` with doubles whatever notation set it,
+  /// and numbers return as doubles. Round-tripping a read straight into a write
+  /// is fine; comparing it to your input string is not.
+  Object? getPaintProperty(String layerId, String name) =>
+      _decodeProperty(layerId, name);
+
+  /// One layout property — gl-js `getLayoutProperty`. Same call as
+  /// [getPaintProperty]; see it for the normalisation caveat.
+  Object? getLayoutProperty(String layerId, String name) =>
+      _decodeProperty(layerId, name);
+
+  /// A layer's filter as decoded JSON — gl-js `getFilter`.
+  Object? getFilter(String layerId) => _decodeProperty(layerId, 'filter');
+
+  /// The style's layer ids, bottom-most first — gl-js `getLayersOrder`.
+  ///
+  /// Includes the basemap's own layers, which is what makes it useful for
+  /// picking a `beforeId`.
+  List<String> getLayersOrder() => _layers?.getLayerIds() ?? const [];
+
+  /// One layer's full style-spec document, decoded — gl-js `getLayer`.
+  ///
+  /// Read from the LIVE layer (`Layer::serialize()`), so it reflects everything
+  /// set since it was added. `Style::getJSON()` would not: that returns the
+  /// document as it was loaded.
+  Map<String, Object?>? getLayer(String layerId) {
+    final json = _layers?.getLayerJson(layerId);
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map<String, Object?> ? decoded : null;
+  }
+
+  Object? _decodeProperty(String layerId, String name) {
+    final json = _layers?.getLayerProperty(layerId, name);
+    if (json == null) return null;
+    try {
+      return jsonDecode(json);
+    } on FormatException {
+      return null;
+    }
+  }
 
   void removeSource(String id) => _layers?.removeSource(id);
 
