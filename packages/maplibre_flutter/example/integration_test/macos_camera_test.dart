@@ -367,4 +367,44 @@ void main() {
           'the camera rather than being accepted and ignored',
     );
   });
+
+  // 2.6b: onIdle was rejected in stage 2 as "never fires". It does — the
+  // rejection's test had used Static mode, and mbgl gates the whole idle branch
+  // on Continuous. Every shipped tier is Continuous, so this is the mode that
+  // matters.
+  testWidgets('onIdle fires once the map settles, and again after a move', (
+    tester,
+  ) async {
+    final controller = await _boot(tester);
+    final idles = <void>[];
+    final subscription = controller.onIdle.listen(idles.add);
+    addTearDown(subscription.cancel);
+
+    Future<bool> waitForIdle() async {
+      final before = idles.length;
+      final stopwatch = Stopwatch()..start();
+      while (stopwatch.elapsed < const Duration(seconds: 20)) {
+        await tester.pump(const Duration(milliseconds: 100));
+        if (idles.length > before) return true;
+      }
+      return false;
+    }
+
+    expect(
+      await waitForIdle(),
+      isTrue,
+      reason: 'a map with its tiles in has nothing left to draw',
+    );
+
+    // And it RECURS. That is the difference between a state and a one-shot, and
+    // it is why the stream is not replayed to late subscribers.
+    await controller.camera.jumpTo(
+      CameraOptions.fromCamera(const MapCamera(center: _stockholm, zoom: 7)),
+    );
+    expect(
+      await waitForIdle(),
+      isTrue,
+      reason: 'the map re-enters idle after every interaction',
+    );
+  });
 }

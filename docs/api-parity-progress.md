@@ -1232,3 +1232,23 @@ never existed.
   this bug and a symmetric offset would hide it (CLAUDE.md §11).
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 12 marker-overlay tests.
 
+### 2026-08-01 — 2.6b — onIdle, and a rejection that was wrong
+
+- **The stage-2 rejection was mistaken, and mistaken in a way this project keeps repeating.**
+  `onIdle` was recorded as "REJECTED — `onDidBecomeIdle` never fires in our configuration". It fires.
+  `Map::Impl::onDidFinishRenderingFrame` (`map_impl.cpp:257-276`) gates the entire idle branch on
+  `mode == MapMode::Continuous`, so a **Static**-mode map can never idle by construction — and
+  Static is what the native tests default to. Every shipped tier is Continuous.
+  **That is the third bug this session from testing the mode that does not ship** (after
+  `FrameObserver` swallowing the style-load replay, and Static mode replaying nothing at all). Both
+  modes are now asserted, in one test each, so the next person reads the rule off the tests.
+- **Not replayed to late subscribers, unlike `onStyleLoaded`** — and the asymmetry is deliberate.
+  A style load is a one-shot an app must not miss (it is when mbgl drops your layers). Idle is a
+  RECURRING state the map re-enters after every interaction, so a late subscriber gets the next one
+  within a frame or two, whereas replaying a stale idle would tell an app the map had settled when
+  it may have started moving again.
+- **The hardware test asserts it RECURS**, not just that it arrives once — that is the whole
+  difference between a state and a one-shot, and it is what justifies not replaying.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (77) / `format` clean /
+  12 macOS integration tests green on hardware.
+

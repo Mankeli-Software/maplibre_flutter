@@ -203,6 +203,9 @@ class _FullController extends _BareController
   Stream<MapLibreError> get onError => const Stream<MapLibreError>.empty();
   @override
   Stream<void> get onStyleLoaded => const Stream<void>.empty();
+
+  @override
+  Stream<void> get onIdle => const Stream<void>.empty();
   @override
   Stream<String> get onStyleImageMissing => const Stream<String>.empty();
 

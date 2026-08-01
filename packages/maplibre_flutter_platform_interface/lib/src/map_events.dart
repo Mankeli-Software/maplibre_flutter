@@ -97,6 +97,19 @@ abstract interface class MapLibreMapEvents {
   /// `-mapView:didFinishLoadingStyle:`.
   Stream<void> get onStyleLoaded;
 
+  /// Fires when the map has nothing left to draw or fetch — gl-js `idle`,
+  /// mbgl `onDidBecomeIdle`.
+  ///
+  /// **Continuous mode only, and that is mbgl's rule, not ours.**
+  /// `Map::Impl::onDidFinishRenderingFrame` gates the whole idle branch on
+  /// `mode == MapMode::Continuous`, so a Static-mode map can never idle by
+  /// construction. Every shipped tier is Continuous.
+  ///
+  /// Useful for "the map has settled" — taking a screenshot, running a query
+  /// against a fully-loaded view, or ending a loading indicator that `onReady`
+  /// is too early for.
+  Stream<void> get onIdle;
+
   /// The id of an image a layer asked for and the style does not have.
   ///
   /// Respond by registering it — `controller.layers.addImage` or

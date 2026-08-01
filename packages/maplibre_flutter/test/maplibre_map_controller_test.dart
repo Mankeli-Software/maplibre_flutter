@@ -39,6 +39,9 @@ class _EventfulController extends _FakePlatformController
   Stream<MapLibreError> get onError => errors.stream;
   @override
   Stream<void> get onStyleLoaded => styleLoads.stream;
+
+  @override
+  Stream<void> get onIdle => const Stream<void>.empty();
   @override
   Stream<String> get onStyleImageMissing => missingImages.stream;
 }

@@ -1209,6 +1209,79 @@ void main() {
     );
   });
 
+  // 2.6b. onIdle was REJECTED in stage 2 with "onDidBecomeIdle never fires in
+  // our configuration" and no root cause. This settles it.
+  //
+  // Map::Impl::onDidFinishRenderingFrame (map_impl.cpp:257-276) only reaches
+  // onDidBecomeIdle when mode == Continuous AND !needsRepaint AND
+  // !transform.inTransition() AND rendererFullyLoaded. So Static mode can never
+  // idle by construction — and Static is what the native tests default to,
+  // which is exactly how "never fires" got recorded.
+  group('onDidBecomeIdle', () {
+    const style =
+        '{'
+        '"version":8,"sources":{},'
+        '"layers":[{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#ff00ff"}}]'
+        '}';
+
+    Future<List<CoreDiagnosticKind>> collect({
+      required bool continuous,
+      Duration wait = const Duration(seconds: 4),
+    }) async {
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: style,
+        continuous: continuous,
+      );
+      addTearDown(map.dispose);
+      final kinds = <CoreDiagnosticKind>[];
+      map.setDiagnosticCallback((d) => kinds.add(d.kind));
+      addTearDown(() => map.setDiagnosticCallback(null));
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+      final stopwatch = Stopwatch()..start();
+      while (stopwatch.elapsed < wait) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        if (kinds.contains(CoreDiagnosticKind.idle)) break;
+      }
+      return kinds;
+    }
+
+    test(
+      'never fires in STATIC mode — by construction, not by accident',
+      () async {
+        final kinds = await collect(
+          continuous: false,
+          wait: Duration(seconds: 2),
+        );
+        expect(
+          kinds,
+          isNot(contains(CoreDiagnosticKind.idle)),
+          reason:
+              'map_impl.cpp gates the whole idle branch on '
+              'mode == MapMode::Continuous',
+        );
+      },
+    );
+
+    test(
+      'DOES fire in continuous mode, which every shipped tier uses',
+      () async {
+        final kinds = await collect(continuous: true);
+        expect(
+          kinds,
+          contains(CoreDiagnosticKind.idle),
+          reason:
+              'the stage-2 rejection said this never fires; it does, in the '
+              'mode that actually ships',
+        );
+      },
+    );
+  });
+
   // 8.1. mbgl's default cachePath is ":memory:", so before this there was no
   // persistent tile cache at all — every restart re-downloaded every tile.
   //

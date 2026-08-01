@@ -114,6 +114,15 @@ class MapLibreFlutterIosCoreController
   @override
   Stream<String> get onStyleImageMissing => _missingImages.stream;
 
+  final StreamController<void> _idles = StreamController<void>.broadcast();
+
+  /// Not replayed, unlike onStyleLoaded: idle is a RECURRING state the map
+  /// re-enters after every interaction, so a late subscriber gets the next one
+  /// within a frame or two. Replaying a stale idle would tell an app the map
+  /// had settled when it may have started moving again.
+  @override
+  Stream<void> get onIdle => _idles.stream;
+
   /// Subscribes to the core's diagnostic channel and fans it out.
   void _installDiagnostics() {
     if (_diagnosticsInstalled || _disposed) return;
@@ -145,8 +154,9 @@ class MapLibreFlutterIosCoreController
               diagnostic.severity == core.CoreDiagnosticSeverity.error) {
             _emitError(MapEngineError(diagnostic.message));
           }
-        case core.CoreDiagnosticKind.mapLoaded:
         case core.CoreDiagnosticKind.idle:
+          if (!_idles.isClosed) _idles.add(null);
+        case core.CoreDiagnosticKind.mapLoaded:
           // Neither fires in this configuration (see the stage-2 run log in
           // docs/api-parity-progress.md); listed so the switch stays total.
           break;
@@ -1036,6 +1046,7 @@ class MapLibreFlutterIosCoreController
     _coreMap.dispose();
     unawaited(_errors.close());
     unawaited(_styleLoads.close());
+    unawaited(_idles.close());
     unawaited(_missingImages.close());
   }
 }

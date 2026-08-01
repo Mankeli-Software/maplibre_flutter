@@ -122,6 +122,7 @@ class MapLibreMapController {
   final StreamController<MapLibreError> _errors =
       StreamController<MapLibreError>.broadcast();
   final StreamController<void> _styleLoads = StreamController<void>.broadcast();
+  final StreamController<void> _idles = StreamController<void>.broadcast();
   final StreamController<String> _missingImages =
       StreamController<String>.broadcast();
   final List<StreamSubscription<Object?>> _eventSubscriptions =
@@ -233,6 +234,17 @@ class MapLibreMapController {
   /// Mirrors gl-js `styleimagemissing`.
   Stream<String> get onStyleImageMissing => _missingImages.stream;
 
+  /// Fires when the map has nothing left to draw or fetch — gl-js `idle`.
+  ///
+  /// The signal for "the map has SETTLED", which `onReady` is too early for and
+  /// `onStyleLoaded` is orthogonal to: take a screenshot here, run a query
+  /// against a fully-loaded view, or drop a loading indicator.
+  ///
+  /// It recurs — the map re-enters idle after every interaction — so treat it
+  /// as a state, not a one-shot. Never fires on a renderer that cannot report
+  /// it; check `capabilities` rather than waiting forever.
+  Stream<void> get onIdle => _idles.stream;
+
   void _pipeEvents(MapLibreMapPlatformController platform) {
     if (platform is! MapLibreMapEvents) return;
     final events = platform as MapLibreMapEvents;
@@ -251,6 +263,9 @@ class MapLibreMapController {
       }),
       events.onStyleImageMissing.listen((id) {
         if (!_missingImages.isClosed) _missingImages.add(id);
+      }),
+      events.onIdle.listen((_) {
+        if (!_idles.isClosed) _idles.add(null);
       }),
     ]);
   }
@@ -308,6 +323,7 @@ class MapLibreMapController {
     await _moveEnds.close();
     await _errors.close();
     await _styleLoads.close();
+    await _idles.close();
     await _missingImages.close();
   }
 
