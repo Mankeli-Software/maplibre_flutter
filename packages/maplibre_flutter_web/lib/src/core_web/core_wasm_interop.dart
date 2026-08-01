@@ -117,6 +117,65 @@ extension type CoreMap._(JSObject _) implements JSObject {
   /// Tilts by [degrees] (positive toward the horizon). Clamped by mbgl to 0..60.
   external void pitchBy(double degrees);
 
+  /// Projects `[lat0, lng0, lat1, lng1, ...]` to a flat
+  /// `[x0, y0, visible0, x1, y1, visible1, ...]`, in logical pixels with a
+  /// top-left origin.
+  ///
+  /// One JS round trip for the whole batch: the marker overlay projects every
+  /// point on every camera tick, so a call per point would dominate the frame.
+  external JSArray<JSAny?> projectBatch(JSArray<JSNumber> latLngs);
+
+  /// The geographic point under a screen position (logical pixels, top-left).
+  external CoreLatLng unproject(double x, double y);
+
+  /// Invoked after every camera change, so glued overlays can reproject.
+  ///
+  /// Web's camera moves happen inside the module — including its own C++
+  /// gesture handlers — so unlike the native tiers the notification has to
+  /// originate there.
+  external void onCameraChanged(JSFunction callback);
+
+  /// Adds a style source. Returns an empty string on success, else the reason.
+  external JSString addSourceJson(String id, String json);
+
+  /// Adds a style layer, optionally beneath [beforeId] (empty = on top).
+  external JSString addLayerJson(String json, String beforeId);
+
+  /// Replaces a geojson source's data.
+  external JSString setGeoJsonData(String sourceId, String geoJson);
+
+  external void removeLayer(String id);
+  external void removeSource(String id);
+
+  /// Registers an icon from premultiplied RGBA (`width * height * 4` bytes).
+  external void addImage(
+    String id,
+    JSUint8Array rgba,
+    int width,
+    int height,
+    double pixelRatio,
+    bool sdf,
+  );
+
+  external void removeImage(String id);
+
+  /// Style-wide transition behaviour. Negative ms means "leave the style's own".
+  external void setTransitionOptions(
+    int durationMs,
+    int delayMs,
+    bool placementTransitions,
+  );
+
+  /// Features the engine DREW inside a screen rect, as a GeoJSON
+  /// FeatureCollection string; empty when nothing matched.
+  external JSString queryRenderedFeatures(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+    JSArray<JSString>? layerIds,
+  );
+
   /// Eased camera transition over [durationMs] (the fly-to path), stepped by the
   /// module's render loop.
   external void animateTo(
@@ -138,6 +197,12 @@ extension type CoreMap._(JSObject _) implements JSObject {
 }
 
 /// Camera snapshot returned by [CoreMap.getCamera] (lat, lng — not flipped).
+/// The `{lat, lng}` object `unproject` returns.
+extension type CoreLatLng._(JSObject _) implements JSObject {
+  external double get lat;
+  external double get lng;
+}
+
 extension type CoreCamera._(JSObject _) implements JSObject {
   external double get lat;
   external double get lng;

@@ -8,15 +8,25 @@
 ///
 /// This mirrors the structure of `MapLibreFlutterWebController` (the gl-js path):
 /// the engine renders into a `<canvas>` hosted by an `HtmlElementView`, built in
-/// the platform-view factory when the view mounts. The WASM/JS glue owns canvas
-/// pointer gestures (as gl-js does), so this implements
-/// [MapLibreMapPlatformController] only — no Dart gesture layer and no
-/// platform-interface change.
+/// the platform-view factory when the view mounts.
+///
+/// The WASM/JS glue owns canvas pointer gestures (as gl-js does), so this
+/// deliberately does NOT implement [MapLibreGestureHandler] or
+/// [MapLibreRotateHandler] — the widget only attaches its Dart gesture layer in
+/// the `TextureHandle` branch, so those would be dead code here. It does
+/// implement the projector, camera tick and style layers, which is what makes
+/// widget markers, engine layers and the typed style API reachable on web.
+///
+/// [MapLibreModelHost] is absent by necessity, not oversight: `MapLibreModel`
+/// takes a filesystem path the engine opens natively, and the Emscripten arm
+/// compiles neither the glTF reader nor the model layer
+/// (see docs/decision-log.md).
 library;
 
 import 'dart:async';
 import 'dart:js_interop';
-import 'dart:ui' show Size;
+import 'dart:typed_data';
+import 'dart:ui' show Offset, Size;
 import 'dart:ui_web' as ui_web;
 
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -31,7 +41,12 @@ const bool _continuous = bool.fromEnvironment(
   defaultValue: true,
 );
 
-class MapLibreCoreWebController implements MapLibreMapPlatformController {
+class MapLibreCoreWebController
+    with MapLibreCameraTickNotifier
+    implements
+        MapLibreMapPlatformController,
+        MapLibreMapProjector,
+        MapLibreStyleLayers {
   MapLibreCoreWebController._(this._viewType, this._initialCamera);
 
   static int _nextId = 0;
@@ -86,6 +101,20 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
       map.onReady(
         (() {
           if (!controller._ready.isCompleted) controller._ready.complete();
+          // The first frame implies a transform exists; tick so any glued
+          // overlay reprojects from off-screen to its real position. Without
+          // this MapLibreMap(markers:) draws nothing until the camera moves —
+          // the same defect the four native tiers had.
+          controller.notifyCameraChanged();
+        }).toJS,
+      );
+
+      // Every camera change inside the module — including its own C++ gesture
+      // handlers, which the Dart gesture layer never sees — has to reach the
+      // overlay, or markers swim during a drag.
+      map.onCameraChanged(
+        (() {
+          if (!controller._disposed) controller.notifyCameraChanged();
         }).toJS,
       );
 
@@ -181,9 +210,148 @@ class MapLibreCoreWebController implements MapLibreMapPlatformController {
     map.resize(size.width, size.height, devicePixelRatio);
   }
 
+  // --- MapLibreMapProjector -------------------------------------------------
+  //
+  // Screen positions are logical pixels, top-left origin — the same contract the
+  // native tiers meet. That only became true once the shim stopped treating
+  // mbgl's Size as device pixels; before that the space in the transform and the
+  // space on screen disagreed at any DPR but 1.
+  //
+  // No presented-vs-newest generation split here, and that is not an omission:
+  // on web the map, the frontend and the run loop all live on the browser main
+  // thread, so there is no render thread for the camera to run ahead of. The
+  // returned generation is a monotonic counter purely so callers can tell
+  // "projected" from "no transform yet" (0).
+  int _projGeneration = 0;
+
+  @override
+  int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) {
+    final map = _map;
+    if (map == null || _disposed || points.isEmpty) return 0;
+
+    final input = <JSNumber>[];
+    for (final p in points) {
+      input.add(p.latitude.toJS);
+      input.add(p.longitude.toJS);
+    }
+    final flat = map.projectBatch(input.toJS).toDart;
+    if (flat.length < points.length * 3) return 0;
+
+    for (var i = 0; i < points.length; i++) {
+      final x = (flat[i * 3]! as JSNumber).toDartDouble;
+      final y = (flat[i * 3 + 1]! as JSNumber).toDartDouble;
+      out[i] = Offset(x, y);
+      if (visible != null) {
+        visible[i] = (flat[i * 3 + 2]! as JSNumber).toDartInt != 0;
+      }
+    }
+    return ++_projGeneration;
+  }
+
+  @override
+  LatLng? unproject(Offset point) {
+    final map = _map;
+    if (map == null || _disposed) return null;
+    final o = map.unproject(point.dx, point.dy);
+    return LatLng(o.lat, o.lng);
+  }
+
+  // --- MapLibreStyleLayers --------------------------------------------------
+  //
+  // Guarded like the native tiers: a call after dispose must be inert, not a
+  // crash into a freed module.
+
+  @override
+  void addSourceJson(String id, String json) {
+    final map = _map;
+    if (map == null || _disposed) return;
+    final error = map.addSourceJson(id, json).toDart;
+    if (error.isNotEmpty) throw ArgumentError(error);
+  }
+
+  @override
+  void addLayerJson(String json, {String? beforeId}) {
+    final map = _map;
+    if (map == null || _disposed) return;
+    final error = map.addLayerJson(json, beforeId ?? '').toDart;
+    if (error.isNotEmpty) throw ArgumentError(error);
+  }
+
+  @override
+  void setGeoJsonData(String sourceId, String geoJson) {
+    final map = _map;
+    if (map == null || _disposed) return;
+    final error = map.setGeoJsonData(sourceId, geoJson).toDart;
+    if (error.isNotEmpty) throw ArgumentError(error);
+  }
+
+  @override
+  void removeLayer(String id) {
+    if (_disposed) return;
+    _map?.removeLayer(id);
+  }
+
+  @override
+  void removeSource(String id) {
+    if (_disposed) return;
+    _map?.removeSource(id);
+  }
+
+  @override
+  void addImage(
+    String id,
+    Uint8List rgba,
+    int width,
+    int height, {
+    double pixelRatio = 1.0,
+    bool sdf = false,
+  }) {
+    if (_disposed) return;
+    _map?.addImage(id, rgba.toJS, width, height, pixelRatio, sdf);
+  }
+
+  @override
+  void removeImage(String id) {
+    if (_disposed) return;
+    _map?.removeImage(id);
+  }
+
+  @override
+  void setTransitionOptions({
+    Duration? duration,
+    Duration? delay,
+    bool placementTransitions = true,
+  }) {
+    if (_disposed) return;
+    // Negative means "leave the style's own value", matching the C ABI.
+    _map?.setTransitionOptions(
+      duration?.inMilliseconds ?? -1,
+      delay?.inMilliseconds ?? -1,
+      placementTransitions,
+    );
+  }
+
+  @override
+  String? queryRenderedFeaturesJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+  }) {
+    final map = _map;
+    if (map == null || _disposed) return null;
+    final ids = layerIds == null
+        ? null
+        : <JSString>[for (final id in layerIds) id.toJS].toJS;
+    final json = map.queryRenderedFeatures(minX, minY, maxX, maxY, ids).toDart;
+    return json.isEmpty ? null : json;
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;
+    disposeCameraTick();
     _disposed = true;
     _resizeObserver?.disconnect();
     _resizeObserver = null;

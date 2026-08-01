@@ -35,8 +35,23 @@
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/map/map_options.hpp>
 #include <mbgl/storage/resource_options.hpp>
+#include <mbgl/renderer/renderer.hpp>
+#include <mbgl/renderer/query.hpp>
+#include <mbgl/style/conversion.hpp>
+#include <mbgl/style/conversion/geojson.hpp>
+#include <mbgl/style/conversion/json.hpp>
+#include <mbgl/style/conversion/layer.hpp>
+#include <mbgl/style/conversion/source.hpp>
+#include <mbgl/style/image.hpp>
+#include <mbgl/style/layer.hpp>
+#include <mbgl/style/source.hpp>
+#include <mbgl/style/sources/geojson_source.hpp>
 #include <mbgl/style/style.hpp>
+#include <mbgl/style/transition_options.hpp>
 #include <mbgl/util/geo.hpp>
+#include <mbgl/util/geojson.hpp>
+#include <mapbox/geojson.hpp>
+#include <mapbox/geojson/rapidjson.hpp>
 #include <mbgl/util/run_loop.hpp>
 
 #include <GLES3/gl3.h>
@@ -72,6 +87,9 @@ class WebFrameObserver final : public mbgl::MapObserver {
 public:
     explicit WebFrameObserver(WebMap* map) : map_(map) {}
     void onDidFinishRenderingFrame(const RenderFrameStatus&) override;
+    // Loading a style REPLACES style-level state, so the document's own
+    // transition options would otherwise silently win over ours.
+    void onDidFinishLoadingStyle() override;
 
 private:
     WebMap* map_;
@@ -285,11 +303,13 @@ public:
     void moveBy(double dx, double dy) {
         map_->moveBy(mbgl::ScreenCoordinate{dx, dy});
         dirty_ = true;
+        notifyCameraChanged();
     }
 
     void scaleBy(double scale, double anchorX, double anchorY) {
         map_->scaleBy(scale, mbgl::ScreenCoordinate{anchorX, anchorY});
         dirty_ = true;
+        notifyCameraChanged();
     }
 
     // Same bodies as the native shim's mbl_map_rotate_by / mbl_map_pitch_by, and
@@ -310,6 +330,7 @@ public:
                          .withBearing(cam.bearing.value_or(0.0) - degrees)
                          .withAnchor(mbgl::ScreenCoordinate{anchorX, anchorY}));
         dirty_ = true;
+        notifyCameraChanged();
     }
 
     void pitchBy(double degrees) {
@@ -319,6 +340,212 @@ public:
         const auto cam = map_->getCameraOptions();
         map_->jumpTo(mbgl::CameraOptions().withPitch(cam.pitch.value_or(0.0) + degrees));
         dirty_ = true;
+        notifyCameraChanged();
+    }
+
+
+    // --- Projection ---------------------------------------------------------
+    //
+    // Far simpler than the native shim: on web the Map, the HeadlessFrontend and
+    // the RunLoop all live on the browser main thread and every embind call
+    // arrives on it, so there is no posted command, no transform-snapshot ring
+    // and no generation bookkeeping — the live transform IS the presented one.
+    // `generation` is therefore accepted and ignored, so the Dart tier can share
+    // its projector code with the native tiers unchanged.
+    //
+    // Y-AXIS, and it is the opposite of the anchor rule two functions up:
+    // TransformState::latLngToScreenCoordinate returns a BOTTOM-LEFT-origin y,
+    // while Flutter's widget box (and MapLibreMapProjector's contract) is
+    // top-left. Flip on the way out of project and on the way into unproject.
+    // The flip is symmetric, so a project-then-unproject round trip CANNOT
+    // detect getting it wrong — test against absolute directions.
+    val projectBatch(val latLngs) {
+        const auto state = map_->getTransfromState();
+        const unsigned length = latLngs["length"].as<unsigned>();
+        const double height = static_cast<double>(size_.height);
+        val out = val::array();
+        for (unsigned i = 0; i + 1 < length; i += 2) {
+            double lat = latLngs[i].as<double>();
+            double lng = latLngs[i + 1].as<double>();
+            if (!std::isfinite(lat) || !std::isfinite(lng)) {
+                out.call<void>("push", val(0.0));
+                out.call<void>("push", val(0.0));
+                out.call<void>("push", val(0));
+                continue;
+            }
+            lat = std::clamp(lat, -90.0, 90.0);
+            mbgl::vec4 clip;
+            const auto sc = state.latLngToScreenCoordinate(mbgl::LatLng{lat, lng}, clip);
+            out.call<void>("push", val(sc.x));
+            out.call<void>("push", val(height - sc.y));
+            // w > 0 means in front of the camera. mbgl MIRRORS points behind a
+            // pitched camera across the horizon, so they land at plausible finite
+            // coordinates — the flag is the only thing that distinguishes them.
+            out.call<void>("push", val(clip[3] > 0.0 ? 1 : 0));
+        }
+        return out;
+    }
+
+    val unproject(double x, double y) {
+        const auto state = map_->getTransfromState();
+        const double height = static_cast<double>(size_.height);
+        const auto ll = state.screenCoordinateToLatLng(
+            mbgl::ScreenCoordinate{x, height - y});
+        val o = val::object();
+        o.set("lat", ll.latitude());
+        o.set("lng", ll.longitude());
+        return o;
+    }
+
+    // --- Camera notifications -------------------------------------------------
+    //
+    // No C ABI counterpart: the native tiers get this from their controllers
+    // calling notifyCameraChanged() at each choke point, but web's camera moves
+    // happen inside this module (including its own C++ gesture handlers), so the
+    // notification has to originate here or a glued overlay never reprojects.
+    void onCameraChanged(val cb) { cameraCb_ = cb; }
+
+    // --- Style sources, layers, images ---------------------------------------
+    //
+    // Parsed and applied inline. The native shim splits parse-here/apply-there
+    // only because its map lives on another thread.
+    std::string addSourceJson(const std::string& id, const std::string& json) {
+        mbgl::style::conversion::Error error;
+        auto source = mbgl::style::conversion::convertJSON<
+            std::unique_ptr<mbgl::style::Source>>(json, error, id);
+        if (!source) {
+            return error.message;
+        }
+        try {
+            map_->getStyle().addSource(std::move(*source));
+        } catch (const std::exception& e) {
+            return std::string(e.what());
+        }
+        dirty_ = true;
+        return {};
+    }
+
+    std::string addLayerJson(const std::string& json, const std::string& beforeId) {
+        mbgl::style::conversion::Error error;
+        auto layer = mbgl::style::conversion::convertJSON<
+            std::unique_ptr<mbgl::style::Layer>>(json, error);
+        if (!layer) {
+            return error.message;
+        }
+        try {
+            if (beforeId.empty()) {
+                map_->getStyle().addLayer(std::move(*layer));
+            } else {
+                map_->getStyle().addLayer(std::move(*layer), beforeId);
+            }
+        } catch (const std::exception& e) {
+            return std::string(e.what());
+        }
+        dirty_ = true;
+        return {};
+    }
+
+    std::string setGeoJsonData(const std::string& sourceId, const std::string& geoJson) {
+        mbgl::style::conversion::Error error;
+        auto data = mbgl::style::conversion::convertJSON<mbgl::GeoJSON>(geoJson, error);
+        if (!data) {
+            return error.message;
+        }
+        auto* src = map_->getStyle().getSource(sourceId);
+        if (src == nullptr) {
+            return "no such source: " + sourceId;
+        }
+        auto* geo = src->as<mbgl::style::GeoJSONSource>();
+        if (geo == nullptr) {
+            return "source is not geojson: " + sourceId;
+        }
+        geo->setGeoJSON(*data);
+        dirty_ = true;
+        return {};
+    }
+
+    void removeLayer(const std::string& id) {
+        map_->getStyle().removeLayer(id);
+        dirty_ = true;
+    }
+
+    void removeSource(const std::string& id) {
+        map_->getStyle().removeSource(id);
+        dirty_ = true;
+    }
+
+    // `rgba` is a JS Uint8Array of premultiplied RGBA, width*height*4 bytes.
+    void addImage(const std::string& id,
+                  val rgba,
+                  uint32_t width,
+                  uint32_t height,
+                  double pixelRatio,
+                  bool sdf) {
+        if (width == 0 || height == 0) {
+            return;
+        }
+        const size_t bytes = static_cast<size_t>(width) * height * 4;
+        const std::vector<uint8_t> pixels =
+            emscripten::convertJSArrayToNumberVector<uint8_t>(rgba);
+        if (pixels.size() < bytes) {
+            return;
+        }
+        mbgl::PremultipliedImage img({width, height});
+        std::memcpy(img.data.get(), pixels.data(), bytes);
+        map_->getStyle().addImage(std::make_unique<mbgl::style::Image>(
+            id, std::move(img), static_cast<float>(pixelRatio), sdf));
+        dirty_ = true;
+    }
+
+    void removeImage(const std::string& id) {
+        map_->getStyle().removeImage(id);
+        dirty_ = true;
+    }
+
+    // durationMs / delayMs < 0 mean "leave the style's own value".
+    void setTransitionOptions(int durationMs, int delayMs, bool placementTransitions) {
+        transitionSet_ = true;
+        transitionDurationMs_ = durationMs;
+        transitionDelayMs_ = delayMs;
+        placementTransitions_ = placementTransitions;
+        applyTransitionOptions();
+        dirty_ = true;
+    }
+
+    // The query box is TOP-LEFT origin and is NOT flipped — unlike projection,
+    // which is. mbgl's two entry points genuinely disagree; established by test
+    // on the native side, mirrored here deliberately.
+    std::string queryRenderedFeatures(double minX,
+                                      double minY,
+                                      double maxX,
+                                      double maxY,
+                                      val layerIds) {
+        auto* renderer = frontend_ ? frontend_->getRenderer() : nullptr;
+        if (renderer == nullptr) {
+            return {};
+        }
+        std::optional<std::vector<std::string>> layers;
+        if (!layerIds.isUndefined() && !layerIds.isNull()) {
+            const unsigned n = layerIds["length"].as<unsigned>();
+            if (n > 0) {
+                std::vector<std::string> ids;
+                ids.reserve(n);
+                for (unsigned i = 0; i < n; ++i) {
+                    ids.push_back(layerIds[i].as<std::string>());
+                }
+                layers = std::move(ids);
+            }
+        }
+        try {
+            const mbgl::ScreenBox box{{minX, minY}, {maxX, maxY}};
+            const auto features =
+                renderer->queryRenderedFeatures(box, mbgl::RenderedQueryOptions(layers));
+            const mapbox::feature::feature_collection<double> collection(features.begin(),
+                                                                        features.end());
+            return mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+        } catch (const std::exception&) {
+            return {};
+        }
     }
 
     void onReady(val cb) {
@@ -462,6 +689,32 @@ private:
 
     // Auto-size the render surface to the canvas's CSS size (× DPR) so the map is
     // crisp and correctly proportioned, following layout/resize without a Dart hop.
+public:
+    // Re-applied after every style load: loading a style REPLACES style-level
+    // state, so the document's own transition options would otherwise win.
+    void applyTransitionOptions() {
+        if (!transitionSet_) {
+            return;
+        }
+        std::optional<mbgl::Duration> duration;
+        std::optional<mbgl::Duration> delay;
+        if (transitionDurationMs_ >= 0) {
+            duration = mbgl::Milliseconds(transitionDurationMs_);
+        }
+        if (transitionDelayMs_ >= 0) {
+            delay = mbgl::Milliseconds(transitionDelayMs_);
+        }
+        map_->getStyle().setTransitionOptions(
+            mbgl::style::TransitionOptions(duration, delay, placementTransitions_));
+    }
+
+    void notifyCameraChanged() {
+        if (!cameraCb_.isUndefined() && !cameraCb_.isNull()) {
+            cameraCb_();
+        }
+    }
+
+private:
     void syncSize() {
         // Once the Dart ResizeObserver has driven a resize (resizeSync), it owns sizing
         // — it's timely (fires before paint) whereas this per-tick poll is a frame late
@@ -635,6 +888,11 @@ private:
     val canvas_;
     std::string target_;
     bool rotateDragging_ = false;
+    val cameraCb_ = val::undefined();
+    bool transitionSet_ = false;
+    int transitionDurationMs_ = -1;
+    int transitionDelayMs_ = -1;
+    bool placementTransitions_ = true;
     float pixelRatio_ = 1.0f;
     mbgl::Size size_{1, 1};
     // Backing-store size currently applied to the canvas (synced lazily in present()
@@ -687,6 +945,12 @@ private:
     bool useDip_ = false;
     double peakZoom_ = 0;
 };
+
+void WebFrameObserver::onDidFinishLoadingStyle() {
+    if (map_ != nullptr) {
+        map_->applyTransitionOptions();
+    }
+}
 
 void WebFrameObserver::onDidFinishRenderingFrame(const mbgl::MapObserver::RenderFrameStatus&) {
     map_->onFrameRendered();
@@ -746,6 +1010,18 @@ EMSCRIPTEN_BINDINGS(maplibre_flutter_core) {
         .function("scaleBy", &WebMap::scaleBy)
         .function("rotateBy", &WebMap::rotateBy)
         .function("pitchBy", &WebMap::pitchBy)
+        .function("projectBatch", &WebMap::projectBatch)
+        .function("unproject", &WebMap::unproject)
+        .function("onCameraChanged", &WebMap::onCameraChanged)
+        .function("addSourceJson", &WebMap::addSourceJson)
+        .function("addLayerJson", &WebMap::addLayerJson)
+        .function("setGeoJsonData", &WebMap::setGeoJsonData)
+        .function("removeLayer", &WebMap::removeLayer)
+        .function("removeSource", &WebMap::removeSource)
+        .function("addImage", &WebMap::addImage)
+        .function("removeImage", &WebMap::removeImage)
+        .function("setTransitionOptions", &WebMap::setTransitionOptions)
+        .function("queryRenderedFeatures", &WebMap::queryRenderedFeatures)
         .function("animateTo", &WebMap::animateTo)
         .function("onReady", &WebMap::onReady)
         .function("destroy", &WebMap::destroy);
