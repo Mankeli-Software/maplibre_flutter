@@ -184,8 +184,8 @@ Highest row count in the backlog, correctly last among the core stages.
       (loaded tiles only, results NOT deduplicated) documented at all three layers.
 - [x] 6.4 `setFeatureState` / `getFeatureState` / `removeFeatureState`, with the no-`promoteId`
       constraint documented at all four layers and pinned by a test.
-- [ ] 6.5 Cluster helpers `getClusterExpansionZoom` / `getClusterChildren` / `getClusterLeaves`
-      (Apple `MLNShapeSource.h:408-437`), taking the int `cluster_id` (gl-js shape).
+- [x] 6.5 `getClusterExpansionZoom` / `getClusterChildren` / `getClusterLeaves` over mbgl's
+      feature-extension mechanism, taking gl-js's integer `cluster_id`.
 - [ ] 6.6 Return `QueriedFeature`; retire `MapLibreQueriedFeature`.
 - [ ] 6.7 `MapLibreMap.onTap` must report the screen point, not only the unprojected `LatLng` — today
       there is no supported path from a tap to the features under it.
@@ -1010,5 +1010,33 @@ never existed.
 - **State JSON is parsed on the CALLING thread**, like the other JSON paths here, so a bad object is
   reported before anything is posted rather than failing invisibly on the render thread.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (65) / `format` clean /
+  ffigen regenerated.
+
+### 2026-08-01 — Stage 6 (6.5) — cluster helpers, and two upstream traps
+
+- **gl-js's shape, not Apple's.** mbgl wants a whole cluster FEATURE and Apple hands it the cluster
+  shape, but the only thing it reads off that feature is the `cluster_id` property
+  (`render_geojson_source.cpp:133`) — so the shim builds a synthetic feature carrying just the id,
+  and every caller passes the integer gl-js passes. That also spares an app keeping the cluster
+  feature alive between the query that produced it and the question.
+- **TRAP 1: supercluster THROWS for a cluster id that does not exist**
+  (`std::runtime_error("No cluster with the specified id.")`, `supercluster.hpp:375`), and a throw
+  crossing `extern "C"` is undefined behaviour — CLAUDE.md §11 already names this for
+  `mbgl::LatLng`, and it bit again here. The first test to pass a made-up id **aborted the whole
+  test process** (`libc++abi: terminating`, exit 134). Now caught in the shim and reported through
+  `onError`. Note the contrast with an unknown SOURCE, which mbgl handles itself by returning an
+  empty value (`render_orchestrator.cpp:719-722`) — so one of the two bad inputs was fatal and the
+  other was not, which is exactly the sort of asymmetry only a test finds.
+- **TRAP 2: `getClusterExpansionZoom` cannot tell you an id is bogus.** It starts from
+  `(cluster_id % 32) - 1` — the zoom is encoded in the id's own low bits — and only then walks the
+  tree (`supercluster.hpp:236`). So `999999` confidently answers `30`. Documented at all three
+  layers with the real number, and `getClusterChildren` is named as the existence check, because
+  that one really does fail. Pinned by a test, since a plausible number looks like our bug.
+- **The expansion-zoom test proves the zoom EXPANDS**, rather than asserting it is in a range: it
+  moves the camera there and checks the single cluster is no longer a single cluster. A zoom that
+  does not expand anything is just a number.
+- **Cluster ids in tests come from querying the engine**, never hardcoded — supercluster's ids are
+  an implementation detail and a test that hardcodes one is testing the fixture.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (70) / `format` clean /
   ffigen regenerated.
 

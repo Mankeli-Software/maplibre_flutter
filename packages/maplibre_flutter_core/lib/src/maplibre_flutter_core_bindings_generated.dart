@@ -629,6 +629,55 @@ external ffi.Pointer<ffi.Char> mbl_map_query_source_features(
 );
 
 @ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+    ffi.Uint32,
+  )
+>()
+external int mbl_map_get_cluster_expansion_zoom(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  int cluster_id,
+  int timeout_ms,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_get_cluster_children(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  int cluster_id,
+  int timeout_ms,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_get_cluster_leaves(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  int cluster_id,
+  int limit,
+  int offset,
+  int timeout_ms,
+);
+
+@ffi.Native<
   ffi.Void Function(
     ffi.Pointer<MblMap>,
     ffi.Pointer<ffi.Char>,

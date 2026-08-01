@@ -447,6 +447,20 @@ class MapLibreCoreWebController
   }) {}
 
   @override
+  int? getClusterExpansionZoom(String sourceId, int clusterId) => null;
+
+  @override
+  String? getClusterChildrenJson(String sourceId, int clusterId) => null;
+
+  @override
+  String? getClusterLeavesJson(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+  }) => null;
+
+  @override
   Future<void> dispose() async {
     if (_disposed) return;
     disposeCameraTick();

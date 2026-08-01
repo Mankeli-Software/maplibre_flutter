@@ -1209,6 +1209,196 @@ void main() {
     );
   });
 
+  // 6.5. Asserted against REAL supercluster output — the cluster ids are the
+  // engine's, discovered by querying, never hardcoded.
+  group('cluster helpers', () {
+    const style =
+        '{'
+        '"version":8,'
+        '"sources":{"pts":{"type":"geojson","cluster":true,'
+        '"clusterRadius":50,"clusterMaxZoom":14,"data":{'
+        '"type":"FeatureCollection","features":['
+        '{"type":"Feature","properties":{"n":1},'
+        '"geometry":{"type":"Point","coordinates":[0.0000,0.0000]}},'
+        '{"type":"Feature","properties":{"n":2},'
+        '"geometry":{"type":"Point","coordinates":[0.0004,0.0000]}},'
+        '{"type":"Feature","properties":{"n":3},'
+        '"geometry":{"type":"Point","coordinates":[0.0000,0.0004]}},'
+        '{"type":"Feature","properties":{"n":4},'
+        '"geometry":{"type":"Point","coordinates":[0.0004,0.0004]}}'
+        ']}}},'
+        '"layers":['
+        '{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#ffffff"}},'
+        '{"id":"dots","type":"circle","source":"pts",'
+        '"paint":{"circle-radius":18,"circle-color":"#ff00ff"}}'
+        ']}';
+
+    /// Boots at a zoom low enough that all four points cluster into one.
+    Future<MapLibreCoreMap> boot() async {
+      final map = MapLibreCoreMap.create(
+        width: 256,
+        height: 256,
+        pixelRatio: 1,
+        styleUri: style,
+      );
+      addTearDown(map.dispose);
+      map.setCamera(latitude: 0.0002, longitude: 0.0002, zoom: 10);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+      return map;
+    }
+
+    /// The engine's own cluster id, from a query — never a guess.
+    int clusterIdOf(MapLibreCoreMap map) {
+      final json = map.queryRenderedFeatures(0, 0, 256, 256);
+      expect(json, isNotNull, reason: 'the cluster must be drawn');
+      final features =
+          (jsonDecode(json!) as Map<String, Object?>)['features']!
+              as List<Object?>;
+      for (final f in features) {
+        final props =
+            (f! as Map<String, Object?>)['properties'] as Map<String, Object?>?;
+        final id = props?['cluster_id'];
+        if (id is num) return id.toInt();
+      }
+      fail('no clustered feature came back — the fixture is not clustering');
+    }
+
+    test('expansion zoom is a real zoom that splits the cluster', () async {
+      final map = await boot();
+      final id = clusterIdOf(map);
+
+      final zoom = map.getClusterExpansionZoom('pts', id);
+      expect(zoom, isNotNull);
+      expect(zoom!, greaterThan(10), reason: 'you must zoom IN to split it');
+      expect(zoom, lessThanOrEqualTo(24));
+
+      // The claim is testable, so test it rather than trusting the number:
+      // at that zoom the single cluster must no longer be one cluster.
+      map.setCamera(latitude: 0.0002, longitude: 0.0002, zoom: zoom.toDouble());
+      await settle(map);
+      final after =
+          (jsonDecode(map.queryRenderedFeatures(0, 0, 256, 256)!)
+                  as Map<String, Object?>)['features']!
+              as List<Object?>;
+      final stillOneCluster =
+          after.length == 1 &&
+          ((after.first! as Map<String, Object?>)['properties']
+                      as Map<String, Object?>?)
+                  ?.containsKey('cluster_id') ==
+              true;
+      expect(
+        stillOneCluster,
+        isFalse,
+        reason: 'expansion zoom that does not expand anything is just a number',
+      );
+    });
+
+    test(
+      'children are the next level down, leaves are the originals',
+      () async {
+        final map = await boot();
+        final id = clusterIdOf(map);
+
+        final children = map.getClusterChildren('pts', id);
+        expect(children, isNotNull);
+        final childList =
+            (jsonDecode(children!) as Map<String, Object?>)['features']!
+                as List<Object?>;
+        expect(childList, isNotEmpty);
+
+        final leaves = map.getClusterLeaves('pts', id, limit: 100);
+        expect(leaves, isNotNull);
+        final leafList =
+            (jsonDecode(leaves!) as Map<String, Object?>)['features']!
+                as List<Object?>;
+        expect(
+          leafList,
+          hasLength(4),
+          reason: 'leaves are the ORIGINAL points, all four of them',
+        );
+        // And they are the originals, not clusters: every one carries the "n"
+        // property from the source document.
+        expect({
+          for (final f in leafList)
+            ((f! as Map<String, Object?>)['properties']
+                as Map<String, Object?>)['n'],
+        }, equals({1, 2, 3, 4}));
+      },
+    );
+
+    test(
+      'leaves page, so a huge cluster cannot be asked for at once',
+      () async {
+        final map = await boot();
+        final id = clusterIdOf(map);
+
+        List<Object?> page(int limit, int offset) =>
+            (jsonDecode(
+                      map.getClusterLeaves(
+                        'pts',
+                        id,
+                        limit: limit,
+                        offset: offset,
+                      )!,
+                    )
+                    as Map<String, Object?>)['features']!
+                as List<Object?>;
+
+        expect(page(2, 0), hasLength(2));
+        expect(page(2, 2), hasLength(2));
+        // The two pages must be DIFFERENT points, or the offset is ignored.
+        Set<Object?> ns(List<Object?> fs) => {
+          for (final f in fs)
+            ((f! as Map<String, Object?>)['properties']
+                as Map<String, Object?>)['n'],
+        };
+        expect(ns(page(2, 0)).intersection(ns(page(2, 2))), isEmpty);
+      },
+    );
+
+    test('a made-up cluster id is NOT detectable through expansion zoom', () async {
+      final map = await boot();
+      // supercluster starts from `(cluster_id % 32) - 1` and only then walks
+      // the tree (supercluster.hpp:236), so a fabricated id yields a plausible
+      // number rather than an error. Pinned because it looks like a bug in us,
+      // and because the documented workaround below has to keep working.
+      expect(
+        map.getClusterExpansionZoom('pts', 999999),
+        30,
+        reason:
+            '999999 % 32 == 31, so the answer is 30 — derived from the id, '
+            'not from any cluster',
+      );
+
+      // Children IS a real lookup, so that is the existence check we document —
+      // and supercluster THROWS std::runtime_error("No cluster with the
+      // specified id.") for a made-up one (supercluster.hpp:375). A throw
+      // crossing `extern "C"` is undefined behaviour, and this exact call
+      // aborted the whole test process before the shim caught it. Null, and a
+      // report, is the contract.
+      final failures = <String>[];
+      map.setDiagnosticCallback((d) {
+        if (d.kind == CoreDiagnosticKind.commandFailed) failures.add(d.message);
+      });
+      addTearDown(() => map.setDiagnosticCallback(null));
+
+      expect(map.getClusterChildren('pts', 999999), isNull);
+      await settle(map);
+      expect(failures.join('\n'), contains('No cluster'));
+    });
+
+    test('an unknown SOURCE answers null without throwing', () async {
+      final map = await boot();
+      // Unlike a bad cluster id, mbgl handles this itself: RenderOrchestrator
+      // returns an empty value for a source it cannot find
+      // (render_orchestrator.cpp:719-722). So there is nothing to report.
+      expect(map.getClusterChildren('no-such-source', 1), isNull);
+      expect(map.getClusterExpansionZoom('no-such-source', 1), isNull);
+    });
+  });
+
   // 6.4. Feature state is only worth anything if a style EXPRESSION can read
   // it, so these assert pixels, not the round trip through getFeatureState —
   // a get/set pair that agrees with itself proves storage, not rendering.

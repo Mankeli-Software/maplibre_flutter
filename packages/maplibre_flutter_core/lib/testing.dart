@@ -498,6 +498,61 @@ class RecordingCoreMap implements MapLibreCoreMap {
     String? layerId,
   }) {}
 
+  // --- clusters --------------------------------------------------------------
+
+  /// What the cluster helpers return.
+  int? clusterExpansionZoomResult;
+  String? clusterChildrenResult;
+  String? clusterLeavesResult;
+
+  /// Recorded cluster questions.
+  final List<({String field, String sourceId, int clusterId})> clusterQueries =
+      <({String field, String sourceId, int clusterId})>[];
+
+  @override
+  int? getClusterExpansionZoom(
+    String sourceId,
+    int clusterId, {
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    clusterQueries.add((
+      field: 'expansion-zoom',
+      sourceId: sourceId,
+      clusterId: clusterId,
+    ));
+    return clusterExpansionZoomResult;
+  }
+
+  @override
+  String? getClusterChildren(
+    String sourceId,
+    int clusterId, {
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    clusterQueries.add((
+      field: 'children',
+      sourceId: sourceId,
+      clusterId: clusterId,
+    ));
+    return clusterChildrenResult;
+  }
+
+  @override
+  String? getClusterLeaves(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    clusterQueries.add((
+      field: 'leaves',
+      sourceId: sourceId,
+      clusterId: clusterId,
+    ));
+    return clusterLeavesResult;
+  }
+
   // --- feature state ---------------------------------------------------------
 
   /// Feature state by "sourceId/featureId", as the recording double sees it.

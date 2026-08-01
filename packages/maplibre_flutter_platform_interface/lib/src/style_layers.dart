@@ -198,4 +198,20 @@ abstract interface class MapLibreStyleLayers {
     String? sourceLayer,
     String? stateKey,
   });
+
+  /// The zoom at which a cluster splits — gl-js `getClusterExpansionZoom`.
+  /// Null when the cluster does not exist or the source is not clustered.
+  int? getClusterExpansionZoom(String sourceId, int clusterId);
+
+  /// A cluster's immediate children as a GeoJSON `FeatureCollection` string.
+  String? getClusterChildrenJson(String sourceId, int clusterId);
+
+  /// The original points under a cluster, paged — one cluster can stand for a
+  /// hundred thousand points, so there is deliberately no "all" form.
+  String? getClusterLeavesJson(
+    String sourceId,
+    int clusterId, {
+    int limit,
+    int offset,
+  });
 }

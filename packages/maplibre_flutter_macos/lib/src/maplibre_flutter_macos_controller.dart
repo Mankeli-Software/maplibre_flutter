@@ -598,6 +598,34 @@ class MapLibreFlutterMacosController
     );
   }
 
+  @override
+  int? getClusterExpansionZoom(String sourceId, int clusterId) {
+    if (_disposed) return null;
+    return _coreMap.getClusterExpansionZoom(sourceId, clusterId);
+  }
+
+  @override
+  String? getClusterChildrenJson(String sourceId, int clusterId) {
+    if (_disposed) return null;
+    return _coreMap.getClusterChildren(sourceId, clusterId);
+  }
+
+  @override
+  String? getClusterLeavesJson(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+  }) {
+    if (_disposed) return null;
+    return _coreMap.getClusterLeaves(
+      sourceId,
+      clusterId,
+      limit: limit,
+      offset: offset,
+    );
+  }
+
   // --- MapLibreMapProjector ---------------------------------------------------
   // Projection runs synchronously over the core's lock-free transform snapshot,
   // so it is cheap to call from a Flow paint every camera tick. Screen space is

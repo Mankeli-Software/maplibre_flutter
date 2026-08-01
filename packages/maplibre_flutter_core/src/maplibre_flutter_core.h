@@ -655,6 +655,55 @@ FFI_PLUGIN_EXPORT char *mbl_map_query_source_features(
     MblMap *map, const char *source_id, const char *source_layers,
     const char *filter_json, uint32_t timeout_ms);
 
+// --- Clusters ----------------------------------------------------------------
+//
+// The three supercluster questions, over mbgl's feature-extension mechanism
+// (Renderer::queryFeatureExtensions, extension "supercluster") — gl-js
+// getClusterExpansionZoom / getClusterChildren / getClusterLeaves, Apple
+// MLNShapeSource.h:408-437.
+//
+// All three take the integer `cluster_id` that clustering put in a cluster
+// feature's properties, which is gl-js's shape. mbgl actually wants a whole
+// FEATURE (Apple hands it the cluster shape), but the only thing it reads off
+// it is that property — render_geojson_source.cpp:133 — so a synthetic feature
+// carrying just `cluster_id` is equivalent and spares every caller having to
+// keep the cluster feature alive.
+//
+// Only a geojson source with `cluster: true` answers these; anything else
+// returns NULL / -1.
+
+// The zoom at which a cluster splits — point the camera here to expand it.
+// Returns -1 if the source is not clustered or the call timed out.
+//
+// **A cluster id that does not exist is NOT detectable here.** supercluster
+// derives the answer from the id's own low bits — `(cluster_id % 32) - 1`,
+// vendor/supercluster/include/supercluster.hpp:236 — and only then walks the
+// tree, so a made-up id returns a plausible-looking number rather than
+// failing. 999999 answers 30. To check that a cluster exists, ask
+// mbl_map_get_cluster_children: that one really does come back empty.
+FFI_PLUGIN_EXPORT int32_t mbl_map_get_cluster_expansion_zoom(
+    MblMap *map, const char *source_id, uint32_t cluster_id,
+    uint32_t timeout_ms);
+
+// The cluster's immediate children (clusters and/or points) at the next zoom
+// level, as a GeoJSON FeatureCollection. Release with mbl_string_free; NULL on
+// failure.
+FFI_PLUGIN_EXPORT char *mbl_map_get_cluster_children(MblMap *map,
+                                                     const char *source_id,
+                                                     uint32_t cluster_id,
+                                                     uint32_t timeout_ms);
+
+// The original points under a cluster, however deep, as a GeoJSON
+// FeatureCollection. `limit` caps how many come back and `offset` pages through
+// them — a cluster can stand for a hundred thousand points, so there is no
+// "all" form. Release with mbl_string_free; NULL on failure.
+FFI_PLUGIN_EXPORT char *mbl_map_get_cluster_leaves(MblMap *map,
+                                                   const char *source_id,
+                                                   uint32_t cluster_id,
+                                                   uint32_t limit,
+                                                   uint32_t offset,
+                                                   uint32_t timeout_ms);
+
 // --- Feature state -----------------------------------------------------------
 //
 // Per-feature data held OUTSIDE the tile, readable from a style expression with

@@ -1094,6 +1094,72 @@ class MapLibreCoreMap {
     });
   }
 
+  /// The zoom at which a cluster splits — gl-js `getClusterExpansionZoom`.
+  ///
+  /// Null when the source is not clustered or the call timed out. A cluster id
+  /// that does not exist is **not** detectable here — supercluster derives the
+  /// answer from the id's own low bits, so a made-up id returns a plausible
+  /// number. Use [getClusterChildren] to check existence.
+  int? getClusterExpansionZoom(
+    String sourceId,
+    int clusterId, {
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final zoom = bindings.mbl_map_get_cluster_expansion_zoom(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        clusterId,
+        timeout.inMilliseconds,
+      );
+      return zoom < 0 ? null : zoom;
+    });
+  }
+
+  /// A cluster's immediate children — gl-js `getClusterChildren`.
+  String? getClusterChildren(
+    String sourceId,
+    int clusterId, {
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = bindings.mbl_map_get_cluster_children(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        clusterId,
+        timeout.inMilliseconds,
+      );
+      return _takeString(out);
+    });
+  }
+
+  /// The original points under a cluster — gl-js `getClusterLeaves`.
+  ///
+  /// Paged on purpose: one cluster can stand for a hundred thousand points, so
+  /// there is no "give me all of them" form.
+  String? getClusterLeaves(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = bindings.mbl_map_get_cluster_leaves(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        clusterId,
+        limit,
+        offset,
+        timeout.inMilliseconds,
+      );
+      return _takeString(out);
+    });
+  }
+
   /// Attaches state to one feature — gl-js `setFeatureState`.
   ///
   /// [stateJson] is a JSON object, MERGED into whatever state the feature

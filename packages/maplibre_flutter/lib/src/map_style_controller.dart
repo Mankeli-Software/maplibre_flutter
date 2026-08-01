@@ -660,6 +660,61 @@ class MapLibreStyleController {
     return _parseFeatures(json);
   }
 
+  // --- Clusters ---------------------------------------------------------------
+  //
+  // The three supercluster questions. Every one takes the integer `cluster_id`
+  // that clustering wrote into the cluster feature's properties — which
+  // [QueriedFeature.clusterId] hands you straight from a query.
+
+  /// The zoom at which a cluster splits into its children — gl-js
+  /// `getClusterExpansionZoom`.
+  ///
+  /// The point of it is "tap a cluster, zoom to break it up":
+  ///
+  /// ```dart
+  /// final zoom = controller.style.getClusterExpansionZoom('pts', id);
+  /// if (zoom != null) {
+  ///   await controller.camera.easeTo(CameraOptions(center: at, zoom: zoom));
+  /// }
+  /// ```
+  ///
+  /// Null when the source is not clustered or the read failed.
+  ///
+  /// **A cluster id that does not exist is not detectable here.** supercluster
+  /// computes the answer from the id's own low bits before it ever looks the
+  /// cluster up, so a made-up id returns a plausible-looking zoom instead of
+  /// nothing. Pass an id you got from [QueriedFeature.clusterId], and use
+  /// [getClusterChildren] if you need to know whether a cluster is real.
+  double? getClusterExpansionZoom(String sourceId, int clusterId) =>
+      _layers?.getClusterExpansionZoom(sourceId, clusterId)?.toDouble();
+
+  /// A cluster's immediate children at the next zoom level — themselves
+  /// clusters or individual points. gl-js `getClusterChildren`.
+  List<QueriedFeature> getClusterChildren(String sourceId, int clusterId) {
+    final json = _layers?.getClusterChildrenJson(sourceId, clusterId);
+    return json == null ? const [] : _parseFeatures(json);
+  }
+
+  /// The original points under a cluster, however deep — gl-js
+  /// `getClusterLeaves`.
+  ///
+  /// Paged deliberately: one cluster can stand for a hundred thousand points,
+  /// so there is no "give me all of them". Page with [offset].
+  List<QueriedFeature> getClusterLeaves(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+  }) {
+    final json = _layers?.getClusterLeavesJson(
+      sourceId,
+      clusterId,
+      limit: limit,
+      offset: offset,
+    );
+    return json == null ? const [] : _parseFeatures(json);
+  }
+
   // --- Feature state ----------------------------------------------------------
 
   /// Attaches state to one feature — gl-js `setFeatureState`.

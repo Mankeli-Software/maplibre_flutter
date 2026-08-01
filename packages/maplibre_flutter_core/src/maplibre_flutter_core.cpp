@@ -2792,6 +2792,102 @@ std::optional<std::string> optionalString(const char *s) {
 
 } // namespace
 
+namespace {
+
+// The synthetic cluster feature the supercluster extension wants.
+//
+// It reads exactly one thing off the feature — the `cluster_id` property
+// (render_geojson_source.cpp:133) — so building one here is equivalent to
+// Apple's "hand it the cluster shape you got from a query", and spares the
+// caller keeping that shape alive between the query and the question.
+mbgl::Feature clusterFeature(uint32_t clusterId) {
+  mbgl::Feature feature{mbgl::Point<double>{0, 0}};
+  feature.properties["cluster"] = true;
+  feature.properties["cluster_id"] = static_cast<uint64_t>(clusterId);
+  return feature;
+}
+
+// Runs one supercluster extension and returns its value, or nullopt.
+std::optional<mbgl::FeatureExtensionValue> clusterExtension(
+    MblMap *m, const std::string &sourceId, uint32_t clusterId,
+    const std::string &field,
+    std::optional<std::map<std::string, mbgl::Value>> args,
+    uint32_t timeout_ms) {
+  auto result = std::make_shared<std::optional<mbgl::FeatureExtensionValue>>();
+  const bool ok = runOnRenderThread(
+      m, timeout_ms, [m, sourceId, clusterId, field, args, result] {
+        auto *renderer =
+            m->frontend != nullptr ? m->frontend->getRenderer() : nullptr;
+        if (renderer == nullptr) return;
+        // MUST catch. mbgl THROWS for a source that does not exist, and a throw
+        // crossing `extern "C"` is undefined behaviour — in practice
+        // std::terminate, which took the whole test process down with
+        // "Abort trap: 6" the first time this was called with a bad source id.
+        try {
+          *result = renderer->queryFeatureExtensions(
+              sourceId, clusterFeature(clusterId), "supercluster", field, args);
+        } catch (const std::exception &e) {
+          dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                             "cluster query on source '" + sourceId +
+                                 "' failed: " + e.what());
+        } catch (...) {
+          dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                             "cluster query on source '" + sourceId +
+                                 "' failed");
+        }
+      });
+  if (!ok) return std::nullopt;
+  return *result;
+}
+
+} // namespace
+
+int32_t mbl_map_get_cluster_expansion_zoom(MblMap *m, const char *source_id,
+                                           uint32_t cluster_id,
+                                           uint32_t timeout_ms) {
+  if (m == nullptr || source_id == nullptr) return -1;
+  const auto value = clusterExtension(m, std::string(source_id), cluster_id,
+                                      "expansion-zoom", std::nullopt,
+                                      timeout_ms);
+  if (!value || !value->is<mbgl::Value>()) return -1;
+  const auto &raw = value->get<mbgl::Value>();
+  if (raw.is<uint64_t>()) return static_cast<int32_t>(raw.get<uint64_t>());
+  if (raw.is<int64_t>()) return static_cast<int32_t>(raw.get<int64_t>());
+  if (raw.is<double>()) return static_cast<int32_t>(raw.get<double>());
+  return -1;
+}
+
+// Shared tail for the two extensions that answer with features.
+static char *clusterFeatures(
+    MblMap *m, const char *source_id, uint32_t cluster_id,
+    const char *field, std::optional<std::map<std::string, mbgl::Value>> args,
+    uint32_t timeout_ms) {
+  if (m == nullptr || source_id == nullptr) return nullptr;
+  const auto value = clusterExtension(m, std::string(source_id), cluster_id,
+                                      field, std::move(args), timeout_ms);
+  if (!value || !value->is<mbgl::FeatureCollection>()) return nullptr;
+  const auto &features = value->get<mbgl::FeatureCollection>();
+  const mapbox::feature::feature_collection<double> collection(features.begin(),
+                                                               features.end());
+  return dupToHeap(mapbox::geojson::stringify(mbgl::GeoJSON{collection}));
+}
+
+char *mbl_map_get_cluster_children(MblMap *m, const char *source_id,
+                                   uint32_t cluster_id, uint32_t timeout_ms) {
+  return clusterFeatures(m, source_id, cluster_id, "children", std::nullopt,
+                         timeout_ms);
+}
+
+char *mbl_map_get_cluster_leaves(MblMap *m, const char *source_id,
+                                 uint32_t cluster_id, uint32_t limit,
+                                 uint32_t offset, uint32_t timeout_ms) {
+  std::map<std::string, mbgl::Value> args{
+      {"limit", static_cast<uint64_t>(limit)},
+      {"offset", static_cast<uint64_t>(offset)}};
+  return clusterFeatures(m, source_id, cluster_id, "leaves", std::move(args),
+                         timeout_ms);
+}
+
 void mbl_map_set_feature_state(MblMap *m, const char *source_id,
                                const char *source_layer, const char *feature_id,
                                const char *state_json) {

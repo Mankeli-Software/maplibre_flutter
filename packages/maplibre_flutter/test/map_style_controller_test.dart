@@ -229,6 +229,56 @@ class _RecordingLayers implements MapLibreStyleLayers {
     }
     featureStates.remove('$sourceId/$featureId');
   }
+
+  /// What the cluster helpers answer, and what was asked.
+  int? clusterExpansionZoomResult;
+  String? clusterChildrenJson;
+  String? clusterLeavesJson;
+  final List<
+    ({String field, String sourceId, int clusterId, int? limit, int? offset})
+  >
+  clusterQueries = [];
+
+  @override
+  int? getClusterExpansionZoom(String sourceId, int clusterId) {
+    clusterQueries.add((
+      field: 'expansion-zoom',
+      sourceId: sourceId,
+      clusterId: clusterId,
+      limit: null,
+      offset: null,
+    ));
+    return clusterExpansionZoomResult;
+  }
+
+  @override
+  String? getClusterChildrenJson(String sourceId, int clusterId) {
+    clusterQueries.add((
+      field: 'children',
+      sourceId: sourceId,
+      clusterId: clusterId,
+      limit: null,
+      offset: null,
+    ));
+    return clusterChildrenJson;
+  }
+
+  @override
+  String? getClusterLeavesJson(
+    String sourceId,
+    int clusterId, {
+    int limit = 100,
+    int offset = 0,
+  }) {
+    clusterQueries.add((
+      field: 'leaves',
+      sourceId: sourceId,
+      clusterId: clusterId,
+      limit: limit,
+      offset: offset,
+    ));
+    return clusterLeavesJson;
+  }
 }
 
 void main() {
@@ -1254,6 +1304,40 @@ void main() {
         ..setFeatureState('other', 1, {'a': 1})
         ..removeFeatureState('pts');
       expect(platform.featureStates.keys, equals(['other/1']));
+    });
+  });
+
+  // 6.5.
+  group('cluster helpers', () {
+    test('the three questions reach the engine with the cluster id', () {
+      final platform = _RecordingLayers()
+        ..clusterExpansionZoomResult = 12
+        ..clusterChildrenJson =
+            '{"type":"FeatureCollection","features":[{"type":"Feature",'
+            '"id":9,"properties":{},"geometry":{"type":"Point",'
+            '"coordinates":[22.27,60.45]}}]}';
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      expect(style.getClusterExpansionZoom('pts', 42), 12);
+      expect(style.getClusterChildren('pts', 42).single.id, 9);
+      style.getClusterLeaves('pts', 42, limit: 5, offset: 10);
+
+      expect(
+        platform.clusterQueries.map((q) => q.field),
+        equals(['expansion-zoom', 'children', 'leaves']),
+      );
+      expect(platform.clusterQueries.every((q) => q.clusterId == 42), isTrue);
+      final leaves = platform.clusterQueries.last;
+      expect(leaves.limit, 5);
+      expect(leaves.offset, 10);
+    });
+
+    test('a tier that cannot answer gives empty lists, not a crash', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      expect(style.getClusterExpansionZoom('pts', 1), isNull);
+      expect(style.getClusterChildren('pts', 1), isEmpty);
+      expect(style.getClusterLeaves('pts', 1), isEmpty);
     });
   });
 }
