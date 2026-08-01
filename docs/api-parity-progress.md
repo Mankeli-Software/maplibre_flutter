@@ -25,21 +25,22 @@ or explicitly rejected with a recorded reason (mbgl cannot do it), and the ledge
 Stages are dependency-ordered. **Do not start a stage until every task in the stages above it is
 `[x]` or `[-]`.** Within a stage, tasks may be done in any order.
 
-### Stage 0 — Naming policy (no code, ~half a day)
+### Stage 0 — Naming policy (no code, ~half a day) — **CLOSED 2026-08-01**
 
-- [ ] 0.1 Write the naming policy into `CLAUDE.md` §9: gl-js naming for style/data/camera verbs;
+- [x] 0.1 Write the naming policy into `CLAUDE.md` §9: gl-js naming for style/data/camera verbs;
       Android SDK `UiSettings` naming for gesture toggles; Apple SDK shapes for what gl-js lacks
       (offline, snapshotter, location, tile-server/auth, camera-change reason); Flutter value types
       at the boundary (`Duration`, `Color`, `Rect`, `Offset`, `EdgeInsets`, `Alignment`);
       `LatLng`/`LatLngBounds` ordering, never `LngLat`.
-- [ ] 0.2 Record the three adaptations as deliberate choices: gl-js `on('move')` →
+- [x] 0.2 Record the three adaptations as deliberate choices: gl-js `on('move')` →
       `Listenable onCameraChanged`; gl-js `on('error')` → `Stream<MapLibreError>`; gl-js `anchor`
       strings → Flutter `Alignment`.
-- [ ] 0.3 Record — but do not execute — the renames that are cheap now and breaking after 1.0:
-      `camera.move()` → `jumpTo`/`easeTo`/`flyTo`; `MapLibreQueriedFeature` → `GeoJsonFeature`;
-      `controller.layers` → `controller.style`; `setGeoJsonData` → `setSourceData`;
-      `getPosition()` → `getCamera()`.
-- [ ] 0.4 Append a dated `docs/decision-log.md` entry for the policy.
+- [x] 0.3 Record — but do not execute — the renames that are cheap now and breaking after 1.0:
+      `camera.move()` → `jumpTo`/`easeTo`/`flyTo`; `MapLibreQueriedFeature` → `QueriedFeature`
+      (**not** `GeoJsonFeature` — see the run log); `controller.layers` → `controller.style`;
+      `setGeoJsonData` → `setSourceData`; `getPosition()` → `getCamera()`; plus
+      `addPoints`/`setPoints`/`removePoints` → a recipe name.
+- [x] 0.4 Append a dated `docs/decision-log.md` entry for the policy.
 
 ### Stage 1 — Value types (pure Dart, zero native work)
 
@@ -98,6 +99,17 @@ after this stage is undebuggable without it.
 ### Stage 3 — Camera commands (over stage-1 types)
 
 Must be verified per hardware tier — CLAUDE.md §11 forbids blind-porting camera changes.
+
+> **Read the spec's "Engine traps that constrain these signatures" preamble before starting this
+> stage.** The camera rows were drafted *before* those findings landed in CLAUDE.md §11, so they do
+> not reflect them. Three constraints change how — not what — these are implemented:
+> `CameraOptions::anchor` is silently discarded whenever `center` is set (`transform.cpp`:
+> `anchor = camera.center ? nullopt : camera.anchor`), so anchored `zoomTo(zoom, {around})` /
+> `rotateTo(bearing, {around})` **cannot** be get-camera-then-set-camera — `mbl_map_set_camera`
+> always sends a centre — and a centre-anchored test cannot detect the bug, because the centre is a
+> fixed point either way. `Transform::rotateBy` and `Map::pitchBy` are both broken upstream. Build
+> all three on `jumpTo(CameraOptions().withBearing(…).withAnchor(…))` / `.withPitch(…)`, as
+> `mbl_map_rotate_by` / `mbl_map_pitch_by` already do.
 
 - [ ] 3.1 Shim `mbl_map_jump_to` / `mbl_map_ease_to` / `mbl_map_fly_to` taking full `CameraOptions`
       (incl. padding + anchor). mbgl has all three natively (`map.hpp:73-75`), so retire the Dart-side
@@ -219,3 +231,46 @@ Append one entry per run. Newest last.
 - **Spec corrections found:** none
 - **Gates:** analyze clean / tests green / format applied / no generated-file diff
 -->
+
+### 2026-08-01 — Stage 0 (0.1, 0.2, 0.3, 0.4) — stage closed
+
+- **Done:** 0.1, 0.2, 0.3, 0.4. The policy is now operative guidance in a new **CLAUDE.md §9 "API
+  naming policy"** subsection (which upstream wins each surface, the three adaptations, the
+  deliberate divergences, and the rename table with the stage each lands in). The *why* — including
+  what was rejected — is a dated entry at the end of `docs/decision-log.md`.
+- **Left half-done:** none.
+- **Deferred / rejected:** the six renames are decided and scheduled but deliberately **not
+  executed** (that is what 0.3 asks for). The operative half is a constraint on stages 1–8: no new
+  API may be added under the old vocabulary, and each rename ships with a `@Deprecated` alias for
+  one release.
+- **Spec corrections found:** three.
+  1. **The spec contradicts itself on gesture-toggle naming.** `:52` and `:241` say commit to the
+     Android `UiSettings` vocabulary; the gestures-domain naming section at `:2934` picks gl-js's
+     `MapOptions` keys instead and, at its item 5, would demote our shipped
+     `rotateGesturesEnabled`/`tiltGesturesEnabled` to `@Deprecated` pass-throughs. Settled for
+     **Android**, per the ledger's own 0.1 wording: gl-js's names are DOM-input-flavoured, we ship
+     two of the Android names today, and `google_maps_flutter` and `maplibre_gl` have both
+     converged on `…GesturesEnabled`. gl-js's *granularity* argument is real and was kept — split a
+     coarse Android toggle with the same `…Enabled` suffix rather than importing a gl-js handler
+     name. `:2935` is now marked SUPERSEDED in place, with the rejected reasoning kept.
+  2. **Ledger 0.3 names the wrong replacement type.** It says `MapLibreQueriedFeature` →
+     `GeoJsonFeature`, but 1.4 and 6.6 define `GeoJsonFeature` (id + geometry + properties) and
+     `QueriedFeature` (which adds gl-js `MapGeoJSONFeature`'s `layer`/`source`/`sourceLayer`/
+     `state`) as *different* types. The replacement is `QueriedFeature`. Ledger row corrected.
+  3. **Three different shapes are proposed for camera-change events** — spec camera-domain item 10
+     (one `Stream<MapCameraEvent>` with a `phase` field), spec gestures-domain item 4 (Android-named
+     `onCameraMoveStarted`/`onCameraMove`/`onCameraIdle` widget callbacks), and ledger 4.2
+     (`onCameraMoveStart`/`onCameraMoveEnd` streams + the `onCameraChanged` `Listenable`). Not
+     settled here: it is a delivery-mechanism decision, not a naming one, and it wants the stage-2
+     observer in hand. **Stage 4 must pick one before writing 4.2**; the ledger's version is the
+     default unless stage 2 shows otherwise.
+- **Gates:** `analyze` clean (13 packages, no issues) / `test --no-select` green / `format` clean /
+  stage-0 gate satisfied — the diff touches only `CLAUDE.md`, `docs/decision-log.md`,
+  `docs/api-parity-binding-spec.md` and this file; no `*_generated.dart` and no
+  `maplibre_flutter_core.{h,cpp}`.
+- **Next run:** Stage 1 is now open. Start with the P0 defects **1.8–1.11**
+  (`map_layers_controller.dart:215` drops every non-Point geometry, `:215` discards the feature id,
+  the `FormatException`-vs-`TypeError` catch, and `setPoints` dropping `properties`) — they are the
+  smallest, are pure Dart, and are testable device-free. Then 1.1/1.2 (`LatLngBounds` + `EdgeInsets`)
+  as the value-type spine. Note the trap for 1.4: `GeoJsonFeature.toJson()` must **not** use
+  `encodeStyleJson` (it rewrites `6.0` → `6`); test that `60.45` survives byte-identically.

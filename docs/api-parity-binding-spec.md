@@ -2932,7 +2932,23 @@ Future<String> MapLibreMapController.getStyleJson()
 **Where the three upstreams disagree, and what I picked.**
 
 1. **Toggle naming — all three disagree.** gl-js: imperative handler objects (`map.scrollZoom.disable()`) plus declarative `MapOptions` keys (`scrollZoom: false`). Apple: flat booleans on the view (`zoomEnabled`, `scrollEnabled`, `rotateEnabled`, `pitchEnabled` — MLNMapView.h:817/839/866/890). Android: `UiSettings.setZoomGesturesEnabled` / `setScrollGesturesEnabled` / `setRotateGesturesEnabled` / `setTiltGesturesEnabled` (verified against the 11.x KDoc).
-   **Chosen: gl-js's `MapOptions` key names, as fields of one immutable `MapGestureSettings` widget prop.** Reasons: (a) gl-js's *decomposition* is strictly finer than Apple's and Android's — Apple/Android `zoomEnabled` lumps pinch + double-tap + quick-zoom + wheel into one boolean, which we would immediately have to split anyway; (b) `MapOptions` is already a declarative-init/update shape, which is exactly bucket 2, whereas gl-js's `enable()/disable()` handler objects are imperative and would violate the three-bucket rule for state that is mutable + declarative + low-frequency; (c) the field type is a plain `bool`, which is what a Flutter widget prop wants. So: `dragPan`, `dragRotate`, `scrollZoom`, `boxZoom`, `doubleClickZoom`, `touchZoomRotate`, `touchPitch`, `keyboard`, `interactive`, `cooperativeGestures`, `pitchWithRotate`, `bearingSnap`, `clickTolerance`, `rotateSpeed`, `pitchSpeed`.
+   > **SUPERSEDED 2026-08-01 — this paragraph contradicted `:52` and `:241` of this same document,
+   > and stage 0 settled it the other way.** The settled policy is **Android `UiSettings` names**
+   > (`rotateGesturesEnabled`, `tiltGesturesEnabled`, `scrollGesturesEnabled`,
+   > `zoomGesturesEnabled`, …), recorded in CLAUDE.md §9 and `docs/decision-log.md`. The
+   > *granularity* argument below survives and is folded into the policy: where Android's toggle is
+   > coarser than the gestures we actually recognise, **split it with the same `…Enabled` suffix**
+   > (`doubleTapZoomEnabled`, `quickZoomEnabled`) rather than importing a gl-js handler name. The
+   > *naming* argument does not survive: gl-js's names are DOM-input-flavoured, we already ship two
+   > Android-named toggles, and `google_maps_flutter` and `maplibre_gl` have both converged on
+   > `…GesturesEnabled`. Read the rest of this item as the rejected alternative, kept for its
+   > reasoning; the container shape (one immutable widget prop, bucket 2) is unaffected and stands.
+   >
+   > Item **5** below (`rotateGesturesEnabled`/`tiltGesturesEnabled` becoming `@Deprecated`
+   > pass-throughs onto gl-js-named fields) falls with it — those two names are now the spine, not
+   > the legacy.
+
+   **Rejected alternative: gl-js's `MapOptions` key names, as fields of one immutable `MapGestureSettings` widget prop.** Reasons given: (a) gl-js's *decomposition* is strictly finer than Apple's and Android's — Apple/Android `zoomEnabled` lumps pinch + double-tap + quick-zoom + wheel into one boolean, which we would immediately have to split anyway; (b) `MapOptions` is already a declarative-init/update shape, which is exactly bucket 2, whereas gl-js's `enable()/disable()` handler objects are imperative and would violate the three-bucket rule for state that is mutable + declarative + low-frequency; (c) the field type is a plain `bool`, which is what a Flutter widget prop wants. So: `dragPan`, `dragRotate`, `scrollZoom`, `boxZoom`, `doubleClickZoom`, `touchZoomRotate`, `touchPitch`, `keyboard`, `interactive`, `cooperativeGestures`, `pitchWithRotate`, `bearingSnap`, `clickTolerance`, `rotateSpeed`, `pitchSpeed`.
 
 2. **Where gl-js has no name, Apple/Android names are adopted verbatim**: `quickZoom` (Apple one-finger zoom / Android `setQuickZoomGesturesEnabled`), `panScrollingMode` (Apple `MLNPanScrollingMode`, MLNMapView.h:112-118/853), `flingVelocityAnimation` / `scaleVelocityAnimation` / `rotateVelocityAnimation` (Android UiSettings), `increaseRotateThresholdWhenScaling` / `disableRotateWhenScaling` / `increaseScaleThresholdWhenRotating` (Android), `quickZoomReversed` and `hapticFeedback` (Apple, MLNMapView.h:826/909), `focalPoint` (Android `UiSettings.setFocalPoint`, which subsumes gl-js `around:'center'` and Apple `anchorRotateOrZoomGesturesToCenterCoordinate`).
 

@@ -1853,4 +1853,68 @@ exactly this. It is a behavioural choice (subtract-the-deadzone vs clamp-the-dea
 unambiguous defect, and gesture feel is still pending the native-feel A/B — so it is recorded here
 rather than changed unasked.
 
+## 2026-08-01 — The API naming policy, settled once so it is not re-litigated per feature
+
+Stage 0 of the API-parity effort (`docs/api-parity-progress.md`). No code — the deliverable is a
+decision. The policy itself is now operative guidance in **CLAUDE.md §9**; this entry records *why*
+each call went the way it did, and what was rejected.
+
+**The problem it solves.** We have three canonical upstreams — maplibre-gl-js, the MapLibre Apple
+SDK 6.27.0 and the Android SDK — plus mbgl underneath, and they disagree constantly (`bearing` vs
+`direction` vs `heading`; `pitch` vs `tilt`; `LngLatBounds` vs `LatLngBounds` vs
+`MLNCoordinateBounds`; `around` vs `anchor`). Deciding per feature is exactly how this codebase
+ended up shipping `getPosition()` next to `setGeoJsonData` next to `addPoints` — three vocabularies
+on one object. Every one of those is cheap to fix now and breaking after 1.0.
+
+### The four calls
+
+1. **gl-js wins the verbs.** It is the only upstream whose vocabulary is style-spec-adjacent and
+   complete — `jumpTo`/`easeTo`/`flyTo`, `moveLayer`, `setPaintProperty`, `setFilter`, `setData`,
+   `queryRenderedFeatures`, `setMinZoom`. Apple hand-writes wrappers that drift from the spec;
+   Android renames spec concepts (`tilt`).
+2. **mbgl/Android win the nouns, against gl-js.** `LatLng`/`LatLngBounds(southwest:, northeast:)`,
+   never `LngLat`. Our point type is already `LatLng(lat, lng)` and §11 names axis order the #1 bug
+   class in the project — importing gl-js's lng-first name would re-open it for a cosmetic win.
+   Same reasoning for `anchor` over gl-js's `around`: mbgl says anchor (`camera.hpp:69`) and so does
+   every line of our own shim (`mbl_map_rotate_by(…, anchor_x, anchor_y)`).
+3. **Android `UiSettings` wins the gesture toggles — and the spec contradicted itself here.**
+   `docs/api-parity-binding-spec.md:241` says commit to the Android vocabulary; its gestures-domain
+   naming section (`:2934`) says the opposite, choosing gl-js's `MapOptions` keys in a
+   `MapGestureSettings` prop. Settled for **Android**: gl-js's names are DOM-input-flavoured
+   (`scrollZoom`, `boxZoom`, `dragRotate` mean nothing on a phone), we already ship
+   `rotateGesturesEnabled`/`tiltGesturesEnabled`, and both `google_maps_flutter` and `maplibre_gl`
+   — the plugin we intend to displace, so the plugin apps migrate *from* — have converged on
+   `…GesturesEnabled`. The gl-js argument that survives is granularity, not naming: its
+   decomposition is genuinely finer than Android's single `zoomGesturesEnabled` (which lumps pinch,
+   double-tap, quick-zoom and wheel). So the rule is *split with the same suffix scheme*
+   (`doubleTapZoomEnabled`, `quickZoomEnabled`) rather than importing a gl-js handler name later.
+4. **Apple shapes fill the holes gl-js has no words for**: offline, snapshotter, location,
+   tile-server/auth, camera-change reason. For auth the *container* is Apple/Android-shaped (a
+   static, apply-before-first-map surface) on engine evidence rather than taste —
+   `FileSourceManager::getFileSource` caches file sources by the `(type, ResourceOptions)` tuple, so
+   a per-map API key would silently mint a second `OnlineFileSource` and a second ambient-cache DB
+   per map. The *members* keep gl-js names (`apiKey`, `transformRequest`).
+
+Plus a fifth that was never in doubt but is now written down: **Flutter's own value types at every
+boundary** — `Duration`, `Color`, `Rect`, `Offset`, `EdgeInsets`, `Alignment`, `Curve`, `Size` —
+because they are types the user already owns and `dart analyze` can check, where upstream's strings
+and millisecond ints are artefacts of JS and ObjC.
+
+### Three adaptations recorded as choices, not accidents
+
+`on('move')` → a `Listenable`, because a `Stream` forces a rebuild per tick at 60–120 Hz and the
+marker overlay consumes it through `Flow(repaint:)`. `on('error')` → `Stream<MapLibreError>` over a
+sealed type, so failures are exhaustively switchable. gl-js's nine `anchor` strings → `Alignment`.
+That last one leaves the word `anchor` carrying two meanings — a marker's `Alignment` and the
+camera's pixel pivot — which is deliberate and documented rather than resolved by renaming one.
+
+### What was explicitly not done
+
+The six renames (`move` → `jumpTo`/`easeTo`/`flyTo`, `getPosition` → `getCamera`, `layers` →
+`style`, `setGeoJsonData` → `setSourceData`, `MapLibreQueriedFeature` → `QueriedFeature`,
+`addPoints` → a recipe name) are **decided and scheduled, not executed** — each belongs with the
+stage that grows that surface, and each ships with a `@Deprecated` alias for one release. The
+operative half of that decision is the constraint it puts on the intervening stages: no new API may
+be added under the old vocabulary.
+
 _Append new decisions here with date and rationale._

@@ -432,6 +432,53 @@ into `maplibre_flutter_core.dll`, so there are no runtime DLLs to bundle.
   this file rather than trusting it. (Exceptions: the melos and `objective_c` pins in §6, which
   exist for a documented reason.)
 
+### API naming policy
+
+**Settled 2026-08-01.** Rationale in `docs/decision-log.md`; per-row citations in
+`docs/api-parity-binding-spec.md`. **Copy upstream naming and shape; do not invent our own.**
+Where the three canonical APIs disagree, the winner is fixed here so it is not re-litigated
+feature by feature — that is how a binding ends up with `getPosition` next to `setGeoJsonData`
+next to `addPoints`, three vocabularies in one class.
+
+| Surface | Vocabulary to copy |
+| --- | --- |
+| Style / source / layer / image / camera **verbs** | **maplibre-gl-js.** `jumpTo`/`easeTo`/`flyTo`/`fitBounds`/`panBy`/`zoomTo`/`rotateTo`/`resetNorth`/`stop`; `addSource`/`addLayer`/`moveLayer`/`getLayersOrder`; `setPaintProperty`/`setLayoutProperty`/`setFilter`/`setLayerZoomRange`; `setData`; `queryRenderedFeatures`/`querySourceFeatures`/`setFeatureState`; `addImage`/`hasImage`/`listImages`; `setMinZoom`/`setMaxZoom`/`setMinPitch`/`setMaxPitch`/`setMaxBounds`. It is the only upstream whose vocabulary is style-spec-adjacent and complete. |
+| Coordinate and camera **nouns** | **mbgl / Android.** `LatLng`, `LatLngBounds(southwest:, northeast:)`, `center`, `zoom`, `bearing`, `pitch`, `anchor`. **Never `LngLat`/`LngLatBounds`** — our point type is `LatLng(lat, lng)` and axis order is the #1 bug class (§11). `anchor` beats gl-js's `around` because mbgl (`camera.hpp`) and every line of our shim already say anchor. `bearing` not `direction`/`heading`; `pitch` not `tilt`; `zoom` not `zoomLevel`. |
+| Gesture enable/disable **toggles** | **Android SDK `UiSettings`.** `rotateGesturesEnabled`, `tiltGesturesEnabled` (both already shipped), plus `scrollGesturesEnabled`, `zoomGesturesEnabled`, `doubleTapZoomEnabled`, `quickZoomEnabled`. gl-js's names are DOM-input-flavoured — `scrollZoom`, `boxZoom`, `dragRotate` mean nothing on a phone — and `google_maps_flutter` and `maplibre_gl` have both converged on `…GesturesEnabled`. **Where Android's toggle is coarser than the gestures we actually recognise, split it with the same `…Enabled` suffix; never mix in a gl-js handler name.** |
+| What gl-js has **no vocabulary for** | **Apple SDK shapes.** Offline (`MLNOfflineStorage` / `MLNOfflinePack` / `MLNTilePyramidOfflineRegion`), snapshotter (`MLNMapSnapshotter` / `MLNMapSnapshotOptions`), location (`MLNUserLocation` / `MLNLocationManager` / `MLNUserTrackingMode`), tile-server & auth (`MLNSettings` / `MLNTileServerOptions` — a static configure-before-first-map surface, because mbgl caches file sources by `(type, ResourceOptions)` so per-map keys would mint a second cache DB), camera-change reason (`MLNCameraChangeReason`, a bitmask). |
+| Boundary **value types** | **Flutter's own.** `Duration` (never ms ints), `Color` (never CSS strings), `Rect`, `Offset`, `EdgeInsets` (never a bespoke `PaddingOptions`), `Alignment`, `Curve` (a `Cubic` maps 1:1 onto mbgl's `UnitBezier`), `Size` + `devicePixelRatio`. Sizes are **logical points** everywhere, never CSS or device pixels. |
+
+**Three deliberate adaptations** — Flutter idiom beats upstream mechanism, and each is a choice,
+not an accident:
+
+1. gl-js `map.on('move', …)` → **`Listenable onCameraChanged`**, so it drops into
+   `ListenableBuilder`/`Flow(repaint:)`. A `Stream` would force a rebuild per camera tick at
+   60–120 Hz. It is *not* a substitute for the discrete signals: `onCameraMoveStart` /
+   `onCameraMoveEnd` carry the reason separately.
+2. gl-js `map.on('error', …)` → **`Stream<MapLibreError>`** over a `sealed class MapLibreError`,
+   so failures are exhaustively switchable instead of string-keyed.
+3. gl-js's nine `anchor` **strings** (`'bottom-left'`, …) → Flutter **`Alignment`**. Note the word
+   is overloaded and both senses are kept: a marker's `Alignment` **anchor**, and the camera's
+   pixel **anchor** (gl-js `around`).
+
+**Deliberate divergences, each with a reason:** `LatLngBounds` over gl-js `LngLatBounds` (above);
+`apexZoom` for gl-js `flyTo({minZoom})`, because `minZoom` already means a hard constraint in the
+same namespace; Apple's persistent-vs-transient padding **split** carrying gl-js's word `padding`;
+declarative widget props with no public `controller.setStyle` (§3).
+
+**Renames decided, deliberately not yet executed.** Each is cheap now and breaking after 1.0.
+**Do not add new API under the left-hand vocabulary.** Each lands with a `@Deprecated` alias for
+one release, in the stage named:
+
+| Today | Becomes | Stage |
+| --- | --- | --- |
+| `camera.move(MapCamera, {Duration?})` | `camera.jumpTo` / `easeTo` / `flyTo` — `move(duration:)` is really `flyTo`, and `easeTo` is unreachable | 3 |
+| `camera.getPosition()` | `camera.getCamera()` — matches the platform interface and `MLNMapCamera` | 3 |
+| `controller.layers` | `controller.style` — it owns sources, images and transitions; queries move off it | 5 |
+| `layers.setGeoJsonData(id, json)` | `style.setSourceData(id, data)`, then `style.getSource(id).setData(…)` | 5 |
+| `MapLibreQueriedFeature` | `QueriedFeature` (gl-js `MapGeoJSONFeature`) over a sealed `GeoJsonFeature` | 1, 6 |
+| `layers.addPoints` / `setPoints` / `removePoints` | a recipe name outside the spec-named namespace — it is a three-layer macro, not spec API | 5 |
+
 ---
 
 ## 10. Key references
