@@ -18,6 +18,8 @@ class MapLibreMarker {
     required this.point,
     required this.child,
     this.alignment = Alignment.center,
+    this.offset = Offset.zero,
+    this.zIndex = 0,
     this.draggable = false,
     this.onDragStart,
     this.onDragUpdate,
@@ -35,6 +37,28 @@ class MapLibreMarker {
   /// Which part of [child] sits on [point]. Defaults to the child's center; use
   /// e.g. [Alignment.bottomCenter] for a pin whose tip marks the spot.
   final Alignment alignment;
+
+  /// A fixed screen-space nudge applied AFTER [alignment], in logical points —
+  /// gl-js `Marker({offset})`.
+  ///
+  /// [alignment] and this are not alternatives. Alignment answers "which part
+  /// of the widget is the anchor", which is a property of the artwork; offset
+  /// answers "and then move it a bit", which is how you separate two markers on
+  /// the same point, or clear a callout from the pin it belongs to. Positive
+  /// [Offset.dy] moves it DOWN, as everywhere else in Flutter.
+  ///
+  /// It does not scale with zoom — that is the point of it being screen-space.
+  final Offset offset;
+
+  /// Paint order among markers. Higher draws on top; equal values keep list
+  /// order — gl-js `Marker.setZIndex`.
+  ///
+  /// Without this, overlapping markers stack in whatever order the list
+  /// happens to be in, so the one you most want visible is the one that
+  /// disappears behind its neighbours. The sort is STABLE, so markers at the
+  /// same zIndex never shuffle between frames — a marker that flickers between
+  /// two positions as data updates is worse than one drawn underneath.
+  final int zIndex;
 
   /// When true, the marker can be dragged across the map. While dragging it
   /// follows the pointer and reports the geographic point under it via

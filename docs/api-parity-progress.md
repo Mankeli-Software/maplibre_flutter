@@ -230,7 +230,8 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 8.6 Attribution read from every source, parsed into text + links, and rendered over the map by
       `MapLibreAttributionBar` — **on by default**, because for most providers this is a licence
       condition.
-- [ ] 8.7 Marker `offset` and `zIndex` (gl-js `Marker` has both; ours has only `alignment`).
+- [x] 8.7 `MapLibreMarker.offset` (screen-space, after alignment) and `.zIndex` (stable paint order,
+      and hit order follows it).
 - [x] 8.8 `MapOptions` carries `minZoom` / `maxZoom` / `minPitch` / `maxPitch` / `maxBounds`, applied
       before `onReady` completes. `constrainMode` deliberately NOT exposed — see the run log.
 
@@ -1213,4 +1214,21 @@ never existed.
   them, not about hiding them, and the dartdoc says so in those words.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 9 unit tests / 2 macOS
   integration tests against a real OSM-derived server.
+
+### 2026-08-01 — Stage 8 (8.7) — marker offset and zIndex
+
+- **`offset` is not a second `alignment`.** Alignment answers "which part of the widget is the
+  anchor", a property of the artwork; offset answers "and then move it a bit", which is how you
+  separate two markers on the same point or clear a callout from its pin. Screen-space, so it does
+  not scale with zoom — that is the whole point.
+- **The sort is STABLE, and that is the load-bearing part.** Dart's `List.sort` is not stable, so
+  markers sharing a zIndex would reorder between frames and flicker as data updates — worse than
+  being drawn underneath. Sorting `(zIndex, index)` pairs fixes the tie-break deterministically, and
+  a test asserts equal-zIndex markers keep list order.
+- **Hit order follows paint order for free**, because `RenderFlow` hit-tests in reverse paint order.
+  Tested, because a z-order that only affects painting leaves the user clicking something they
+  cannot see — which is a worse bug than the one being fixed.
+- **The offset test asserts SIGNS, not just distance.** A flipped `dy` is the classic version of
+  this bug and a symmetric offset would hide it (CLAUDE.md §11).
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 12 marker-overlay tests.
 

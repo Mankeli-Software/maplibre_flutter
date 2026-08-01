@@ -201,6 +201,24 @@ class _MarkerFlowDelegate extends FlowDelegate {
   );
   late final List<bool> _visible = List<bool>.filled(markers.length, true);
 
+  /// Indices in PAINT order: lowest zIndex first, so the highest lands on top.
+  ///
+  /// A STABLE sort, deliberately. Markers sharing a zIndex must keep list
+  /// order across frames — a marker that shuffles between two depths as data
+  /// updates reads as flicker, which is worse than being drawn underneath.
+  /// Dart's List.sort is not stable, so this sorts (zIndex, index) pairs.
+  ///
+  /// Hit testing comes along for free: RenderFlow hit-tests in reverse paint
+  /// order, so the marker drawn on top is also the one that takes the tap.
+  late final List<int> _paintOrder = () {
+    final order = [for (var i = 0; i < markers.length; i++) i];
+    order.sort((a, b) {
+      final byZ = markers[a].zIndex.compareTo(markers[b].zIndex);
+      return byZ != 0 ? byZ : a.compareTo(b);
+    });
+    return order;
+  }();
+
   // Let each marker size to its own content. The default returns the (tight)
   // overlay constraints, which would force every marker to fill the whole map.
   @override
@@ -214,7 +232,7 @@ class _MarkerFlowDelegate extends FlowDelegate {
         : projector.project(_points, _out, visible: _visible);
     final Size overlay = context.size;
 
-    for (var i = 0; i < markers.length; i++) {
+    for (final i in _paintOrder) {
       final bool dragged = i == dragIndex;
 
       // Not projectable (no transform yet, or behind a pitched camera): skip
@@ -229,8 +247,12 @@ class _MarkerFlowDelegate extends FlowDelegate {
       final anchorX = (a.x + 1) / 2 * size.width;
       final anchorY = (a.y + 1) / 2 * size.height;
       final pos = dragged ? dragScreen : _out[i];
-      final dx = pos.dx - anchorX;
-      final dy = pos.dy - anchorY;
+      // Offset applies AFTER the anchor, and in screen space, so it does not
+      // scale with zoom — that is what makes it useful for separating two
+      // markers that share a point.
+      final offset = markers[i].offset;
+      final dx = pos.dx - anchorX + offset.dx;
+      final dy = pos.dy - anchorY + offset.dy;
 
       // Viewport cull. A marker whose box lies wholly outside the map contributes
       // nothing, so don't pay a transform + paint for it. This is what makes a

@@ -476,4 +476,136 @@ void main() {
     expect(find.byType(MarkerOverlay), findsNothing);
     expect(find.byKey(const Key('m')), findsNothing);
   });
+
+  // 8.7.
+  testWidgets('offset nudges the marker in SCREEN space, after alignment', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 1))
+      ..projectFn = (_) => const Offset(200, 200);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          offset: const Offset(30, -20),
+          child: Container(
+            key: const Key('m'),
+            width: 20,
+            height: 20,
+            color: const Color(0xFF000000),
+          ),
+        ),
+      ],
+    );
+
+    // Centre-aligned at the projected point, then nudged: +30 right, -20 up.
+    // Asserting the SIGNS matters more than the magnitude — a flipped dy is
+    // the classic version of this bug and a symmetric offset would hide it.
+    expect(
+      tester.getCenter(find.byKey(const Key('m'))),
+      const Offset(230, 180),
+    );
+  });
+
+  testWidgets('zIndex decides who is on top, and who takes the tap', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 1))
+      ..projectFn = (_) => const Offset(200, 200);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    var lowTapped = false;
+    var highTapped = false;
+    await _pump(
+      tester,
+      markers: [
+        // Declared FIRST but given the higher zIndex, so list order and paint
+        // order disagree — otherwise this passes without the feature.
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          zIndex: 10,
+          child: GestureDetector(
+            onTap: () => highTapped = true,
+            child: Container(
+              key: const Key('high'),
+              width: 40,
+              height: 40,
+              color: const Color(0xFFFF0000),
+            ),
+          ),
+        ),
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: GestureDetector(
+            onTap: () => lowTapped = true,
+            child: Container(
+              key: const Key('low'),
+              width: 40,
+              height: 40,
+              color: const Color(0xFF0000FF),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    await tester.tapAt(const Offset(200, 200));
+    await tester.pump();
+    expect(
+      highTapped,
+      isTrue,
+      reason:
+          'the marker drawn on top must also take the tap — a z-order that '
+          'only affects paint leaves the user clicking something they cannot '
+          'see',
+    );
+    expect(lowTapped, isFalse);
+  });
+
+  testWidgets('equal zIndex keeps list order, so nothing flickers', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 1))
+      ..projectFn = (_) => const Offset(200, 200);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    var firstTapped = false;
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: GestureDetector(
+            onTap: () => firstTapped = true,
+            child: Container(
+              width: 40,
+              height: 40,
+              color: const Color(0xFFFF0000),
+            ),
+          ),
+        ),
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: Container(
+            key: const Key('second'),
+            width: 40,
+            height: 40,
+            color: const Color(0xFF0000FF),
+          ),
+        ),
+      ],
+    );
+
+    await tester.tapAt(const Offset(200, 200));
+    await tester.pump();
+    // Later in the list paints later, so it is on top and takes the tap. The
+    // point of the assertion is that the tie-break is DETERMINISTIC: Dart's
+    // List.sort is not stable, so a naive sort would reorder equal markers
+    // between frames and make them flicker.
+    expect(firstTapped, isFalse);
+    expect(find.byKey(const Key('second')), findsOneWidget);
+  });
 }
