@@ -65,9 +65,15 @@ run_model_harness() {
 # 0 made model_harness fail unconditionally, which under `set -e` aborted this
 # whole script — so the GL model checks could never report green, with or
 # without a working backend.
+# The pyramid's own framing, NOT the car's. Its half-extents are ~1 UNIT, so
+# metresPerUnit is what gives it a real-world size; at the .glb settings
+# (zoom 21, metresPerUnit 1) a 2m object sits ~280m from the camera and projects
+# far off-screen — which reads as "the custom drawable did not render under GL"
+# and is really "the camera is not pointing at it". These are the same arguments
+# the Metal reference run uses, so the two are directly comparable.
 run_model_harness /out/model-pyramid \
-  51.50735 -0.12776 21 55 0 1 \
-  "https://demotiles.maplibre.org/style.json" 90 0.00255
+  37.7749 -122.4194 15 55 0 200 \
+  "https://demotiles.maplibre.org/style.json" 90
 
 MODEL_SMOKE="$ASSETS/demo_vehicle.glb"
 MODEL="$ASSETS/alto_k10.glb"

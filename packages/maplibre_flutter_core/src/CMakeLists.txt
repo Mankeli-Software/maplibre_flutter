@@ -107,10 +107,26 @@ else()
   # platform + GL/EGL headless backend below, mirroring platform/linux/linux.cmake.
   # cmake/opengl.cmake (included before the CORE_ONLY return) compiles the GL
   # renderer into mbgl-core.
+  #
+  # MAPLIBRE_FLUTTER_LINUX_VULKAN builds the VULKAN backend on Linux instead. It is
+  # NOT a shipping configuration — Linux ships GL. It exists so the Windows arm,
+  # which is Vulkan, has an off-target verification path at all: Mesa's lavapipe
+  # gives a software Vulkan device in the same container the GL checks use.
+  # CLAUDE.md §11 forbids extrapolating a Windows behaviour from another platform,
+  # and this is the way to stop guessing. Only the headless backend differs; the
+  # Vulkan renderer core, shaders and glslang/SPIRV/VMA come from the root's
+  # cmake/vulkan.cmake, keyed on MLN_WITH_VULKAN.
+  option(MAPLIBRE_FLUTTER_LINUX_VULKAN
+         "Build the Vulkan backend on Linux (verification only; Linux ships GL)" OFF)
   set(MLN_WITH_CORE_ONLY ON CACHE BOOL "" FORCE)
   set(MLN_WITH_METAL OFF CACHE BOOL "" FORCE)
-  set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
-  set(MLN_WITH_OPENGL ON CACHE BOOL "" FORCE)
+  if(MAPLIBRE_FLUTTER_LINUX_VULKAN)
+    set(MLN_WITH_VULKAN ON CACHE BOOL "" FORCE)
+    set(MLN_WITH_OPENGL OFF CACHE BOOL "" FORCE)
+  else()
+    set(MLN_WITH_VULKAN OFF CACHE BOOL "" FORCE)
+    set(MLN_WITH_OPENGL ON CACHE BOOL "" FORCE)
+  endif()
 endif()
 
 add_subdirectory("${MLN_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/mbgl" EXCLUDE_FROM_ALL)
@@ -369,7 +385,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(PNG REQUIRED)
   find_package(PkgConfig REQUIRED)
   find_package(Threads REQUIRED)
-  find_package(OpenGL REQUIRED EGL) # GLVND libOpenGL + libEGL
+  if(MAPLIBRE_FLUTTER_LINUX_VULKAN)
+    # Verification arm: no EGL/GL. Vulkan is loaded through the vendored headers
+    # + the loader mbgl links itself.
+    set(_linux_gl_libs "")
+  else()
+    find_package(OpenGL REQUIRED EGL) # GLVND libOpenGL + libEGL
+    set(_linux_gl_libs OpenGL::EGL)
+  endif()
   pkg_search_module(WEBP libwebp REQUIRED)
   pkg_search_module(LIBUV libuv REQUIRED)
   pkg_search_module(ICUUC icu-uc)
@@ -415,12 +438,24 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${_def}/util/thread_local.cpp"
     "${_def}/util/timer.cpp"
     "${_def}/util/utf.cpp"
+  )
+
+  if(MAPLIBRE_FLUTTER_LINUX_VULKAN)
+    # Verification-only arm: swap the GL/EGL headless backend for the Vulkan one
+    # (the same single file the Windows arm hand-attaches). Everything else about
+    # the Linux platform attach is backend-agnostic.
+    target_sources(mbgl-core PRIVATE "${_def}/vulkan/headless_backend.cpp")
+    target_include_directories(mbgl-core PRIVATE
+                               "${MLN_ROOT}/vendor/Vulkan-Headers/include")
+  else()
     # GL headless backend (off-screen render target) + EGL context (headless,
     # works under Mesa software GL).
-    "${_def}/gl/headless_backend.cpp"
-    "${_lnx}/gl_functions.cpp"
-    "${_lnx}/headless_backend_egl.cpp"
-  )
+    target_sources(mbgl-core PRIVATE
+      "${_def}/gl/headless_backend.cpp"
+      "${_lnx}/gl_functions.cpp"
+      "${_lnx}/headless_backend_egl.cpp"
+    )
+  endif()
 
   target_include_directories(mbgl-core
     PUBLIC
@@ -455,7 +490,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     PNG::PNG
     mbgl-vendor-nunicode
     mbgl-vendor-sqlite
-    OpenGL::EGL
+    ${_linux_gl_libs}
   )
 
 elseif(WIN32)
@@ -665,7 +700,7 @@ if(APPLE)
     "-framework Metal"
     "-framework IOSurface"
     "-framework CoreVideo")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MAPLIBRE_FLUTTER_LINUX_VULKAN)
   # mbgl links OpenGL::EGL PRIVATEly, so the shim needs its own EGL + GLES symbols
   # for the zero-copy EGLImage present (maplibre_flutter_core_gl.cpp). OpenGL::EGL is
   # already found above (find_package(OpenGL REQUIRED EGL)).
