@@ -1411,3 +1411,33 @@ their widget tree.
   `test --no-select` green / `format` clean. **Hands-on still owed on Linux**, which is the only
   place the stale-position path that justifies the route at all can be exercised.
 
+### 2026-08-01 — Reported bug: widget markers froze for the whole of a fly-to
+
+- **The symptom pointed at the overlay; the cause was a missing notification.** With widget markers
+  up, `Fly to:` left them pinned to the screen for the entire flight and snapped them into place
+  when the map stopped. Engine-drawn markers tracked perfectly, which is what made it read as an
+  overlay bug — it is the opposite, the overlay had nothing to react to.
+- **`easeTo` / `flyTo` / `fitBounds` are engine-native and report only their END.** mbgl runs the
+  transition on its render thread; the shim's `transitionFinishFn` fires once, at the finish or on
+  supersession. Nothing on the Dart side ticks the camera in between, so `notifyCameraChanged()` was
+  never called for the duration. `jumpTo` ticks (it applies the camera itself) and so does the
+  Dart-stepped `moveCamera(duration:)` arc, which is why every OTHER camera path looked fine.
+- **Not a settle-window problem.** `MarkerOverlay` already runs a per-frame ticker for 400 ms after
+  each camera tick, precisely because the core presents a frame later than the command. With zero
+  ticks in flight, that window never opened at all.
+- **Fixed in the shared mixin, not five times over.** `MapLibreCameraTickNotifier.tickWhileAnimating`
+  wraps the animation Future and ticks ~every 16 ms until it resolves; each controller's
+  `_awaitCameraMove` returns through it, which is one line in each of the five. Reference-counted, so
+  a flight superseded by another (both of which resolve, by mbgl's contract) does not stop the ticker
+  under its successor, and a final tick on landing settles the overlay exactly rather than a frame
+  stale.
+- **`notifyCameraChanged()` is now a no-op after `disposeCameraTick()`** — and that was not
+  defensive tidying, it was a real crash the test found: the animation resolves through a microtask
+  the controller no longer controls, and a `ChangeNotifier` used after disposal asserts.
+- **Coverage is per tier, which is the point.** The conformance suite asserts a flight ticks
+  throughout and stops on landing, for all five controllers, because the wiring is one line in five
+  near-copies — exactly the shape of thing a port drops. **Verified by reverting the macOS line: 0
+  ticks for the whole flight, which is the bug precisely.** Plus a `MarkerOverlay` test that tracks a
+  marker across two legs of an engine flight (absolute screen positions, not a round trip), and mixin
+  tests for the ref-counting and the dispose race.
+- **Gates:** `analyze --fatal-infos` clean / workspace `test --no-select` green / `format` clean.

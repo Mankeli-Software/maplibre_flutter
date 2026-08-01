@@ -574,6 +574,12 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - Camera commands are applied on the render thread, so the newest transform runs *ahead* of the
   frame on screen. Anchored overlays must project against the **presented** generation
   (`mbl_map_presented_generation`) or they swim.
+- **An engine-native camera animation reports only its END.** `easeTo`/`flyTo`/`fitBounds` run
+  inside mbgl and fire `transitionFinishFn` once (on finish *or* supersession) — so a controller
+  that ticks the camera only where Dart applies a step is silent for the whole flight, and every
+  glued widget overlay freezes until it lands. `_awaitCameraMove` returns through
+  `tickWhileAnimating` for exactly this reason. **Any new engine-driven animated command must do the
+  same**; only `jumpTo` and the Dart-stepped `moveCamera(duration:)` tick on their own.
 
 ### mbgl behaviour
 

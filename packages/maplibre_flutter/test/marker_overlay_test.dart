@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
@@ -607,5 +609,68 @@ void main() {
     // between frames and make them flicker.
     expect(firstTapped, isFalse);
     expect(find.byKey(const Key('second')), findsOneWidget);
+  });
+
+  // The reported bug: with "widget markers: stress" up, pressing "Fly to: X"
+  // left the widgets frozen on screen for the whole flight and snapped them
+  // into place when the map stopped, while engine-drawn markers tracked
+  // perfectly. The engine runs flyTo on its render thread and reports only the
+  // END, so nothing on the Dart side ticked the camera in between — and the
+  // overlay projects against the frame on screen, so it had nothing to react
+  // to. Note NOTHING here calls tick(): that is the whole point.
+  testWidgets('markers track an ENGINE-driven flight, not just its landing', (
+    tester,
+  ) async {
+    final controller = _ProjController(const TextureHandle(textureId: 4));
+    // The engine's camera, moving on its own thread. The map flies WEST, so the
+    // marker must travel EAST across the screen — asserted as an absolute
+    // direction, not a round trip (CLAUDE.md 7).
+    var cameraX = 100.0;
+    controller.projectFn = (_) => Offset(cameraX, 100);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          child: const SizedBox(key: Key('m'), width: 10, height: 10),
+        ),
+      ],
+    );
+    expect(
+      tester.getCenter(find.byKey(const Key('m'))),
+      offsetMoreOrLessEquals(const Offset(100, 100), epsilon: 0.5),
+    );
+
+    // Take off. The engine will report back only when it lands.
+    final landed = Completer<void>();
+    final flight = controller.tickWhileAnimating(landed.future);
+
+    cameraX = 180;
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      tester.getCenter(find.byKey(const Key('m'))),
+      offsetMoreOrLessEquals(const Offset(180, 100), epsilon: 0.5),
+      reason: 'mid-flight, the marker must be where the camera is NOW',
+    );
+
+    cameraX = 260;
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      tester.getCenter(find.byKey(const Key('m'))),
+      offsetMoreOrLessEquals(const Offset(260, 100), epsilon: 0.5),
+      reason: 'still tracking on the second leg, i.e. it kept ticking',
+    );
+
+    cameraX = 300;
+    landed.complete();
+    await flight;
+    await tester.pump();
+    expect(
+      tester.getCenter(find.byKey(const Key('m'))),
+      offsetMoreOrLessEquals(const Offset(300, 100), epsilon: 0.5),
+      reason: 'and the landing tick settles it exactly, not a frame stale',
+    );
   });
 }

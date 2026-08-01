@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show Offset, Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -116,6 +117,87 @@ void main() {
       expect(ticks, 2, reason: 'removed listener should not fire');
 
       p.disposeCameraTick(); // must not throw
+    });
+
+    // The engine runs easeTo/flyTo/fitBounds itself and calls back only at the
+    // END, so a camera that ticks solely where Dart applies a step goes silent
+    // for the whole flight — which is exactly how widget markers came to freeze
+    // mid-fly-to while engine-drawn ones tracked.
+    testWidgets('an engine animation ticks for its whole duration', (
+      tester,
+    ) async {
+      final p = _FakeProjector();
+      var ticks = 0;
+      p.addListener(() => ticks++);
+
+      final flight = Completer<void>();
+      final wrapped = p.tickWhileAnimating(flight.future);
+
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        ticks,
+        greaterThan(3),
+        reason: 'roughly a tick a frame while the engine is flying',
+      );
+
+      final duringFlight = ticks;
+      flight.complete();
+      await wrapped;
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        ticks,
+        duringFlight + 1,
+        reason:
+            'one final tick on landing, then silence — a ticker left '
+            'running would repaint every frame forever',
+      );
+
+      p.disposeCameraTick();
+    });
+
+    testWidgets('overlapping flights keep ticking until the LAST one lands', (
+      tester,
+    ) async {
+      final p = _FakeProjector();
+      var ticks = 0;
+      p.addListener(() => ticks++);
+
+      // A flyTo superseded by a second one: mbgl fires the first's finish fn
+      // when the second installs itself, so both resolve. Stopping on the first
+      // would strand the overlay for the rest of the flight that is actually
+      // running.
+      final first = Completer<void>();
+      final second = Completer<void>();
+      p.tickWhileAnimating(first.future);
+      p.tickWhileAnimating(second.future);
+
+      first.complete();
+      await tester.pump(const Duration(milliseconds: 100));
+      final mid = ticks;
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(ticks, greaterThan(mid), reason: 'the second flight is still up');
+
+      second.complete();
+      await tester.pump();
+      final landed = ticks;
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(ticks, landed, reason: 'both landed, so it stops');
+
+      p.disposeCameraTick();
+    });
+
+    testWidgets('disposing mid-flight cancels the ticker', (tester) async {
+      final p = _FakeProjector();
+      final flight = Completer<void>();
+      p.tickWhileAnimating(flight.future);
+      await tester.pump(const Duration(milliseconds: 50));
+
+      p.disposeCameraTick();
+      // A live Timer here would outlive the controller and tick a disposed
+      // ChangeNotifier, which throws.
+      await tester.pump(const Duration(milliseconds: 200));
+      flight.complete();
+      await tester.pump(const Duration(milliseconds: 200));
     });
   });
 }

@@ -404,6 +404,49 @@ void main() {
         await (c as MapLibreMapPlatformController).dispose();
       });
 
+      // The reported bug: with widget markers up, a fly-to left them frozen on
+      // screen for the whole flight and snapped them into place when the map
+      // stopped, while engine-drawn markers tracked perfectly. The engine runs
+      // the transition on its own render thread and reports only the END, so a
+      // controller that ticks the camera only where Dart applies a step says
+      // nothing for the entire flight — and glued overlays project against the
+      // presented frame, so they have nothing to react to. Asserted per tier
+      // because the wiring is one line in each of five near-copies, which is
+      // exactly the shape of thing a port drops.
+      test('an engine flight ticks the camera throughout, not just at the '
+          'end', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+
+        var ticks = 0;
+        (c as MapLibreMapProjector).addListener(() => ticks++);
+
+        unawaited(
+          c.flyTo(
+            const CameraOptions(zoom: 14),
+            animation: const CameraAnimation(duration: Duration(seconds: 9)),
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(
+          ticks,
+          greaterThan(2),
+          reason: 'mid-flight the overlay must be told the camera is moving',
+        );
+
+        fresh.finishCameraMove(fresh.cameraMoves.last.token);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        final atLanding = ticks;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(
+          ticks,
+          atLanding,
+          reason: 'and told to stop on landing, or it repaints forever',
+        );
+
+        await (c as MapLibreMapPlatformController).dispose();
+      });
+
       test('fitBounds and the bounds reads forward correctly', () async {
         final fresh = RecordingCoreMap();
         final c = tier.build(fresh) as MapLibreCameraCommands;

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart'
@@ -59,10 +60,65 @@ mixin MapLibreCameraTickNotifier implements Listenable {
 
   /// Notifies overlay listeners that the camera changed (reproject now). Call
   /// after applying any camera move/scale/animation step.
-  void notifyCameraChanged() => _cameraTick.tick();
+  ///
+  /// A no-op once [disposeCameraTick] has run. Controllers already guard their
+  /// own `_disposed`, but an in-flight animation resolves through this from a
+  /// microtask the controller no longer controls — and a `ChangeNotifier` used
+  /// after disposal asserts.
+  void notifyCameraChanged() {
+    if (_cameraTickDisposed) return;
+    _cameraTick.tick();
+  }
+
+  /// Wraps an **engine-driven** camera animation so the camera keeps ticking for
+  /// its whole duration, and returns [animation] unchanged.
+  ///
+  /// Needed because `easeTo`/`flyTo`/`fitBounds` hand the transition to the
+  /// engine, which runs it on its render thread and calls back only when it
+  /// ENDS. Between the call and that callback the camera changes every frame
+  /// with nothing on the Dart side to notice — so anchored widget overlays,
+  /// which project against the presented frame, froze at the camera the flight
+  /// started from and snapped into place when it landed. The Dart-stepped
+  /// `moveCamera(duration:)` path never had this: it ticks at every step it
+  /// applies. Engine-native markers were unaffected throughout, which is what
+  /// made it look like an overlay bug rather than a missing notification.
+  ///
+  /// Ticking is reference-counted, so a flight superseded by another (each
+  /// bumping the animation token) leaves the ticker running until the last one
+  /// reports back rather than stopping it under its successor.
+  Future<T> tickWhileAnimating<T>(Future<T> animation) {
+    _animationsInFlight++;
+    // Roughly a frame. Consumers that need per-frame accuracy re-project on
+    // their own vsync ticker and use this only to know movement is in flight;
+    // this rate is what everything else — a ListenableBuilder on the camera —
+    // actually redraws at.
+    _animationTicker ??= Timer.periodic(
+      const Duration(milliseconds: 16),
+      (_) => notifyCameraChanged(),
+    );
+    return animation.whenComplete(() {
+      if (--_animationsInFlight > 0) return;
+      _animationTicker?.cancel();
+      _animationTicker = null;
+      // One final tick: the last periodic fire lands before the transition's
+      // own last frame, so without this the overlay can settle a frame stale.
+      notifyCameraChanged();
+    });
+  }
+
+  Timer? _animationTicker;
+  int _animationsInFlight = 0;
+  bool _cameraTickDisposed = false;
 
   /// Releases the camera-tick notifier. Call from the controller's `dispose()`.
-  void disposeCameraTick() => _cameraTick.dispose();
+  void disposeCameraTick() {
+    if (_cameraTickDisposed) return;
+    _cameraTickDisposed = true;
+    _animationTicker?.cancel();
+    _animationTicker = null;
+    _animationsInFlight = 0;
+    _cameraTick.dispose();
+  }
 }
 
 /// Exposes [ChangeNotifier.notifyListeners] (which is `@protected`) as a public

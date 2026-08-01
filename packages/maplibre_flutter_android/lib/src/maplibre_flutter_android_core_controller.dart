@@ -834,7 +834,11 @@ class MapLibreFlutterAndroidCoreController
     final completer = Completer<void>();
     _cameraWaiters[token] = completer;
     issue(token);
-    return completer.future;
+    // Ticked for the whole flight: the engine runs the transition on its render
+    // thread and reports only the end, so without this the camera changes every
+    // frame with nothing to notice it and glued widget overlays freeze until it
+    // lands.
+    return tickWhileAnimating(completer.future);
   }
 
   core.CoreCameraOptions _toCoreCamera(CameraOptions camera) =>
