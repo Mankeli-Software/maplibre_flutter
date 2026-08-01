@@ -182,7 +182,8 @@ void main() {
     expect(
       one.state,
       containsPair('selected', true),
-      reason: 'without this a query cannot tell you which hits are selected, '
+      reason:
+          'without this a query cannot tell you which hits are selected, '
           'which is most of what selection UI needs',
     );
     // A GeoJSON source genuinely has no source layer.
@@ -205,7 +206,10 @@ void main() {
           style: _style,
           onTap: (tap) => tapped = tap,
           options: const MapOptions(
-            initialCamera: MapCamera(center: LatLng(60.4513, 22.2665), zoom: 16),
+            initialCamera: MapCamera(
+              center: LatLng(60.4513, 22.2665),
+              zoom: 16,
+            ),
           ),
         ),
       ),

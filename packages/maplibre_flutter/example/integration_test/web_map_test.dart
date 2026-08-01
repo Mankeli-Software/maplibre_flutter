@@ -61,5 +61,14 @@ void main() {
     await tester.pumpAndSettle();
     final after = await controller.camera.getCamera();
     expect(after.zoom, closeTo(6, 0.5));
+
+    // NO PIXEL ASSERTION HERE, deliberately. On web the map is a <canvas> in an
+    // HtmlElementView — a platform view composited by the browser, not by
+    // Flutter — so RenderRepaintBoundary.toImage captures the Flutter layer
+    // above it and comes back empty however well the map is rendering. Adding
+    // pixel_assertions.dart here would produce a test that fails on a working
+    // map, or (worse, if the thresholds were relaxed to make it pass) one that
+    // proves nothing. The web tier's visual check belongs in a browser-side
+    // canvas readback; tracked with the rest of the web gap.
   });
 }

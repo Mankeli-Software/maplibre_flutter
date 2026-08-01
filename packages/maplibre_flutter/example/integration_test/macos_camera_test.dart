@@ -23,6 +23,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 
+import 'pixel_assertions.dart';
+
 const _demotiles = 'https://demotiles.maplibre.org/style.json';
 
 /// Turku and Stockholm: asymmetric on BOTH axes and in both signs, so a swapped
@@ -30,16 +32,21 @@ const _demotiles = 'https://demotiles.maplibre.org/style.json';
 const _turku = LatLng(60.4518, 22.2666);
 const _stockholm = LatLng(59.3293, 18.0686);
 
+const _mapKey = Key('map');
+
 Future<MapLibreMapController> _boot(WidgetTester tester) async {
   final controller = MapLibreMapController();
   addTearDown(controller.dispose);
   await tester.pumpWidget(
     MaterialApp(
-      home: MapLibreMap(
-        controller: controller,
-        style: _demotiles,
-        options: const MapOptions(
-          initialCamera: MapCamera(center: LatLng(0, 0), zoom: 2),
+      home: RepaintBoundary(
+        key: _mapKey,
+        child: MapLibreMap(
+          controller: controller,
+          style: _demotiles,
+          options: const MapOptions(
+            initialCamera: MapCamera(center: LatLng(0, 0), zoom: 2),
+          ),
         ),
       ),
     ),
@@ -59,6 +66,17 @@ void main() {
       isTrue,
       reason: 'macOS is an mbgl-core tier; it must run native transitions',
     );
+  });
+
+  // Every other test in this file asserts engine STATE — real content, but all
+  // of it true of a map that draws nothing. This one asserts the picture, once,
+  // so the rest can keep testing what they are actually about (CLAUDE.md §7).
+  testWidgets('the map is actually visible, not just ready', (tester) async {
+    await _boot(tester);
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await expectMapIsVisible(tester, _mapKey);
   });
 
   // THE regression that made the example app unusable: the app renders a map

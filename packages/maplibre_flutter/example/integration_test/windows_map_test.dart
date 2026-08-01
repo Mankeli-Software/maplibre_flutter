@@ -14,6 +14,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 
+import 'pixel_assertions.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -25,13 +27,17 @@ void main() {
     final controller = MapLibreMapController();
     addTearDown(controller.dispose);
 
+    const mapKey = Key('map');
     Future<void> pumpWithStyle(String style) => tester.pumpWidget(
       MaterialApp(
-        home: MapLibreMap(
-          controller: controller,
-          style: style,
-          options: const MapOptions(
-            initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
+        home: RepaintBoundary(
+          key: mapKey,
+          child: MapLibreMap(
+            controller: controller,
+            style: style,
+            options: const MapOptions(
+              initialCamera: MapCamera(center: LatLng(0, 0), zoom: 1),
+            ),
           ),
         ),
       ),
@@ -57,11 +63,34 @@ void main() {
     expect(cam.center.longitude, closeTo(-0.13, 0.5));
     expect(cam.zoom, closeTo(6, 0.5));
 
+    // THE assertion this test was missing. Everything above is true of a map
+    // that renders nothing: onReady completed, the camera round-tripped, and
+    // the Windows blank-map bug shipped green behind exactly that (CLAUDE.md
+    // §7). Pixels, not plumbing.
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await expectMapIsVisible(
+      tester,
+      mapKey,
+      reason:
+          'on Windows verify with the raster path or a harness PNG, never '
+          'a GDI screen grab — that shows the ANGLE texture as white even when '
+          'the map is fine',
+    );
+
     // Style is declarative: rebuilding with a new `style` must push it to the
     // native map without throwing, and the map must keep reporting a camera.
     await pumpWithStyle(liberty);
     await tester.pump();
     final after = await controller.camera.getCamera();
     expect(after.zoom, closeTo(6, 0.5));
+
+    // And the NEW style must draw too — a style swap that leaves a blank
+    // surface is the same silent failure one step later.
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await expectMapIsVisible(tester, mapKey);
   });
 }

@@ -193,12 +193,21 @@ Highest row count in the backlog, correctly last among the core stages.
 
 ### Stage 7 — Web parity + verification pass (no new API surface)
 
-- [ ] 7.1 Implement the stage-2 observer on `maplibre_flutter_web` (WASM core). **Check first:** as of
-      `cbfa220` the web tier already implements `MapLibreMapProjector` and `MapLibreStyleLayers`.
-- [ ] 7.2 Verify every stage 1–6 addition on the unverified native tiers (Linux, Windows, Android),
-      flipping 🧪 → ✅ only on evidence.
-- [ ] 7.3 Assert real content in tests, never "a frame came back" — non-blank pixels, expected colours,
-      a dumped PNG (CLAUDE.md §7).
+- [-] 7.1 **BLOCKED — no Emscripten toolchain on this machine** (`emcc` absent, no emsdk). Writing
+      the observer would add C++ to `src/web/` that cannot be compiled or run here, and the same
+      reasoning already kept the 6.1 filter and 6.4 feature state out of the WASM tier: an
+      unverified implementation is worse than an explicit gap, because it reads as working.
+      **What the web tier now returns instead of guessing:** `queryRenderedFeaturesJson` REFUSES a
+      filtered query (null) rather than silently returning unfiltered features;
+      `querySourceFeaturesJson`, the cluster helpers and `getFeatureStateJson` return null; the
+      feature-state mutators are no-ops. Unblocks with an emsdk install plus the `web-wasm` CI job.
+- [-] 7.2 **BLOCKED — no Linux, Windows or Android hardware available in this environment.** Every
+      stage 1-6 addition is implemented identically on all five `mbgl-core` tiers (they share one C
+      shim and one Dart core wrapper, and the tier files are byte-identical for these methods), and
+      all of it is verified on macOS. That is a compile-level guarantee, not a working one — flip
+      🧪 → ✅ only on a run. See `docs/cross-platform-continuation.md`.
+- [x] 7.3 `integration_test/pixel_assertions.dart` — `expectMapIsVisible`, applied to the macOS and
+      Windows tests. Web documents why a pixel assertion is impossible there rather than faking one.
 
 ### Stage 8 — SDK-shaped extras (Apple/Android shapes; gl-js has no vocabulary)
 
@@ -1069,4 +1078,30 @@ never existed.
   6 macOS integration tests (`macos_queries_test.dart`) green on hardware.
 
 **Stage 6 is closed.** 6.1-6.7 all implemented and verified on the reference tier.
+
+### 2026-08-01 — Stage 7 — two blocked, one done
+
+- **7.3 done.** The "a frame came back" assertion existed in exactly one place (the iOS test) and
+  nowhere else. It is now `integration_test/pixel_assertions.dart`, with two checks rather than one:
+  `nonBlankPixels` (is anything drawn) and `distinctColours` (is it a MAP, or one flat colour — a
+  background that painted while every tile failed passes the first check and fails the second).
+  Applied to `windows_map_test.dart`, which is the specific test CLAUDE.md §7 cites as having
+  shipped green over a blank map: everything it asserted — `onReady` completed, the camera
+  round-tripped — is true of a map rendering nothing. Also added once to `macos_camera_test.dart`,
+  so the other nine tests there can keep asserting engine state, which is what they are about.
+  Verified on macOS hardware.
+- **Web gets a comment, not an assertion.** The map there is a `<canvas>` in an `HtmlElementView` —
+  a platform view composited by the browser, not by Flutter — so `RenderRepaintBoundary.toImage`
+  captures the Flutter layer above it and comes back empty however well the map renders. A pixel
+  assertion would either fail on a working map or, with thresholds relaxed until it passed, prove
+  nothing. The reason is written into the test.
+- **7.1 blocked: no Emscripten toolchain here.** Writing the observer means C++ in `src/web/` that
+  cannot be compiled or run in this environment. That is the same judgement that kept the 6.1 filter
+  and 6.4 feature state out of the WASM tier — and there, rather than silently degrading, the web
+  tier now REFUSES a filtered query instead of returning unfiltered features, which is the one
+  failure a caller cannot see.
+- **7.2 blocked: no Linux, Windows or Android hardware.** Every stage 1-6 addition is implemented
+  identically on all five `mbgl-core` tiers — they share one C shim and one Dart core wrapper, and
+  the per-tier files are byte-identical for these methods — and all of it is verified on macOS. That
+  is a compile-level guarantee and nothing more. 🧪 → ✅ only on a run.
 
