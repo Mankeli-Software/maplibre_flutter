@@ -635,6 +635,13 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 
 ### Build system
 
+- **A new `extern "C"` entry point in `maplibre_flutter_core.cpp` must go AFTER the anonymous
+  namespace closes.** One opens at ~line 371 and does not close for another 900 lines, so a function
+  added "next to the code it relates to" silently gets internal linkage, is dead-stripped, and fails
+  at runtime with `dlsym: symbol not found` — while the header, the declaration and
+  `FFI_PLUGIN_EXPORT` all look right. `nm` showing the symbol absent *entirely* (not even mangled) is
+  the tell.
+
 - **`set_source_files_properties` is directory-scoped** and silently no-ops for a target defined
   in a submodule subdirectory. Use `target_compile_definitions`.
 - Upstream mbgl forces warnings-as-errors unconditionally on some arms; append the relaxing flag

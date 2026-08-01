@@ -479,4 +479,47 @@ void main() {
       expect(c.projectAll(const []), isNull);
     });
   });
+
+  // 8.1.
+  group('MapLibreSettings', () {
+    test('a tier with no cache reports FALSE rather than pretending', () {
+      MapLibreFlutterPlatform.instance = _FakePlatform();
+      // The base implementation returns false, and that is the point: silently
+      // doing nothing is how an app ships believing it has a tile cache.
+      expect(MapLibreSettings.configure(cachePath: '/tmp/x.db'), isFalse);
+      expect(MapLibreSettings.cachePath, isNull);
+    });
+
+    test('the call forwards every argument to the platform', () {
+      final platform = _RecordingSettingsPlatform();
+      MapLibreFlutterPlatform.instance = platform;
+      MapLibreSettings.configure(
+        cachePath: '/tmp/tiles.db',
+        maximumCacheBytes: 1024,
+        apiKey: 'secret',
+      );
+      expect(platform.lastCachePath, '/tmp/tiles.db');
+      expect(platform.lastMaxBytes, 1024);
+      expect(platform.lastApiKey, 'secret');
+    });
+  });
+}
+
+/// Records what MapLibreSettings passed down.
+class _RecordingSettingsPlatform extends _FakePlatform {
+  String? lastCachePath;
+  int? lastMaxBytes;
+  String? lastApiKey;
+
+  @override
+  bool configureResources({
+    String? cachePath,
+    int? maximumCacheBytes,
+    String? apiKey,
+  }) {
+    lastCachePath = cachePath;
+    lastMaxBytes = maximumCacheBytes;
+    lastApiKey = apiKey;
+    return true;
+  }
 }

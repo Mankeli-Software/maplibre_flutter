@@ -51,4 +51,23 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
   }) {
     throw UnimplementedError('createMap() has not been implemented.');
   }
+
+  /// Configures process-wide resources, before the first map exists.
+  ///
+  /// Returns false when the tier cannot do it, or when it is too late — see
+  /// `MapLibreSettings.configure`, which is the app-facing form and carries the
+  /// full explanation.
+  ///
+  /// Default: false. A tier that has no configurable cache must say so rather
+  /// than silently accepting the call, or an app cannot tell "configured" from
+  /// "ignored".
+  bool configureResources({
+    String? cachePath,
+    int? maximumCacheBytes,
+    String? apiKey,
+  }) => false;
+
+  /// The cache path in force, or null on a tier that has no cache. `:memory:`
+  /// means there IS no persistent cache.
+  String? get cachePath => null;
 }

@@ -68,6 +68,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -855,6 +856,28 @@ uint64_t takeProjState(MblMap *m, uint64_t generation,
   return m->projGeneration;
 }
 
+// The resource options every map and every file source is built with.
+//
+// One shared value, because mbgl keys its file-source cache on
+// `(type, ResourceOptions)` — two different cache paths mean two cache
+// databases and two connection pools. See mbl_configure in the header.
+std::mutex g_resourceMutex;
+mbgl::ResourceOptions &resourceOptionsLocked() {
+  static mbgl::ResourceOptions options = mbgl::ResourceOptions::Default();
+  return options;
+}
+
+// How many maps exist. mbl_configure refuses once this is non-zero: the file
+// sources are already built and shared by then, so a later change would apply
+// to nothing and silently look like it had.
+std::atomic<int> g_liveMaps{0};
+
+// A copy, so callers cannot mutate the shared value by accident.
+mbgl::ResourceOptions currentResourceOptions() {
+  std::lock_guard<std::mutex> lk(g_resourceMutex);
+  return resourceOptionsLocked().clone();
+}
+
 // Cap the desktop core's online tile-request concurrency. The non-Apple core uses
 // the curl HTTP source, which multiplexes mbgl's default 20 concurrent requests
 // onto one HTTP/2 connection; community tile servers (demotiles, OpenFreeMap)
@@ -874,7 +897,7 @@ void capDesktopRequestConcurrency() {
     }
   }
   if (auto fs = mbgl::FileSourceManager::get()->getFileSource(
-          mbgl::FileSourceType::Network, mbgl::ResourceOptions::Default(),
+          mbgl::FileSourceType::Network, currentResourceOptions(),
           mbgl::ClientOptions())) {
     fs->setProperty(mbgl::MAX_CONCURRENT_REQUESTS_KEY, maxRequests);
   }
@@ -911,7 +934,7 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                     .withMapMode(mbgl::MapMode::Static)
                     .withSize(mbgl::Size{width, height})
                     .withPixelRatio(pixelRatio),
-                mbgl::ResourceOptions::Default());
+                currentResourceOptions());
 
   m->frontend = &frontend;
   m->map = &map;
@@ -1190,7 +1213,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
                     .withMapMode(mbgl::MapMode::Continuous)
                     .withSize(mbgl::Size{width, height})
                     .withPixelRatio(pixelRatio),
-                mbgl::ResourceOptions::Default());
+                currentResourceOptions());
 
   m->frontend = &frontend;
   m->map = &map;
@@ -1278,12 +1301,52 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
 
 } // namespace
 
+int mbl_configure(const char *cache_path, uint64_t max_cache_bytes,
+                  const char *api_key) {
+  if (g_liveMaps.load(std::memory_order_relaxed) > 0) return 0;
+  std::lock_guard<std::mutex> lk(g_resourceMutex);
+  auto &options = resourceOptionsLocked();
+  if (cache_path != nullptr && *cache_path != '\0') {
+    // mbgl opens the database but will NOT create the directory holding it, and
+    // the failure surfaces as "unable to open database file" from a background
+    // thread — which reads as a corrupt cache rather than a missing folder.
+    std::error_code ec;
+    const std::filesystem::path path(cache_path);
+    if (path.has_parent_path()) {
+      std::filesystem::create_directories(path.parent_path(), ec);
+    }
+    options.withCachePath(std::string(cache_path));
+  }
+  if (max_cache_bytes > 0) {
+    options.withMaximumCacheSize(max_cache_bytes);
+  }
+  if (api_key != nullptr) {
+    options.withApiKey(std::string(api_key));
+  }
+  return 1;
+}
+
+char *mbl_get_cache_path(void) {
+  std::lock_guard<std::mutex> lk(g_resourceMutex);
+  // Not dupToHeap: that lives further down the file, and this is the only
+  // string this early. Same contract — heap, caller frees with mbl_string_free.
+  const auto &path = resourceOptionsLocked().cachePath();
+  char *out = static_cast<char *>(std::malloc(path.size() + 1));
+  if (out == nullptr) return nullptr;
+  std::memcpy(out, path.data(), path.size());
+  out[path.size()] = '\0';
+  return out;
+}
+
 MblMap *mbl_map_create(uint32_t width, uint32_t height, float pixel_ratio,
                        const char *style_uri, int continuous) {
   if (width == 0 || height == 0) {
     return nullptr;
   }
   auto *m = new MblMap();
+  // Counted so mbl_configure can refuse once file sources exist — a cache path
+  // set after the first map would apply to nothing and look like it had.
+  g_liveMaps.fetch_add(1, std::memory_order_relaxed);
   m->continuous = continuous != 0;
   const std::string style = style_uri != nullptr ? std::string(style_uri) : "";
   m->thread = std::thread(
@@ -3432,6 +3495,7 @@ void mbl_map_destroy(MblMap *m) {
   if (m == nullptr) {
     return;
   }
+  g_liveMaps.fetch_sub(1, std::memory_order_relaxed);
   // Before anything is torn down: stop the log observer's fan-out from reaching
   // this map, and clear the callback so an event already inside the render
   // thread finds nothing to call.

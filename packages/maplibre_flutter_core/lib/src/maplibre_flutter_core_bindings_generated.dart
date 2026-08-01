@@ -37,6 +37,18 @@ external void mbl_map_set_diagnostic_callback(
 );
 
 @ffi.Native<
+  ffi.Int Function(ffi.Pointer<ffi.Char>, ffi.Uint64, ffi.Pointer<ffi.Char>)
+>()
+external int mbl_configure(
+  ffi.Pointer<ffi.Char> cache_path,
+  int max_cache_bytes,
+  ffi.Pointer<ffi.Char> api_key,
+);
+
+@ffi.Native<ffi.Pointer<ffi.Char> Function()>()
+external ffi.Pointer<ffi.Char> mbl_get_cache_path();
+
+@ffi.Native<
   ffi.Pointer<MblMap> Function(
     ffi.Uint32,
     ffi.Uint32,

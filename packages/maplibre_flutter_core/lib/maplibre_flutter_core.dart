@@ -112,6 +112,58 @@ typedef CoreDiagnostic = ({
   String message,
 });
 
+/// Process-wide resource configuration — call BEFORE the first map.
+///
+/// mbgl caches file sources by `(type, ResourceOptions)`, so a per-map cache
+/// path or API key would mint a second cache database and a second connection
+/// pool per distinct value. Apple reached the same conclusion and shipped
+/// `MLNSettings` as a static configure-before-first-map surface; this mirrors
+/// it.
+abstract final class MapLibreCoreSettings {
+  /// Configures the tile cache and the API key.
+  ///
+  /// Returns false if a map already exists, in which case NOTHING was changed —
+  /// the file sources are built and shared by then, so a later change would
+  /// apply to nothing while looking like it had worked.
+  ///
+  /// [cachePath] is a SQLite database file; its parent directories are created.
+  /// **mbgl's own default is `:memory:`**, so without this every restart
+  /// re-downloads every tile — passing a real path is not an optimisation, it
+  /// is the difference between having a tile cache and not having one.
+  ///
+  /// [maximumCacheBytes] null keeps mbgl's default (50 MB). [apiKey] is
+  /// substituted for `{key}` in tile URLs, which is how MapTiler, Stadia and
+  /// friends authenticate.
+  static bool configure({
+    String? cachePath,
+    int? maximumCacheBytes,
+    String? apiKey,
+  }) => using((arena) {
+    return bindings.mbl_configure(
+          cachePath == null
+              ? ffi.nullptr
+              : cachePath.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+          maximumCacheBytes ?? 0,
+          apiKey == null
+              ? ffi.nullptr
+              : apiKey.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        ) !=
+        0;
+  });
+
+  /// The cache path actually in force — so a caller can report what it got
+  /// rather than what it asked for. `:memory:` means there is no cache.
+  static String get cachePath {
+    final out = bindings.mbl_get_cache_path();
+    if (out == ffi.nullptr) return '';
+    try {
+      return out.cast<Utf8>().toDartString();
+    } finally {
+      bindings.mbl_string_free(out);
+    }
+  }
+}
+
 /// A geographic point, as a record — this package has no Flutter dependency, so
 /// it cannot use the platform interface's `LatLng`.
 typedef CoreLatLng = ({double latitude, double longitude});

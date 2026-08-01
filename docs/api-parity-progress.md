@@ -211,11 +211,15 @@ Highest row count in the backlog, correctly last among the core stages.
 
 ### Stage 8 — SDK-shaped extras (Apple/Android shapes; gl-js has no vocabulary)
 
-- [ ] 8.1 **Persistent cache** — both render threads build the map with `ResourceOptions::Default()`,
-      whose `cachePath` is `":memory:"`, and `mbl_map_create` takes no cache path. There is no
-      persistent tile cache at all; this is worse than mbgl's own default.
-- [ ] 8.2 API key / auth headers / `transformRequest` — `ResourceOptions::withApiKey` is never called,
-      so today the only hatch is embedding a token in the tile URL template.
+- [x] 8.1 `MapLibreSettings.configure(cachePath:, maximumCacheBytes:, apiKey:)` — a process-wide,
+      before-the-first-map surface shaped after `MLNSettings`. Verified: mbgl creates and writes the
+      database at the configured path.
+- [~] 8.2 **API KEY DONE** (`MapLibreSettings.configure(apiKey:)` → `ResourceOptions::withApiKey`,
+      the `{key}` substitution every keyed provider uses). **Auth HEADERS and `transformRequest` are
+      NOT done** and are a much larger change: mbgl has no header hook on `ResourceOptions`, so it
+      means a custom `FileSource` registered through `FileSourceManager`, plus a Dart callback
+      crossing the FFI boundary on every resource request — a per-request `NativeCallable` on the
+      network path, which is a different order of risk from anything in this stage.
 - [ ] 8.3 Offline: `MLNOfflineStorage` (`:198`, `.packs` `:287`, `-addPackForRegion:` `:310`),
       `MLNOfflinePack`, `MLNTilePyramidOfflineRegion` / `MLNShapeOfflineRegion`.
 - [ ] 8.4 Snapshotter: `MLNMapSnapshotter` / `MLNMapSnapshotOptions` (`:70-141`). **Build-system note:**
@@ -1104,4 +1108,34 @@ never existed.
   identically on all five `mbgl-core` tiers — they share one C shim and one Dart core wrapper, and
   the per-tier files are byte-identical for these methods — and all of it is verified on macOS. That
   is a compile-level guarantee and nothing more. 🧪 → ✅ only on a run.
+
+### 2026-08-01 — Stage 8 (8.1, part of 8.2) — there is now a tile cache
+
+- **There was NO persistent cache, which is worse than mbgl's own default in effect.** Both render
+  threads built their `Map` with `ResourceOptions::Default()`, whose `cachePath` is `":memory:"`, and
+  `mbl_map_create` took no path — so every app restart re-downloaded every tile. Passing a real path
+  is not an optimisation; it is the difference between having a cache and not.
+- **Process-wide, and that is forced by mbgl, not a preference.** `FileSourceManager` keys its cache
+  on `(type, ResourceOptions)`, so a per-map cache path or API key mints a second cache database and
+  a second connection pool per distinct value. Apple shipped `MLNSettings` as a static
+  configure-before-first-map surface for exactly this reason; `MapLibreSettings` mirrors it.
+- **`mbl_configure` REFUSES once a map exists** and says so with a return value, rather than
+  accepting a change that would apply to nothing. Same reasoning for the tier default returning
+  false: a renderer with no configurable cache must say so, or an app cannot tell "configured" from
+  "ignored" and ships believing it has a cache.
+- **The directory is created.** mbgl opens the database but will not create the folder holding it,
+  and the failure surfaces from a background thread as "unable to open database file" — which reads
+  as a corrupt cache rather than a missing directory.
+- **The test asserts the FILE**, not the setting. A configured path that mbgl never opens is
+  indistinguishable from no cache at all, which is the exact state being fixed — so the test boots a
+  real map against demotiles and asserts the database exists and is non-empty.
+- **A build trap worth recording:** the new exported functions were placed inside an anonymous
+  namespace that opens at `maplibre_flutter_core.cpp:371` and does not close until ~1300. They got
+  internal linkage, were dead-stripped, and `dlsym` failed at runtime with the header, the
+  declaration and the `FFI_PLUGIN_EXPORT` all looking correct. `nm` showed the symbol absent
+  entirely — not even mangled — which is the tell. **A new `extern "C"` entry point must go after
+  that namespace closes**; the file is long enough that "at the end of the section I am editing" is
+  not the same place.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (75) / `format` clean /
+  ffigen regenerated.
 

@@ -112,6 +112,37 @@ typedef void (*MblDiagnosticCallback)(void *user, int32_t kind,
 FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
     MblMap *map, MblDiagnosticCallback callback, void *user);
 
+// --- Process-wide configuration ----------------------------------------------
+//
+// Tile cache, API key and tile-server URLs, set ONCE before the first map.
+//
+// **Why process-wide and not per-map.** mbgl caches file sources by
+// `(type, ResourceOptions)` — `FileSourceManager::getFileSource` returns the
+// same instance for equal options — so a per-map cache path or API key mints a
+// SECOND cache database and a second connection pool per distinct value. Apple
+// reached the same conclusion and shipped `MLNSettings` as a static
+// configure-before-first-map surface; this mirrors it.
+
+// Configure resources. Returns 1 on success, 0 if a map already exists (too
+// late — the file sources are built and shared by then).
+//
+// `cache_path`: the SQLite cache database. mbgl's own default is `:memory:`,
+// which means every restart re-downloads every tile — so passing a real path
+// here is not an optimisation, it is the difference between having a tile cache
+// and not. Parent directories are created. NULL leaves it unchanged.
+//
+// `max_cache_bytes`: 0 keeps mbgl's default (50 MB).
+//
+// `api_key`: substituted for `{key}` in tile URLs by mbgl's URL resolver, which
+// is how MapTiler, Stadia and friends authenticate. NULL leaves it unchanged.
+FFI_PLUGIN_EXPORT int mbl_configure(const char *cache_path,
+                                    uint64_t max_cache_bytes,
+                                    const char *api_key);
+
+// The cache path in force, as a heap string (mbl_string_free), so a caller can
+// report what it actually got rather than what it asked for.
+FFI_PLUGIN_EXPORT char *mbl_get_cache_path(void);
+
 // Create an off-screen map of `width`x`height` device pixels at `pixel_ratio`,
 // loading `style_uri` (URL, file path, or inline JSON). Spawns the render thread
 // and starts loading the style. Returns NULL on failure. Does not block on the

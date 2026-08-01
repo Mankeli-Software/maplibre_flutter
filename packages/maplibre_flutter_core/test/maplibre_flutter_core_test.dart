@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io' show sleep;
+import 'dart:io' show Directory, File, sleep;
 import 'dart:typed_data';
 
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
@@ -1207,6 +1207,80 @@ void main() {
           'a red frame must not read as blue — this is the assertion the '
           'old magenta-only tests could not make',
     );
+  });
+
+  // 8.1. mbgl's default cachePath is ":memory:", so before this there was no
+  // persistent tile cache at all — every restart re-downloaded every tile.
+  //
+  // Ordered first in this file on purpose: mbl_configure refuses once a map
+  // exists, so a test that runs after one has nothing to assert.
+  group('resource configuration', () {
+    test('defaults to :memory:, which is no cache at all', () {
+      // Documents the thing being fixed. If mbgl ever changes its default this
+      // fails, which is the right time to revisit the wording everywhere else.
+      expect(MapLibreCoreSettings.cachePath, anyOf(':memory:', ''));
+    });
+
+    test('a cache path is accepted and its directory is created', () {
+      final dir = Directory.systemTemp.createTempSync('mbl-cache-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      // A path two levels deep: mbgl opens the database but does NOT create the
+      // directory holding it, and the failure surfaces from a background thread
+      // as "unable to open database file" — which reads as a corrupt cache
+      // rather than a missing folder.
+      final path = '${dir.path}/nested/tiles.db';
+
+      expect(MapLibreCoreSettings.configure(cachePath: path), isTrue);
+      expect(MapLibreCoreSettings.cachePath, path);
+      expect(Directory('${dir.path}/nested').existsSync(), isTrue);
+    });
+
+    test('the cache DATABASE is created once a map fetches something', () async {
+      final dir = Directory.systemTemp.createTempSync('mbl-cache-live');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/tiles.db';
+      expect(MapLibreCoreSettings.configure(cachePath: path), isTrue);
+
+      final map = MapLibreCoreMap.create(
+        width: 128,
+        height: 128,
+        pixelRatio: 1,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 30)), isTrue);
+      await settle(map);
+
+      // The file existing is the assertion: a configured path that mbgl never
+      // opens is indistinguishable from no cache, and that is exactly the state
+      // this task was fixing.
+      expect(
+        File(path).existsSync(),
+        isTrue,
+        reason: 'mbgl must actually open the database at the configured path',
+      );
+      expect(File(path).lengthSync(), greaterThan(0));
+    });
+
+    test('configuring after a map exists is REFUSED, not silently ignored', () {
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: '{"version":8,"sources":{},"layers":[]}',
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+      final before = MapLibreCoreSettings.cachePath;
+      // The file sources are built and shared by now, so a change here would
+      // apply to nothing while looking like it worked.
+      expect(
+        MapLibreCoreSettings.configure(cachePath: '/tmp/too-late.db'),
+        isFalse,
+      );
+      expect(MapLibreCoreSettings.cachePath, before);
+    });
   });
 
   // 6.6. mbgl::Feature is a GeoJSONFeature PLUS source/sourceLayer/state, and

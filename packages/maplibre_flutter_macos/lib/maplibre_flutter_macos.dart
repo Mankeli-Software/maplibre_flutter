@@ -1,4 +1,5 @@
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
+import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
 
 import 'src/maplibre_flutter_macos_controller.dart';
 
@@ -29,4 +30,21 @@ class MapLibreFlutterMacos extends MapLibreFlutterPlatform {
     required String style,
     required MapOptions options,
   }) => MapLibreFlutterMacosController.create(style, options);
+
+  // 8.1/8.2: process-wide, before the first map. mbgl caches file sources by
+  // (type, ResourceOptions), so this cannot be per-map without minting a second
+  // cache database per distinct value.
+  @override
+  bool configureResources({
+    String? cachePath,
+    int? maximumCacheBytes,
+    String? apiKey,
+  }) => MapLibreCoreSettings.configure(
+    cachePath: cachePath,
+    maximumCacheBytes: maximumCacheBytes,
+    apiKey: apiKey,
+  );
+
+  @override
+  String? get cachePath => MapLibreCoreSettings.cachePath;
 }
