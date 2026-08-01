@@ -802,7 +802,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       return false; // no travel measured yet
     }
     if ((details.scale - 1.0).abs() > 0.02) return false;
-    if (details.rotation.abs() > _kRotateDeadzoneDegrees * math.pi / 180) {
+    // The UNWRAPPED total, exactly as the rotate latch below uses. Comparing
+    // `details.rotation` here read the raw wrapped value, which Flutter derives
+    // from atan2 differences — so a shove whose fingers are not perfectly
+    // parallel (i.e. every real one) reported a large rotation on its first
+    // update, tripped this deadzone and was never recognised as a shove.
+    if (_rotationAccum.abs() > _kRotateDeadzoneDegrees * math.pi / 180) {
       return false;
     }
     final ids = _pointers.keys.toList();

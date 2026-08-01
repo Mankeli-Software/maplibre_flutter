@@ -813,6 +813,46 @@ void main() {
     );
   });
 
+  testWidgets('a shove whose fingers are not perfectly parallel still tilts', (
+    tester,
+  ) async {
+    // The test above moves both fingers by IDENTICAL deltas, which pins
+    // ScaleUpdateDetails.rotation at exactly 0.0 — so it passed even while the
+    // shove deadzone compared the RAW WRAPPED rotation (CLAUDE.md §11: Flutter
+    // derives it from atan2 differences, so the first update of any two-finger
+    // gesture can report ~-6.2 rad). No real pair of fingers is parallel to the
+    // pixel, so that bug made shove-to-tilt unusable on a device while every
+    // test stayed green. One pixel of divergence is enough to catch it.
+    final c = await pumpGestureMap(tester);
+    const left = Offset(350, 400);
+    const right = Offset(450, 400);
+    final f1 = await tester.startGesture(left, pointer: 61);
+    final f2 = await tester.startGesture(right, pointer: 62);
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      final dy = -8.0 * i;
+      await f1.moveTo(left + Offset(0, dy - 1)); // 1px out of step
+      await f2.moveTo(right + Offset(0, dy));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pump();
+
+    expect(
+      c.pitchCalls,
+      isNotEmpty,
+      reason:
+          'a shove must tilt even when the fingers are a pixel out of step; '
+          'thresholding the raw wrapped rotation rejects it outright',
+    );
+    expect(
+      c.pitchCalls.fold<double>(0, (a, b) => a + b),
+      greaterThan(0),
+      reason: 'fingers moving UP must INCREASE pitch',
+    );
+  });
+
   testWidgets('a two-finger horizontal pan still pans and does NOT tilt', (
     tester,
   ) async {
