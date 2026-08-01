@@ -55,9 +55,11 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   absolute-direction assertions) have been run; **Android, Windows and Linux have not**. They are
   covered by a 120-assertion controller conformance suite and per-platform compile gates, which is
   not the same as working. → `docs/cross-platform-continuation.md`.
-- **3D models unrun off Metal.** Verified on macOS and iOS. The GL attribute-order defect is fixed
-  but the Mesa/llvmpipe run has not happened (needs docker); Vulkan has NO off-target verification
-  path at all until a lavapipe arm exists, and CLAUDE.md §11 forbids extrapolating to it.
+- **3D models: three of four backends verified.** macOS and iOS on Metal (hardware/Simulator), GL
+  under Mesa llvmpipe and Vulkan under Mesa lavapipe, both in
+  `packages/maplibre_flutter_core/docker` — all passing the full model_harness including the
+  four-face rotation sweep. Unrun: the Windows D3D11 present path and the Android GL ES arm, both
+  genuinely platform-bound.
 - **Web is the real gap.** Neither web tier implements projector / camera-tick / style-layers, so
   no markers, no engine layers, no typed style API there. The WASM shim's Size/DPR bug is fixed and
   a CI job now compiles the Emscripten module, but none of its C++ has been run.

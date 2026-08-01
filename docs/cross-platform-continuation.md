@@ -150,14 +150,21 @@ submodule. `model_harness` can now detect that class of defect (it sweeps a full
 and requires all four pinwheel faces, which a UV/normal swap collapses), proven in both
 directions on Metal.
 
-Still to run: the Mesa/llvmpipe GL loop via `docker/run-render-test.sh` (docker was not
-available on the machine that did this work), and a Vulkan/lavapipe arm for Windows,
-which has no off-target verification path at all.
+**Both software backends now verify from a Mac.** GL under Mesa/llvmpipe
+(`docker/run-render-test.sh`) and Vulkan under Mesa/lavapipe
+(`-DMAPLIBRE_FLUTTER_LINUX_VULKAN=ON`) both pass every model_harness check,
+including all four pinwheel faces across a full rotation — which is the assertion
+a UV/normal attribute mix-up cannot survive. So the GL edits are verified, and
+the Vulkan hunks are no longer "correct as written, never compiled": they
+compile, link and draw a lit textured animated model.
+
+Only the Windows PRESENT path (D3D11 shared handle) and the Android GL ES arm
+remain unrun, and both are genuinely platform-bound.
 
 - `patches/custom-geometry-lighting.patch` touches all four backends (Metal, GL,
   Vulkan, WebGPU). The Metal edits are verified; the GL edits are corrected but unrun;
-  Vulkan reads as correct from source and is unrun; the WebGPU hunks are dead code
-  (no arm enables that backend).
+  Vulkan is verified under lavapipe; the WebGPU hunks are dead code (no arm
+  enables that backend).
 - `patches/metal-custom-drawable-3d-depth.patch` is Metal-only by nature: the GL
   (`drawable_gl.cpp`) and Vulkan (`drawable.cpp`) drawables already honour `is3D`, so
   Linux / Windows / Android should not need it.
