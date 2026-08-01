@@ -2589,7 +2589,11 @@ char *mbl_map_get_source_ids(MblMap *m, uint32_t timeout_ms) {
   const bool ok = runOnRenderThread(m, timeout_ms, [m, result] {
     std::vector<mbgl::Value> ids;
     for (const auto *source : m->map->getStyle().getSources()) {
-      ids.emplace_back(source->getID());
+      // Same filter as the layer listing: AnnotationManager also injects its
+      // own SOURCE, "org.maplibre.annotations", on every style load.
+      const auto &id = source->getID();
+      if (id.rfind(kAnnotationLayerPrefix, 0) == 0) continue;
+      ids.emplace_back(id);
     }
     *result = styleValueToJson(mbgl::Value{ids});
   });

@@ -58,6 +58,103 @@ class MapLibreStyleController {
 
   MapLibreStyleLayers? _layers;
 
+  /// Sources this controller added, id -> the document to re-add.
+  ///
+  /// The DOCUMENT is kept, not just the id, because **mbgl sources cannot be
+  /// serialised**: `Layer` has `serialize()` and `Source` has nothing, so
+  /// `getSourceJson` can only report a descriptor (id, type, attribution,
+  /// volatile) — enough for [getSource]'s handle, not enough to re-add. So a
+  /// source is replayed from what the app passed, kept current by
+  /// [setSourceData], which is the only mutation this API offers on one.
+  ///
+  /// That is why sources and layers are retained by different mechanisms: each
+  /// uses the only faithful one available to it. It also means a retained
+  /// GeoJSON source is held twice, here and in the engine — one reason
+  /// [retainRuntimeStyle] is opt-in.
+  final Map<String, String> _addedSources = <String, String>{};
+
+  /// Layer ids this controller added, in the order it added them. Insertion
+  /// order matters: layers are re-added in it, so the app's own draw order
+  /// survives even though the snapshot cannot preserve `beforeId`.
+  final List<String> _addedLayerIds = <String>[];
+
+  /// Taken just before a style swap, replayed just after. Null when there is
+  /// nothing in flight.
+  ({List<(String, String)> sources, List<String> layers})? _snapshot;
+
+  /// Whether to carry app-added sources and layers across a style change.
+  ///
+  /// Set from [MapLibreMap.retainRuntimeStyle]; see that property for what this
+  /// costs you and when NOT to use it.
+  @internal
+  bool retainRuntimeStyle = false;
+
+  /// Records a layer id, so [snapshotForRetain] can serialise it.
+  void _trackLayer(String? id) {
+    if (id == null || id.isEmpty || _addedLayerIds.contains(id)) return;
+    _addedLayerIds.add(id);
+  }
+
+  /// Pulls the `id` out of a style-spec layer document.
+  static String? _layerIdOf(String json) {
+    try {
+      final decoded = jsonDecode(json);
+      return decoded is Map<String, Object?> ? decoded['id'] as String? : null;
+    } on FormatException {
+      // addLayerJson itself reports the parse failure; nothing to track.
+      return null;
+    }
+  }
+
+  /// Serialises every app-added source and layer as it stands RIGHT NOW.
+  ///
+  /// Called by the controller immediately before it pushes a new style — which
+  /// is the only moment this can work. The style-loaded event fires after
+  /// `Style::Impl::parse()` has already dropped everything, so a snapshot taken
+  /// then would find nothing; and replaying the JSON the app originally passed
+  /// to [addLayerJson] would silently lose every [setPaintProperty],
+  /// [setFilter] and [setLayerZoomRange] applied since. `Layer::serialize()`
+  /// returns the LIVE state, which is what makes this faithful rather than
+  /// approximate.
+  @internal
+  void snapshotForRetain() {
+    if (!retainRuntimeStyle || _layers == null) return;
+    // Sources come from what the app gave us (see [_addedSources]); only layers
+    // can be read back out of the engine.
+    final sources = [
+      for (final entry in _addedSources.entries) (entry.key, entry.value),
+    ];
+    final layers = <String>[];
+    for (final id in _addedLayerIds) {
+      final json = _layers?.getLayerJson(id);
+      if (json != null) layers.add(json);
+    }
+    _snapshot = (sources: sources, layers: layers);
+  }
+
+  /// Puts the snapshot back, once the new style has loaded.
+  @internal
+  void replayRetained() {
+    final snapshot = _snapshot;
+    _snapshot = null;
+    if (snapshot == null || _layers == null) return;
+    // Sources first: a layer referencing a source that is not there yet is
+    // rejected outright, and reports on controller.onError.
+    for (final (id, json) in snapshot.sources) {
+      _layers?.addSourceJson(id, json);
+    }
+    // Layers on TOP of the new document, in their original relative order.
+    // `beforeId` is deliberately not restored: it named a layer in the OUTGOING
+    // document, which may not exist in the incoming one, and an unresolvable
+    // beforeId is an error rather than a fallback. Sitting on top is the
+    // predictable choice; an app that needs its layers interleaved with the new
+    // basemap has to do that itself from onStyleLoaded, where it knows what the
+    // new document contains.
+    for (final json in snapshot.layers) {
+      _layers?.addLayerJson(json);
+    }
+  }
+
   /// Whether the bound renderer can draw engine layers at all. False before the
   /// map attaches, and on renderers without the capability — every method below
   /// is a no-op in that case, so feature-detecting is optional.
@@ -104,12 +201,16 @@ class MapLibreStyleController {
   // expression, anything the typed API above does not cover yet.
 
   /// Adds a style source under [id]. Throws [ArgumentError] on invalid JSON.
-  void addSourceJson(String id, String json) =>
-      _layers?.addSourceJson(id, json);
+  void addSourceJson(String id, String json) {
+    _addedSources[id] = json;
+    _layers?.addSourceJson(id, json);
+  }
 
   /// Adds a style layer; [beforeId] inserts beneath an existing layer.
-  void addLayerJson(String json, {String? beforeId}) =>
-      _layers?.addLayerJson(json, beforeId: beforeId);
+  void addLayerJson(String json, {String? beforeId}) {
+    _trackLayer(_layerIdOf(json));
+    _layers?.addLayerJson(json, beforeId: beforeId);
+  }
 
   /// Replaces a source's data — the cheap path for live datasets.
   ///
@@ -117,10 +218,29 @@ class MapLibreStyleController {
   /// that shape; this is the flat form underneath. Only a GeoJSON source can
   /// have its data replaced (mbgl has no setter on a vector or raster one), and
   /// asking for anything else reports on `controller.onError`.
-  void setSourceData(String sourceId, Object data) => _layers?.setSourceData(
-    sourceId,
-    data is String ? data : jsonEncode(encodeStyleJson(data)),
-  );
+  void setSourceData(String sourceId, Object data) {
+    final encoded = data is String ? data : jsonEncode(encodeStyleJson(data));
+    _rememberSourceData(sourceId, encoded);
+    _layers?.setSourceData(sourceId, encoded);
+  }
+
+  /// Folds a data replacement into the retained document.
+  ///
+  /// Without this a replay restores the data the source was CREATED with, which
+  /// on a live dataset means silently rewinding it — the worst kind of bug,
+  /// because the map still draws.
+  void _rememberSourceData(String sourceId, String data) {
+    final retained = _addedSources[sourceId];
+    if (retained == null) return;
+    try {
+      final decoded = jsonDecode(retained);
+      if (decoded is! Map<String, Object?>) return;
+      decoded['data'] = jsonDecode(data);
+      _addedSources[sourceId] = jsonEncode(decoded);
+    } on FormatException {
+      // Either document is already invalid; the engine call reports that.
+    }
+  }
 
   /// Replaces a geojson source's data.
   @Deprecated(
@@ -152,7 +272,11 @@ class MapLibreStyleController {
   /// The style's source ids — the read side [getSource] iterates.
   List<String> getSourceIds() => _layers?.getSourceIds() ?? const [];
 
-  void removeLayer(String id) => _layers?.removeLayer(id);
+  void removeLayer(String id) {
+    // Stop tracking FIRST, or a retained replay resurrects what the app removed.
+    _addedLayerIds.remove(id);
+    _layers?.removeLayer(id);
+  }
 
   // --- Per-property mutation --------------------------------------------------
   //
@@ -261,7 +385,10 @@ class MapLibreStyleController {
     }
   }
 
-  void removeSource(String id) => _layers?.removeSource(id);
+  void removeSource(String id) {
+    _addedSources.remove(id);
+    _layers?.removeSource(id);
+  }
 
   /// Registers an icon (raw premultiplied RGBA) for `icon-image`. See
   /// [addWidgetIcon] to build one from a Flutter widget.

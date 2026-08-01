@@ -36,6 +36,7 @@ class MapLibreMap extends StatefulWidget {
     this.onStyleLoaded,
     this.rotateGesturesEnabled = true,
     this.tiltGesturesEnabled = true,
+    this.retainRuntimeStyle = false,
   });
 
   /// The MapLibre style, in any of three forms:
@@ -50,7 +51,7 @@ class MapLibreMap extends StatefulWidget {
   ///
   /// **A style load drops every source and layer added through
   /// `controller.style`**, so re-apply them from [onStyleLoaded] rather than
-  /// after a delay.
+  /// after a delay — or set [retainRuntimeStyle] and let the widget do it.
   final String style;
 
   /// Flutter widgets glued to geographic points, composited above the map and
@@ -121,6 +122,32 @@ class MapLibreMap extends StatefulWidget {
   /// build are ignored; use the [controller] for runtime camera moves.
   final MapOptions options;
 
+  /// Carry app-added sources and layers across a style change.
+  ///
+  /// Off by default, which is the behaviour of every upstream binding: mbgl
+  /// drops the whole document on load, and gl-js, the Apple SDK
+  /// (`MLNStyle.h:32-36`) and the Android SDK all tell you to re-add from the
+  /// style-loaded event. [onStyleLoaded] is that event.
+  ///
+  /// Turn it on and the widget snapshots each source and layer **as it stands**
+  /// just before the swap — including every `setPaintProperty`, `setFilter` and
+  /// `setLayerZoomRange` applied since it was added — and re-adds them once the
+  /// new style is in, before [onStyleLoaded] fires.
+  ///
+  /// Two things to know before you rely on it:
+  ///
+  /// * **Do not also re-add from [onStyleLoaded].** Both will run, the second
+  ///   add fails, and the failure arrives on `controller.onError`. Pick one.
+  /// * **Layers land on top** of the new document, in the order you added them.
+  ///   `beforeId` is not restored, because it named a layer in the OUTGOING
+  ///   document that the incoming one need not contain. If your layers have to
+  ///   sit under the new basemap's labels, leave this off and place them
+  ///   yourself from [onStyleLoaded], where you know what the new document has.
+  ///
+  /// Runtime images and 3D models are retained by the engine either way — they
+  /// have no form in a style document, so nothing else could put them back.
+  final bool retainRuntimeStyle;
+
   @override
   State<MapLibreMap> createState() => _MapLibreMapState();
 }
@@ -145,6 +172,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
     _styleLoads = _controller.onStyleLoaded.listen((_) {
       if (mounted) widget.onStyleLoaded?.call();
     });
+    _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
     _attach = _controller.attach(
       styleUri: widget.style,
       options: widget.options,
@@ -215,15 +243,23 @@ class _MapLibreMapState extends State<MapLibreMap> {
       if (widget.controller == null) {
         _internalController = MapLibreMapController();
       }
+      // Only now is `_controller` safe to read: swapping a provided controller
+      // for none leaves BOTH null until the line above runs.
+      _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
       setState(() {
         _attach = _controller.attach(
           styleUri: widget.style,
           options: widget.options,
         );
       });
-    } else if (widget.style != oldWidget.style) {
-      // Declarative style: push the new style to the native map.
-      _controller.setStyle(widget.style);
+    } else {
+      // Sync the flag BEFORE the style push: flipping retainRuntimeStyle on in
+      // the same rebuild that changes the style should retain, not miss by one.
+      _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
+      if (widget.style != oldWidget.style) {
+        // Declarative style: push the new style to the native map.
+        _controller.setStyle(widget.style);
+      }
     }
     if (!identical(widget.models, oldWidget.models)) {
       // A style change drops custom layers, but the core re-adds retained models

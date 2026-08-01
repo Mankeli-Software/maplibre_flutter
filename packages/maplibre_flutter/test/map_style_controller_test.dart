@@ -18,8 +18,23 @@ class _RecordingLayers implements MapLibreStyleLayers {
 
   @override
   void addSourceJson(String id, String json) => sources[id] = json;
+
+  /// Layers by id, so getLayerJson can answer per-layer the way a real style
+  /// does. `layers` stays insertion-ordered for tests that assert order.
+  final Map<String, String> layersById = {};
+
+  /// Every beforeId the controller passed, in order.
+  final List<String?> beforeIds = [];
+
   @override
-  void addLayerJson(String json, {String? beforeId}) => layers.add(json);
+  void addLayerJson(String json, {String? beforeId}) {
+    layers.add(json);
+    beforeIds.add(beforeId);
+    final decoded = jsonDecode(json);
+    if (decoded is Map<String, Object?> && decoded['id'] is String) {
+      layersById[decoded['id']! as String] = json;
+    }
+  }
 
   /// Recorded source-data replacements.
   final List<({String sourceId, String data})> sourceData = [];
@@ -33,7 +48,8 @@ class _RecordingLayers implements MapLibreStyleLayers {
   }
 
   @override
-  String? getSourceJson(String sourceId) => sourceJsonResult;
+  String? getSourceJson(String sourceId) =>
+      sourceJsonResult ?? sources[sourceId];
 
   @override
   List<String>? getSourceIds() => sourceIdsResult;
@@ -41,7 +57,14 @@ class _RecordingLayers implements MapLibreStyleLayers {
   @override
   void setGeoJsonData(String sourceId, String geoJson) => lastData = geoJson;
   @override
-  void removeLayer(String id) => removedLayers.add(id);
+  void removeLayer(String id) {
+    removedLayers.add(id);
+    layersById.remove(id);
+    layers.removeWhere((json) {
+      final decoded = jsonDecode(json);
+      return decoded is Map<String, Object?> && decoded['id'] == id;
+    });
+  }
 
   /// Recorded per-property mutations, so a test can assert the exact JSON.
   final List<({String layerId, String name, String valueJson})> properties = [];
@@ -69,9 +92,14 @@ class _RecordingLayers implements MapLibreStyleLayers {
   List<String>? getLayerIds() => layerIdsResult;
 
   @override
-  String? getLayerJson(String layerId) => layerJsonResult;
+  String? getLayerJson(String layerId) =>
+      layerJsonResult ?? layersById[layerId];
   @override
-  void removeSource(String id) => removedSources.add(id);
+  void removeSource(String id) {
+    removedSources.add(id);
+    sources.remove(id);
+  }
+
   @override
   void addImage(
     String id,
@@ -759,6 +787,158 @@ void main() {
       ]);
       expect(MapLibreStyleController().listImages(), isEmpty);
       expect(MapLibreStyleController().hasImage('pin'), isNull);
+    });
+  });
+
+  // 5.9b. Off by default, matching every upstream binding: mbgl drops the whole
+  // document on load and gl-js/Apple/Android all require the app to re-add.
+  group('retainRuntimeStyle', () {
+    ({MapLibreStyleController style, _RecordingLayers platform}) build({
+      required bool retain,
+    }) {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      style.retainRuntimeStyle = retain;
+      return (style: style, platform: platform);
+    }
+
+    test('off: a style load takes the app\'s layers with it', () {
+      final (style: style, platform: platform) = build(retain: false);
+      style
+        ..addSourceJson('pts', '{"type":"geojson","data":{}}')
+        ..addLayerJson('{"id":"dots","type":"circle","source":"pts"}');
+
+      style.snapshotForRetain();
+      platform.layersById.clear();
+      platform.layers.clear();
+      platform.sources.clear();
+      style.replayRetained();
+
+      expect(platform.layers, isEmpty, reason: 'nothing to replay when off');
+      expect(platform.sources, isEmpty);
+    });
+
+    test('on: sources and layers come back, sources first', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style
+        ..addSourceJson('pts', '{"type":"geojson","data":{}}')
+        ..addLayerJson('{"id":"dots","type":"circle","source":"pts"}')
+        ..addLayerJson('{"id":"labels","type":"symbol","source":"pts"}');
+
+      style.snapshotForRetain();
+      // The style load: mbgl drops everything.
+      platform.layersById.clear();
+      platform.layers.clear();
+      platform.sources.clear();
+      style.replayRetained();
+
+      expect(
+        platform.sources.keys,
+        equals(['pts']),
+        reason:
+            'a layer whose source is missing is rejected outright, so the '
+            'source has to be back before the layer is re-added',
+      );
+      expect(
+        platform.layersById.keys,
+        equals(['dots', 'labels']),
+        reason: 'and in the order the app added them',
+      );
+    });
+
+    test('on: the snapshot is the LIVE state, not the original add', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style
+        ..addSourceJson('pts', '{"type":"geojson","data":{}}')
+        ..addLayerJson('{"id":"dots","type":"circle","source":"pts"}');
+
+      // A property changed AFTER the add. Replaying the add JSON would lose it
+      // silently — which is the whole reason this snapshots serialize() instead
+      // of remembering what the app passed in.
+      platform.layersById['dots'] =
+          '{"id":"dots","type":"circle","source":"pts",'
+          '"paint":{"circle-color":"#ff0000"}}';
+
+      style.snapshotForRetain();
+      platform.layersById.clear();
+      platform.layers.clear();
+      style.replayRetained();
+
+      expect(platform.layers.single, contains('#ff0000'));
+    });
+
+    test('on: a replay carries the LATEST source data, not the first', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style
+        ..addSourceJson(
+          'live',
+          '{"type":"geojson","data":{"type":"FeatureCollection",'
+              '"features":[]}}',
+        )
+        ..setSourceData('live', '{"type":"FeatureCollection","features":[1]}');
+
+      style.snapshotForRetain();
+      platform.sources.clear();
+      style.replayRetained();
+
+      // Restoring the data the source was CREATED with would silently rewind a
+      // live dataset — and the map would still draw, so nothing would look
+      // wrong.
+      expect(platform.sources['live'], contains('[1]'));
+    });
+
+    test('on: a removed layer stays removed', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style
+        ..addSourceJson('pts', '{"type":"geojson","data":{}}')
+        ..addLayerJson('{"id":"dots","type":"circle","source":"pts"}')
+        ..addLayerJson('{"id":"gone","type":"circle","source":"pts"}')
+        ..removeLayer('gone')
+        ..removeSource('pts');
+
+      style.snapshotForRetain();
+      platform.layersById.clear();
+      platform.layers.clear();
+      platform.sources.clear();
+      style.replayRetained();
+
+      // The classic failure of a replay cache that only ever grows.
+      expect(platform.layersById.keys, equals(['dots']));
+      expect(platform.sources, isEmpty, reason: 'the source was removed too');
+    });
+
+    test('on: beforeId is deliberately NOT restored', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style.addLayerJson(
+        '{"id":"dots","type":"circle","source":"pts"}',
+        beforeId: 'a-layer-in-the-outgoing-document',
+      );
+
+      style.snapshotForRetain();
+      platform.layersById.clear();
+      platform.layers.clear();
+      platform.beforeIds.clear();
+      style.replayRetained();
+
+      expect(
+        platform.beforeIds,
+        equals([null]),
+        reason:
+            'beforeId named a layer in the OUTGOING document; an '
+            'unresolvable one is an error, not a fallback, so the replay puts '
+            'the layer on top instead',
+      );
+    });
+
+    test('replaying twice does not double-add', () {
+      final (style: style, platform: platform) = build(retain: true);
+      style.addLayerJson('{"id":"dots","type":"circle","source":"pts"}');
+      style.snapshotForRetain();
+      platform.layers.clear();
+      style
+        ..replayRetained()
+        ..replayRetained();
+      expect(platform.layers.length, 1, reason: 'the snapshot is consumed');
     });
   });
 }

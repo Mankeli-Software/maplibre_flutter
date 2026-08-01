@@ -1169,6 +1169,26 @@ void main() {
     });
   }
 
+  test('getSourceIds omits mbgl\'s annotation source too', () async {
+    const inline =
+        '{'
+        '"version":8,'
+        '"sources":{"a":{"type":"geojson","data":{"type":"FeatureCollection",'
+        '"features":[]}}},'
+        '"layers":[]'
+        '}';
+    final map = MapLibreCoreMap.create(
+      width: 64,
+      height: 64,
+      pixelRatio: 1,
+      styleUri: inline,
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await settle(map);
+    expect(map.getSourceIds(), equals(<String>['a']));
+  });
+
   test(
     'getLayerIds reports the DOCUMENT, not mbgl\'s annotation plumbing',
     () async {

@@ -206,6 +206,18 @@ enum Scenario {
         'point_count, individual pins once zoomed in. Live widget count stays '
         'small however big the dataset is.',
   ),
+  retainRuntimeStyle(
+    'Style swap: keep my layers',
+    'A style load REPLACES the document, so every source and layer you added '
+        'goes with it — that is mbgl, and gl-js, Apple and Android all tell you '
+        'to re-add from the style-loaded event. Set '
+        'MapLibreMap.retainRuntimeStyle and the widget does it for you: it '
+        'snapshots each layer AS IT STANDS (the red recolour below is applied '
+        'after the add, and survives) and re-adds it once the new style is in. '
+        'Hit the Demotiles/Liberty toggle with the switch off, then on, and '
+        'compare. Engine ICONS and 3D models survive either way — they have no '
+        'form in a style document, so only the engine can put them back.',
+  ),
   styleForms(
     'Style: URL, document, asset',
     'The same widget property, `MapLibreMap.style`, given a style three ways: '
@@ -343,6 +355,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   /// Which of [_styleForms] the styleForms scenario is showing.
   int _styleFormIndex = 0;
+
+  /// Drives MapLibreMap.retainRuntimeStyle for the retainRuntimeStyle scenario.
+  bool _retainRuntimeStyle = false;
   final List<StreamSubscription<Object?>> _eventSubscriptions =
       <StreamSubscription<Object?>>[];
 
@@ -653,6 +668,45 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.capabilities:
         setState(() => _showCapabilities = true);
         _teardown.add(() => setState(() => _showCapabilities = false));
+
+      case Scenario.retainRuntimeStyle:
+        // A source and a layer added the ordinary way, then a property changed
+        // AFTER the add — that recolour is what proves the snapshot is the live
+        // state rather than a replay of the original addLayer call.
+        layers
+          ..addSource(
+            'retain-src',
+            GeoJsonSource(
+              data: GeoJsonData.featureCollection(
+                const GeoJsonFeatureCollection([
+                  GeoJsonFeature(geometry: GeoJsonPoint(_turku)),
+                  GeoJsonFeature(geometry: GeoJsonPoint(_stockholm)),
+                  GeoJsonFeature(geometry: GeoJsonPoint(_london)),
+                ]),
+              ),
+            ),
+          )
+          ..addLayer(
+            const CircleLayer(
+              id: 'retain-dots',
+              source: 'retain-src',
+              circleRadius: StyleValue(9),
+              circleColor: StyleValue(Color(0xFF2196F3)),
+            ),
+          )
+          // AFTER the add, on purpose: a replay of the original addLayer call
+          // would lose this, so red-not-blue after a style swap is the proof
+          // that the snapshot is the layer's LIVE state.
+          ..setPaintProperty(
+            'retain-dots',
+            'circle-color',
+            const Color(0xFFE53935),
+          );
+        _teardown.add(() {
+          layers
+            ..removeLayer('retain-dots')
+            ..removeSource('retain-src');
+        });
 
       case Scenario.styleForms:
         // The scenario OWNS the style while it is on screen, so entering it
@@ -1686,6 +1740,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.diagnostics:
       case Scenario.capabilities:
       case Scenario.styleForms:
+      case Scenario.retainRuntimeStyle:
       // And these are drawn by the engine from a .glb.
       case Scenario.models3d:
       case Scenario.models3dStress:
@@ -2165,6 +2220,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
                     zoom: 4.2,
                   ),
                 ),
+                retainRuntimeStyle: _retainRuntimeStyle,
                 markers: _buildMarkers(),
                 // Fires on EVERY style load, so a style swap re-applies the
                 // scenario the moment the new document is in — this replaced a
@@ -2394,6 +2450,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
           ],
           if (_scenario == Scenario.diagnostics)
             _mini('Break something again', Icons.bug_report, _breakSomething),
+          if (_scenario == Scenario.retainRuntimeStyle)
+            _mini(
+              _retainRuntimeStyle ? 'Retain: ON' : 'Retain: OFF',
+              _retainRuntimeStyle ? Icons.lock : Icons.lock_open,
+              () => setState(() => _retainRuntimeStyle = !_retainRuntimeStyle),
+            ),
           if (_scenario == Scenario.styleForms)
             _mini(
               'Form: ${_styleForms[_styleFormIndex].$1}',

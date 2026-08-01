@@ -242,6 +242,11 @@ class MapLibreMapController {
       }),
       events.onStyleLoaded.listen((_) {
         _styleHasLoaded = true;
+        // Replay before the app hears about the load, so an app listener that
+        // inspects the style sees the finished picture rather than a half-built
+        // one. (The engine has already replayed images and models by this point,
+        // for the same reason.)
+        style.replayRetained();
         if (!_styleLoads.isClosed) _styleLoads.add(null);
       }),
       events.onStyleImageMissing.listen((id) {
@@ -496,8 +501,12 @@ class MapLibreMapController {
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.
   @internal
-  Future<void> setStyle(String styleUri) async =>
-      _platform?.setStyle(await _resolveStyle(styleUri));
+  Future<void> setStyle(String styleUri) async {
+    // Snapshot BEFORE the swap. This is the only moment it can be taken: the
+    // style-loaded event fires after mbgl has already dropped everything.
+    style.snapshotForRetain();
+    await _platform?.setStyle(await _resolveStyle(styleUri));
+  }
 
   /// Reports the embedding view's size so the desktop texture tier can resize
   /// its off-screen surface. A no-op on the mobile/web tiers.

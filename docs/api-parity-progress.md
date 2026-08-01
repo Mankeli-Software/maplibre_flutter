@@ -161,10 +161,9 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 5.9a Runtime **images** survive a style load, in both render modes. Split from 5.9b below
       because only images are un-re-addable by the app: `Style::Impl::parse()` wipes them
       (`style_impl.cpp:104`) and an image has no form in a style document.
-- [ ] 5.9b Opt-in `MapLibreMap.retainRuntimeStyle` replaying app-added **sources and layers**.
-      Design settled (see the 5.9a run-log entry); deliberately NOT automatic — every upstream
-      binding requires the app to re-add from the style-loaded event, which we surfaced in 2.5, and
-      an automatic replay collides with an app that does re-add (double-add ⇒ `onError` noise).
+- [x] 5.9b Opt-in `MapLibreMap.retainRuntimeStyle` replaying app-added **sources and layers**.
+      Deliberately NOT automatic — every upstream binding requires the app to re-add from the
+      style-loaded event, and an automatic replay collides with an app that does.
 - [ ] 5.10 Demote `addPoints`/`setPoints`/`removePoints` to a clearly-named recipe — they have no
       upstream equivalent and currently read as spec API.
 - [ ] 5.11 Namespace model layers internally (`mbl:model:<id>`) inside the C shim, closing three live
@@ -858,4 +857,39 @@ never existed.
   through `onError`. It belongs behind an opt-in `MapLibreMap.retainRuntimeStyle`, which is what the
   spec recommends (row at `api-parity-binding-spec.md:2087`).
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (50) / `format` clean.
+
+### 2026-08-01 — Stage 5 (5.9b) — MapLibreMap.retainRuntimeStyle
+
+- **Off by default, and that is the parity-correct default.** mbgl drops the whole document on
+  load; gl-js, Apple (`MLNStyle.h:32-36`) and Android all tell the app to re-add from the
+  style-loaded event, which we surfaced in 2.5. Automatic replay would also double-add for any app
+  that follows that documented pattern, and the second add arrives as `onError` noise. So it is a
+  flag, and its dartdoc says "pick one" in as many words.
+- **Layers and sources are retained by DIFFERENT mechanisms, because mbgl only lets one of them
+  round-trip.** `Layer::serialize()` returns the live layer, so a layer is snapshotted out of the
+  engine immediately before the swap — which is what makes a `setPaintProperty` applied after the
+  add survive, where replaying the original `addLayer` call would silently lose it. **`Source` has
+  no `serialize()` at all**, so `mbl_map_get_source_json` can only ever return a descriptor (id,
+  type, attribution, volatile) — enough for 5.6's handle, useless for re-adding. Sources are
+  therefore replayed from the document the app passed, with `setSourceData` folding into it so a
+  replay carries the LATEST data. Restoring a live dataset's first data would rewind it silently,
+  and the map would still draw.
+  **Found by the integration test, not by the unit tests** — the fake returned whatever it was
+  handed, so the round-trip looked fine until a real engine answered with a descriptor.
+- **The snapshot has exactly one valid moment.** It is taken in `setStyle`, before the push: the
+  style-loaded event fires after `Style::Impl::parse()` has already dropped everything.
+- **`beforeId` is deliberately not restored.** It named a layer in the OUTGOING document, which the
+  incoming one need not contain, and an unresolvable `beforeId` is an error rather than a fallback.
+  Replayed layers land on top in insertion order; an app that needs interleaving does it itself
+  from `onStyleLoaded`, where it knows what the new document holds.
+- **`getSourceIds` leaked `org.maplibre.annotations`**, the same way `getLayersOrder` leaked the
+  annotation LAYER in 5.8 — AnnotationManager injects both. Filtered by the same prefix, tested.
+- **A `didUpdateWidget` crash caught in review, not by a test:** syncing the flag at the top of
+  `didUpdateWidget` dereferences `_controller` before the controller-swap branch creates the
+  internal one, so swapping a provided controller for none would have thrown. The sync now happens
+  inside each branch, after the controller is known good.
+- **Example app:** new `retainRuntimeStyle` scenario with an ON/OFF toggle and a layer recoloured
+  after its add, so the live-snapshot behaviour is visible rather than asserted.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (51) / `format` clean /
+  2 macOS integration tests (`macos_retain_style_test.dart`) green on hardware.
 

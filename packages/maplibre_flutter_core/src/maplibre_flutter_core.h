@@ -500,6 +500,14 @@ FFI_PLUGIN_EXPORT char *mbl_map_get_source_json(MblMap *map,
                                                 uint32_t timeout_ms);
 
 // The style's source ids, as a JSON array. Release with mbl_string_free.
+//
+// Like mbl_map_get_layer_ids, mbgl's own "org.maplibre.annotations" source is
+// omitted — AnnotationManager injects it on every style load.
+//
+// NOTE for callers building a replay: mbl_map_get_source_json returns a
+// DESCRIPTOR (id, type, attribution, volatile), not a style-spec document, and
+// cannot return one — mbgl's Source has no serialize() the way Layer does. A
+// source cannot be round-tripped through this ABI; keep the document you added.
 FFI_PLUGIN_EXPORT char *mbl_map_get_source_ids(MblMap *map,
                                                uint32_t timeout_ms);
 
