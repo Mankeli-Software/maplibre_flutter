@@ -220,8 +220,11 @@ Highest row count in the backlog, correctly last among the core stages.
       means a custom `FileSource` registered through `FileSourceManager`, plus a Dart callback
       crossing the FFI boundary on every resource request — a per-request `NativeCallable` on the
       network path, which is a different order of risk from anything in this stage.
-- [ ] 8.3 Offline: `MLNOfflineStorage` (`:198`, `.packs` `:287`, `-addPackForRegion:` `:310`),
-      `MLNOfflinePack`, `MLNTilePyramidOfflineRegion` / `MLNShapeOfflineRegion`.
+- [-] 8.3 **BLOCKED — the ABI works, the DOWNLOAD aborts the process.** A full C ABI and Dart
+      wrapper were written and compiled; create/list/delete round-trips a region definition
+      correctly, and then starting the download raises an uncaught `std::regex_error` from inside
+      mbgl and kills the process. Backed out rather than shipped. Full design, the decisions worth
+      keeping, and the three things to try next: `docs/offline-design.md`.
 - [x] 8.4 `MapLibreSnapshotter.take` / `.takeImage` over `MapSnapshotOptions` — a real off-screen
       render with no map on screen, verified on hardware.
 - [x] 8.5 `MapUserLocation` / `MapUserTrackingMode` / `UserLocationPuck`, fed by the app.
@@ -1321,4 +1324,26 @@ never existed.
   to model the map's OPAQUE gesture listener, because with Flutter's default `deferToChild` the
   assertion would have passed or failed for the wrong reason.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 5 unit tests.
+
+### 2026-08-01 — Stage 8 (8.3) — offline: designed, prototyped, backed out
+
+- **The ABI was not the hard part and it is written down.** Ids across the boundary rather than
+  handles (mbgl's mutators take an `OfflineRegion`, so the shim maps back); the progress observer in
+  a table rather than a capture (mbgl owns it and it outlives the call); observer cleared before
+  delete; and `requiredResourceCountIsPrecise` surfaced, because a progress bar built on
+  `completed/required` before mbgl has enumerated the pyramid jumps around. All in
+  `docs/offline-design.md`.
+- **The blocker: starting a download aborts the process** with an uncaught `std::regex_error` from
+  inside mbgl. Not our code — the shim contains no regex. `create → list → delete` passes and
+  round-trips the definition first, and removing the progress test does not avoid it, so it is
+  reached from the download itself.
+- **Backed out rather than landed behind a flag.** A crash on a background thread cannot be caught
+  by the app, so there is no defensive posture available to a caller — shipping
+  `createRegion` in that state would be handing someone a call that can kill their process. The tree
+  is green and the work is recorded.
+- **It did surface a real latent bug, which stayed:** the native test file deleted the temp directory
+  holding the configured cache path. That path is process-wide and `mbl_configure` refuses once a map
+  exists, so every later test pointed at a directory that was gone. The offline group was simply the
+  first thing running late enough to notice — the fragility predates it.
+- **Gates:** `test:native` green (77) after the revert.
 

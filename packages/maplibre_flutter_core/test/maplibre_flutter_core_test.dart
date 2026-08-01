@@ -1295,8 +1295,13 @@ void main() {
     });
 
     test('a cache path is accepted and its directory is created', () {
+      // NOT deleted on teardown. The cache path is process-wide and
+      // mbl_configure refuses once a map exists, so removing the directory
+      // leaves every later test — the offline group especially — pointing at a
+      // path that no longer exists ("unable to open database file"). A leaked
+      // temp dir per run is a far smaller problem than an order-dependent
+      // suite.
       final dir = Directory.systemTemp.createTempSync('mbl-cache-test');
-      addTearDown(() => dir.deleteSync(recursive: true));
       // A path two levels deep: mbgl opens the database but does NOT create the
       // directory holding it, and the failure surfaces from a background thread
       // as "unable to open database file" — which reads as a corrupt cache
@@ -1309,8 +1314,8 @@ void main() {
     });
 
     test('the cache DATABASE is created once a map fetches something', () async {
+      // Kept, for the same reason as above.
       final dir = Directory.systemTemp.createTempSync('mbl-cache-live');
-      addTearDown(() => dir.deleteSync(recursive: true));
       final path = '${dir.path}/tiles.db';
       expect(MapLibreCoreSettings.configure(cachePath: path), isTrue);
 
