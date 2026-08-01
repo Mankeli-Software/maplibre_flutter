@@ -12,6 +12,8 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapCameraConstraints,
         LatLng,
         LatLngBounds,
+        MapAttribution,
+        AttributionLink,
         MapCamera,
         MapCameraChangeReason,
         MapCameraChangeReasons,
@@ -30,6 +32,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 
 export 'geojson.dart';
 export 'src/absorb_pointer_signal.dart';
+export 'src/attribution_bar.dart';
 export 'src/map_style_controller.dart';
 export 'src/maplibre_map.dart';
 export 'src/settings.dart';

@@ -11,6 +11,7 @@ import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 
 import 'maplibre_map_controller.dart';
 import 'marker.dart';
+import 'attribution_bar.dart';
 import 'marker_overlay.dart';
 
 /// The public map widget.
@@ -37,6 +38,8 @@ class MapLibreMap extends StatefulWidget {
     this.rotateGesturesEnabled = true,
     this.tiltGesturesEnabled = true,
     this.retainRuntimeStyle = false,
+    this.showAttribution = true,
+    this.onAttributionTap,
   });
 
   /// The MapLibre style, in any of three forms:
@@ -159,6 +162,21 @@ class MapLibreMap extends StatefulWidget {
   /// have no form in a style document, so nothing else could put them back.
   final bool retainRuntimeStyle;
 
+  /// Draw the tile provider's required credit over the map. **On by default.**
+  ///
+  /// For most providers this is a licence condition rather than a nicety —
+  /// OpenStreetMap-derived tiles are ODbL and require visible credit. Turn it
+  /// off only when you are rendering the credit yourself from
+  /// `controller.style.getAttributions()`, not to tidy the screen.
+  final bool showAttribution;
+
+  /// Called with a URL when an attribution link is tapped.
+  ///
+  /// Null leaves the credit as plain text. Opening a URL needs `url_launcher`,
+  /// and a map package should not force that dependency on every app just to
+  /// render a credit line — so wiring it is one line in yours.
+  final ValueChanged<String>? onAttributionTap;
+
   @override
   State<MapLibreMap> createState() => _MapLibreMapState();
 }
@@ -172,6 +190,55 @@ class _MapLibreMapState extends State<MapLibreMap> {
   Future<void>? _attach;
   StreamSubscription<void>? _styleLoads;
 
+  /// What the current style's sources require be credited.
+  ///
+  /// Rebuilt from every style load rather than cached at attach: a style load
+  /// replaces every source, so the previous document's credits would linger
+  /// over a map that no longer uses its tiles — which is worse than showing
+  /// none, because it is wrong rather than missing.
+  List<MapAttribution> _attributions = const [];
+
+  Timer? _attributionRetry;
+
+  /// Re-reads the credits, retrying briefly because they arrive LATE.
+  ///
+  /// A source's attribution is usually not in the style document at all — it
+  /// comes from the TileJSON the source points at, which mbgl fetches after the
+  /// style has loaded. So reading once from `onStyleLoaded` finds nothing, and
+  /// the bar renders empty forever over a map that legally requires a credit.
+  /// Caught by an integration test against a real tile server; a fake style
+  /// with an inline attribution would never have shown it.
+  ///
+  /// Bounded, and stops at the first non-empty answer: within one style the
+  /// credits can appear but not vanish, so there is nothing to keep watching
+  /// for afterwards.
+  void _refreshAttributions() {
+    _attributionRetry?.cancel();
+    _attributionRetry = null;
+    if (!widget.showAttribution) return;
+    var attempts = 0;
+    void read() {
+      if (!mounted) return;
+      final next = _controller.style.getAttributions();
+      final unchanged =
+          next.length == _attributions.length &&
+          next.every(_attributions.contains);
+      if (!unchanged) setState(() => _attributions = next);
+      if (next.isNotEmpty || ++attempts > 40) {
+        _attributionRetry?.cancel();
+        _attributionRetry = null;
+      }
+    }
+
+    read();
+    if (_attributions.isEmpty) {
+      _attributionRetry = Timer.periodic(
+        const Duration(milliseconds: 250),
+        (_) => read(),
+      );
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -181,7 +248,9 @@ class _MapLibreMapState extends State<MapLibreMap> {
     // Subscribe BEFORE attaching: the first style load is the one an app most
     // wants to hear about, and it can complete before attach's future does.
     _styleLoads = _controller.onStyleLoaded.listen((_) {
-      if (mounted) widget.onStyleLoaded?.call();
+      if (!mounted) return;
+      _refreshAttributions();
+      widget.onStyleLoaded?.call();
     });
     _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
     _attach = _controller.attach(
@@ -281,6 +350,8 @@ class _MapLibreMapState extends State<MapLibreMap> {
 
   @override
   void dispose() {
+    _attributionRetry?.cancel();
+    _attributionRetry = null;
     _styleLoads?.cancel();
     _styleLoads = null;
     // Dispose the controller only if we created it; otherwise just tear down the
@@ -302,12 +373,25 @@ class _MapLibreMapState extends State<MapLibreMap> {
             _controller.renderHandle == null) {
           return const SizedBox.shrink();
         }
-        return _MapEmbed(
+        final embed = _MapEmbed(
           controller: _controller,
           markers: widget.markers,
           onTap: widget.onTap,
           rotateGesturesEnabled: widget.rotateGesturesEnabled,
           tiltGesturesEnabled: widget.tiltGesturesEnabled,
+        );
+        if (!widget.showAttribution) return embed;
+        // ABOVE the marker overlay: a credit hidden behind a cluster of pins is
+        // not displayed, and "displayed" is the licence condition.
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            embed,
+            MapLibreAttributionBar(
+              attributions: _attributions,
+              onLinkTap: widget.onAttributionTap,
+            ),
+          ],
         );
       },
     );

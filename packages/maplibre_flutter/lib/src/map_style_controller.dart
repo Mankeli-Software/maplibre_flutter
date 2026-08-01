@@ -665,6 +665,32 @@ class MapLibreStyleController {
     return _parseFeatures(json);
   }
 
+  /// Every attribution the current style's sources require.
+  ///
+  /// **Usually a legal obligation.** OpenStreetMap-derived tiles are ODbL,
+  /// which requires visible credit, and most commercial providers say the same
+  /// in their terms — so `MapLibreMap.showAttribution` defaults to true and
+  /// this is what it renders. Reading the strings is not displaying them.
+  ///
+  /// Deduplicated: several sources in one style routinely carry the identical
+  /// credit, and showing it three times is worse than showing it once.
+  ///
+  /// **Re-read it after every style load.** A style load replaces every source,
+  /// so a list cached at attach goes stale the moment `MapLibreMap.style`
+  /// changes — which is why the widget rebuilds this from `onStyleLoaded`
+  /// rather than holding it.
+  List<MapAttribution> getAttributions() {
+    final seen = <String>{};
+    final out = <MapAttribution>[];
+    for (final id in getSourceIds()) {
+      final html = getSource(id)?.attribution;
+      if (html == null || html.trim().isEmpty) continue;
+      if (!seen.add(html)) continue;
+      out.add(MapAttribution.parse(html));
+    }
+    return out;
+  }
+
   // --- Clusters ---------------------------------------------------------------
   //
   // The three supercluster questions. Every one takes the integer `cluster_id`

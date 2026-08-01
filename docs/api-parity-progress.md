@@ -227,8 +227,9 @@ Highest row count in the backlog, correctly last among the core stages.
       tiers need a CMake change, not just a C ABI one. `mbl_map_write_png` already exists and is
       wrapped in Dart but is exposed on no public controller.
 - [ ] 8.5 Location component: `MLNUserLocation`, `MLNLocationManager`, `MLNUserTrackingMode`.
-- [ ] 8.6 Attribution — rendered on the map. **Legal obligation** for many tile providers, and we
-      render none; `getSource` cannot read the strings back either.
+- [x] 8.6 Attribution read from every source, parsed into text + links, and rendered over the map by
+      `MapLibreAttributionBar` — **on by default**, because for most providers this is a licence
+      condition.
 - [ ] 8.7 Marker `offset` and `zIndex` (gl-js `Marker` has both; ours has only `alignment`).
 - [x] 8.8 `MapOptions` carries `minZoom` / `maxZoom` / `minPitch` / `maxPitch` / `maxBounds`, applied
       before `onReady` completes. `constrainMode` deliberately NOT exposed — see the run log.
@@ -1187,4 +1188,29 @@ never existed.
   went green, it was removed and a comment in `maplibre_map_test.dart` says why. The map-side change
   is covered by the stand-in (wired identically) and by the example app; the anomaly needs a look
   with the real widget before that gap is closed.
+
+### 2026-08-01 — Stage 8 (8.6) — attribution, and a bug only a real tile server could show
+
+- **No new C ABI.** `sourceToJson` already carried `attribution` for the 5.6 handle, so
+  `getAttributions()` composes over `getSourceIds` + `getSource` and deduplicates — several sources
+  in one style routinely carry the identical credit.
+- **The credit arrives AFTER `onStyleLoaded`, and reading once showed nothing.** A source's
+  attribution is usually not in the style document at all; it comes from the TileJSON the source
+  points at, which mbgl fetches after the style loads. The first version refreshed on
+  `onStyleLoaded` and rendered an empty bar forever over a map that legally required a credit.
+  **A fake style with an inline attribution would never have caught this** — it took an integration
+  test against OpenFreeMap Liberty, which is exactly the "reading it is not displaying it" failure
+  the row was written about. Now a bounded retry that stops at the first non-empty answer, since
+  within one style credits can appear but not vanish.
+- **Parsing is a small hand-rolled scan, not an HTML dependency.** The fragments in practice are
+  anchors and text; taking on an HTML parser to render a credit line would be a poor trade. It
+  degrades toward showing TOO MUCH — malformed markup keeps its words — because a credit that
+  renders as nothing is a licence breach, and that direction is tested.
+- **Links are not opened for you.** That needs `url_launcher`, and a map package should not force
+  that dependency on every app to render a credit; pass `onAttributionTap` and the labels become
+  tappable.
+- **`showAttribution: false` still lets you READ the strings.** The opt-out is about who renders
+  them, not about hiding them, and the dartdoc says so in those words.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 9 unit tests / 2 macOS
+  integration tests against a real OSM-derived server.
 

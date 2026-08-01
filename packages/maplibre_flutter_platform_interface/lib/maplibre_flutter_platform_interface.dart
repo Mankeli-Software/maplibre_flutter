@@ -8,6 +8,7 @@ export 'src/camera_options.dart';
 export 'src/capabilities.dart';
 export 'src/fly_animation.dart';
 export 'src/gesture_handler.dart';
+export 'src/attribution.dart';
 export 'src/lat_lng.dart';
 export 'src/lat_lng_bounds.dart';
 export 'src/map_events.dart';
