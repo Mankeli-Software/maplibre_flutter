@@ -83,6 +83,14 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   engine identically. Needs an issue + PR on `maplibre-native` and a PR on `maplibre-gl-js`
   (mirror written, untested).
   → `docs/upstream-text-centring/`.
+- **Upstream PR not opened** for the Simulator stencil patch we carry
+  (`patches/metal-simulator-stencil-attachment.patch`). mbgl's offscreen Metal renderable never
+  attaches the stencil buffer under `TARGET_OS_SIMULATOR`, so every stencil test passes and tile
+  clipping masks stop clipping — silently, with no Metal validation error. Affects every consumer
+  rendering offscreen Metal on the Simulator. Needs an issue + PR on `maplibre-native`; no gl-js
+  mirror (Metal-specific). The one gap in the submission is a committed test — the defect cannot
+  execute on macOS, so only a forced reproduction proves it.
+  → `docs/upstream-simulator-stencil/`.
 - ~~Known failing test: `"pinch zoom freezes its anchor…"`~~ — FIXED 2026-07-31, and it was never
   a stale test: two anchor fixes had collided and left a live touch bug where a two-finger pinch
   anchored on whichever finger moved last. `melos run test` had been red because of it, and
@@ -446,6 +454,7 @@ into `maplibre_flutter_core.dll`, so there are no runtime DLLs to bundle.
 | `FEATURE_MATRIX.md` | Per-feature × per-platform parity backlog. |
 | `docs/building-from-source.md` | How consumers build the engine today, and why prebuilts aren't live yet. |
 | `docs/upstream-text-centring/` | An upstream MapLibre defect we patch: centre-anchored text is not centred. Evidence images, measurements, and the **TODO to open the upstream PRs**. |
+| `docs/upstream-simulator-stencil/` | An upstream MapLibre defect we patch: the offscreen Metal renderable never attaches the stencil buffer on the iOS Simulator, so tile clipping masks stop clipping. Evidence images, measurements, and the **TODO to open the upstream PR**. |
 | `docs/typed-style-api.md` | Design of the generated typed style API (built). |
 | `docs/experimental-web-core-wasm.md` | mbgl-core → WASM: status, build steps, what's left. |
 | `docs/3d-models-research.md` | How 3D models work in MapLibre; the implementation plan. |

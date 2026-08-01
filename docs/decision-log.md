@@ -1826,7 +1826,8 @@ stencil skip and the `texture2d` combined format) and rendering Liberty at z14:
 **The fix**: `patches/metal-simulator-stencil-attachment.patch`, marker `MBL_SIM_STENCIL_ATTACHMENT`
 — attach the combined depth texture as the stencil attachment when no separate stencil texture
 exists. Simulator-only by construction. Verified to apply to a pristine submodule.
-**Upstream-PR candidate**, alongside the text-centring patch.
+**Upstream-PR candidate**, alongside the text-centring patch — written up with evidence images,
+measurements and the submission TODO in `docs/upstream-simulator-stencil/`.
 
 **Not from this branch, and worth being precise about why:** the submodule pin is byte-identical
 between `main` and `HEAD` (`git diff main...HEAD -- third_party/maplibre-native` is empty) and no
