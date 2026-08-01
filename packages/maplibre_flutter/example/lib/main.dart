@@ -106,6 +106,16 @@ enum Scenario {
         'each city, and a dashed LineLayer route. Data-driven styling with no '
         'JSON in sight.',
   ),
+  geojsonFeatures(
+    'Typed GeoJSON + queries',
+    'A FeatureCollection built from GeoJsonPolygon / GeoJsonLineString / '
+        'GeoJsonPoint — no JSON strings — each carrying an id and properties. '
+        'TAP ANYWHERE: queryRenderedFeatures reports what the engine drew '
+        'there, with full geometry and the feature id. Tap the shaded region '
+        'or the route to see a polygon and a line come back; both used to be '
+        'dropped silently, so a fill or line layer answered every query with '
+        'nothing.',
+  ),
   hybrid(
     'Hybrid: animated + 50k',
     'All 50k live in the engine, clustered there. queryRenderedFeatures asks '
@@ -191,6 +201,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   Scenario _scenario = Scenario.interaction;
 
+  /// How to undo whatever the current scenario added, in reverse order.
+  ///
+  /// Each setup path appends its own cleanup, so teardown removes exactly what
+  /// exists — see the note in [_applyScenario].
+  final List<void Function()> _teardown = <void Function()>[];
+
   // Interaction scenario state.
   LatLng _draggable = const LatLng(48.8566, 2.3522);
   final List<LatLng> _dropped = <LatLng>[];
@@ -208,6 +224,20 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   // Hybrid state: what the engine reports drawing, promoted to real widgets.
   List<QueriedFeature> _liveFeatures = const [];
+
+  // Typed-GeoJSON scenario: whatever the last tap found under the finger, and
+  // the screen point it was found at (see [_queryAtTap] for why that has to be
+  // captured by hand today).
+  List<QueriedFeature> _tapped = const [];
+  LatLng? _tappedAt;
+  Offset? _lastPointer;
+
+  // Live engine diagnostics. Kept short — this is a demo, not a log viewer.
+  final List<String> _diagnostics = <String>[];
+  bool _showDiagnostics = false;
+  int _styleLoadCount = 0;
+  final List<StreamSubscription<Object?>> _eventSubscriptions =
+      <StreamSubscription<Object?>>[];
 
   /// The dataset every engine scenario draws. Deterministic, so runs compare.
   static List<LatLng> _dataset(int count) {
@@ -336,6 +366,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
   @override
   void initState() {
     super.initState();
+    // Subscribe BEFORE the map is built. The engine's most useful report is a
+    // first style load that fails, and that happens during creation — the
+    // controller's streams are live from construction precisely so this works.
+    _eventSubscriptions.addAll([
+      _controller.onError.listen((error) => _logDiagnostic('$error')),
+      _controller.onStyleImageMissing.listen(
+        (id) => _logDiagnostic('style image missing: $id'),
+      ),
+    ]);
     _controller.onReady.then((_) async {
       if (!mounted) return;
       setState(() => _ready = true);
@@ -343,8 +382,21 @@ class _MapDemoPageState extends State<MapDemoPage> {
     });
   }
 
+  /// Appends one engine report to the on-screen list.
+  void _logDiagnostic(String line) {
+    if (!mounted) return;
+    setState(() {
+      _diagnostics.insert(0, line);
+      if (_diagnostics.length > 12) _diagnostics.removeLast();
+      _showDiagnostics = true;
+    });
+  }
+
   @override
   void dispose() {
+    for (final subscription in _eventSubscriptions) {
+      subscription.cancel();
+    }
     _controller.onCameraChanged?.removeListener(_onCameraChangedForHybrid);
     _trailingQuery?.cancel();
     _driveTicker
@@ -372,24 +424,24 @@ class _MapDemoPageState extends State<MapDemoPage> {
     if (!_ready) return;
     final layers = _controller.layers;
 
-    // Clear everything any scenario might have added.
+    // Clear everything the PREVIOUS scenario added — exactly that, and nothing
+    // else.
+    //
+    // This used to be a blanket list of every id any scenario might have used,
+    // fired unconditionally. That was invisible until `controller.onError`
+    // existed: now each removal of something that was never added reports a
+    // MapCommandError, and a scenario switch produced seven of them. Removing
+    // optimistically is a habit an error channel immediately makes untenable,
+    // which is a fair advertisement for having one.
     _controller.onCameraChanged?.removeListener(_onCameraChangedForHybrid);
     _trailingQuery?.cancel();
     _stopDriving();
     _stopStress();
     _removeModel();
-    // Every layer first, THEN the source: mbgl refuses to remove a source while
-    // any layer still references it ("Source 'bulk' is in use, cannot remove").
-    layers
-      ..removeLayer('bulk-icons')
-      ..removePoints('bulk')
-      ..removeSource('bulk')
-      // The typed-API scenario's own ids.
-      ..removeLayer('typed-labels')
-      ..removeLayer('typed-circles')
-      ..removeLayer('typed-route')
-      ..removeSource('typed')
-      ..removeSource('typed-route');
+    for (final undo in _teardown.reversed) {
+      undo();
+    }
+    _teardown.clear();
     setState(() {
       _liveFeatures = const [];
       _widgetPoints = const [];
@@ -422,6 +474,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
           _dataset(_engineCounts[_engineCountIndex]),
           radius: 3,
         );
+        _teardown.add(() => layers.removePoints('bulk'));
 
       case Scenario.engineClusters:
         layers.addPoints(
@@ -431,9 +484,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
           radius: 4,
           clusterTextFont: _safeFont,
         );
+        _teardown.add(() => layers.removePoints('bulk'));
 
       case Scenario.typedStyle:
         _applyTypedStyle();
+
+      case Scenario.geojsonFeatures:
+        _applyGeoJsonFeatures();
 
       case Scenario.models3d:
         await _placeModel();
@@ -449,6 +506,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
         await _applyEngineIconsFlat();
 
       case Scenario.hybrid:
+        _teardown.add(() => layers.removePoints('bulk'));
         layers.addPoints(
           'bulk',
           _dataset(_engineCounts[_engineCountIndex]),
@@ -464,6 +522,213 @@ class _MapDemoPageState extends State<MapDemoPage> {
     }
   }
 
+  /// Typed GeoJSON on the way in, typed features on the way out.
+  ///
+  /// Everything the engine draws here is built from the value types in
+  /// `package:maplibre_flutter/geojson.dart` — a [GeoJsonPolygon], a
+  /// [GeoJsonLineString] and three [GeoJsonPoint]s, each wrapped in a
+  /// [GeoJsonFeature] with an `id` and `properties`, collected into a
+  /// [GeoJsonFeatureCollection] and handed over as
+  /// `GeoJsonData.featureCollection(...)`. No JSON string is written anywhere,
+  /// and the `[lng, lat]` flip happens once, inside the types.
+  void _applyGeoJsonFeatures() {
+    final layers = _controller.layers;
+    _teardown.add(() {
+      layers
+        ..removePoints('gj-sensors')
+        ..removeLayer('gj-buoys-dots')
+        ..removeSource('gj-buoys')
+        ..removeLayer('gj-cities-labels')
+        ..removeLayer('gj-cities-dots')
+        ..removeLayer('gj-route-line')
+        ..removeLayer('gj-region-fill')
+        ..removeSource('gj-cities')
+        ..removeSource('gj-route')
+        ..removeSource('gj-region');
+      setState(() {
+        _tapped = const [];
+        _tappedAt = null;
+      });
+    });
+
+    // An asymmetric region: it must be obvious which corner is which, so a
+    // mirrored axis would be visible rather than hiding behind symmetry.
+    const region = GeoJsonFeature(
+      id: 'gulf-of-bothnia',
+      geometry: GeoJsonPolygon([
+        [
+          LatLng(60.0, 18.0),
+          LatLng(60.0, 25.0),
+          LatLng(66.0, 25.0),
+          LatLng(66.0, 18.0),
+          LatLng(60.0, 18.0),
+        ],
+      ]),
+      properties: {'name': 'Gulf of Bothnia', 'kind': 'region'},
+    );
+
+    const route = GeoJsonFeature(
+      id: 'route-e18',
+      geometry: GeoJsonLineString([_stockholm, _turku, LatLng(62.24, 25.75)]),
+      properties: {'name': 'Stockholm to Jyvaskyla', 'kind': 'route'},
+    );
+
+    final cities = <GeoJsonFeature>[
+      const GeoJsonFeature(
+        id: 'city-turku',
+        geometry: GeoJsonPoint(_turku),
+        properties: {'name': 'Turku', 'kind': 'city', 'population': 200000},
+      ),
+      const GeoJsonFeature(
+        id: 'city-stockholm',
+        geometry: GeoJsonPoint(_stockholm),
+        properties: {'name': 'Stockholm', 'kind': 'city', 'population': 980000},
+      ),
+      const GeoJsonFeature(
+        id: 'city-jyvaskyla',
+        geometry: GeoJsonPoint(LatLng(62.24, 25.75)),
+        properties: {'name': 'Jyvaskyla', 'kind': 'city', 'population': 145000},
+      ),
+    ];
+
+    // One source per geometry family, because a fill, a line and a circle layer
+    // want different data — but all three from the same typed constructors.
+    layers
+      ..addSource('gj-region', GeoJsonSource(data: GeoJsonData.feature(region)))
+      ..addSource('gj-route', GeoJsonSource(data: GeoJsonData.feature(route)))
+      ..addSource(
+        'gj-cities',
+        GeoJsonSource(
+          data: GeoJsonData.featureCollection(GeoJsonFeatureCollection(cities)),
+        ),
+      )
+      ..addLayer(
+        const FillLayer(
+          id: 'gj-region-fill',
+          source: 'gj-region',
+          fillColor: StyleValue(Color(0xFF7E57C2)),
+          fillOpacity: StyleValue(0.25),
+          fillOutlineColor: StyleValue(Color(0xFF4527A0)),
+        ),
+      )
+      ..addLayer(
+        const LineLayer(
+          id: 'gj-route-line',
+          source: 'gj-route',
+          lineColor: StyleValue(Color(0xFFEF6C00)),
+          lineWidth: StyleValue(4),
+          lineCap: StyleValue(LineCap.round),
+          lineJoin: StyleValue(LineJoin.round),
+        ),
+      )
+      // Radius driven by a property that came in through the typed feature —
+      // data-driven styling with the data authored in Dart.
+      ..addLayer(
+        CircleLayer(
+          id: 'gj-cities-dots',
+          source: 'gj-cities',
+          // Radius from a property that came in through the typed feature —
+          // data-driven styling with the data authored in Dart, not JSON.
+          circleRadius: Expr.interpolate(
+            Expr.raw(['linear']),
+            Expr.get('population'),
+            145000,
+            7,
+            980000,
+            18,
+          ),
+          circleColor: const StyleValue(Color(0xFF00897B)),
+          circleStrokeWidth: const StyleValue(2),
+          circleStrokeColor: const StyleValue(Color(0xFFFFFFFF)),
+        ),
+      );
+    // A MULTI geometry, to show the sealed hierarchy is complete and that
+    // multi-part features round-trip as well as simple ones.
+    layers
+      ..addSource(
+        'gj-buoys',
+        GeoJsonSource(
+          data: GeoJsonData.feature(
+            const GeoJsonFeature(
+              id: 'buoys',
+              geometry: GeoJsonMultiPoint([
+                LatLng(61.0, 20.0),
+                LatLng(62.5, 21.0),
+                LatLng(64.0, 22.5),
+              ]),
+              properties: {'name': 'Channel buoys', 'kind': 'buoy'},
+            ),
+          ),
+        ),
+      )
+      ..addLayer(
+        const CircleLayer(
+          id: 'gj-buoys-dots',
+          source: 'gj-buoys',
+          circleRadius: StyleValue(5),
+          circleColor: StyleValue(Color(0xFFFDD835)),
+          circleStrokeWidth: StyleValue(1),
+          circleStrokeColor: StyleValue(Color(0xFF616161)),
+        ),
+      );
+
+    // And the OTHER way of getting per-point properties in: addPoints now takes
+    // them, so a recipe-built layer can carry data-driven attributes too. Query
+    // one of these and its properties come back with it.
+    layers.addPoints(
+      'gj-sensors',
+      const [LatLng(63.0, 19.5), LatLng(65.0, 24.0)],
+      properties: const [
+        {'name': 'Sensor A', 'kind': 'sensor', 'reading': 4.2},
+        {'name': 'Sensor B', 'kind': 'sensor', 'reading': 7.9},
+      ],
+      radius: 6,
+      color: const Color(0xFFD81B60),
+    );
+
+    layers.addLayer(
+      SymbolLayer(
+        id: 'gj-cities-labels',
+        source: 'gj-cities',
+        textField: Expr.get('name'),
+        textFont: const StyleValue(_safeFont),
+        textSize: const StyleValue(12),
+        textAnchor: const StyleValue(TextAnchor.top),
+        textOffset: const StyleValue([0, 1.2]),
+        textColor: const StyleValue(Color(0xFF004D40)),
+        textHaloColor: const StyleValue(Color(0xFFFFFFFF)),
+        textHaloWidth: const StyleValue(1.5),
+      ),
+    );
+  }
+
+  /// What the engine actually drew under a tap.
+  ///
+  /// The whole point of this handler is what comes BACK: a
+  /// [QueriedFeature] per hit, carrying the full [GeoJsonFeature.geometry] and
+  /// the feature [GeoJsonFeature.id]. Tapping the shaded region returns a
+  /// polygon and tapping the route returns a line — both of which a query used
+  /// to answer with nothing at all, because the decoder kept only points.
+  /// NOTE the screen point comes from a [Listener] wrapped around the map, not
+  /// from the tap callback. `MapLibreMap.onTap` reports only the unprojected
+  /// [LatLng], and the controller exposes no public `project`, so today there is
+  /// no supported route from a tap to the features under it — an app has to
+  /// capture the pointer position itself, exactly as this does. Tracked as
+  /// stage 6 in docs/api-parity-progress.md.
+  void _queryAtTap(LatLng point) {
+    final screen = _lastPointer;
+    if (screen == null || !_controller.capabilities.styleLayers) return;
+    // A box around the finger rather than a single pixel: a four-pixel line is
+    // hard to hit dead-on.
+    final found = _controller.layers.queryRenderedFeatures(
+      Rect.fromCenter(center: screen, width: 24, height: 24),
+    );
+    setState(() {
+      _tappedAt = point;
+      _tapped = found;
+    });
+  }
+
   /// The typed style API, used the way an app would use it.
   ///
   /// Nothing here is a JSON string and nothing goes through `addPoints`: the
@@ -474,6 +739,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// nested pile of maps.
   void _applyTypedStyle() {
     final layers = _controller.layers;
+    // Layers before sources: mbgl refuses to remove a source a layer still
+    // references, and now says so out loud.
+    _teardown.add(() {
+      layers
+        ..removeLayer('typed-labels')
+        ..removeLayer('typed-circles')
+        ..removeLayer('typed-route')
+        ..removeSource('typed')
+        ..removeSource('typed-route');
+    });
 
     // Per-point properties are what make data-driven styling possible: the
     // expressions below read `kind` and `pop` off each feature.
@@ -615,6 +890,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Future<void> _applyEngineIconsFlat() async {
     if (!await _registerWidgetIcon()) return;
     final layers = _controller.layers;
+    _teardown.add(() {
+      layers
+        ..removeLayer('bulk-icons')
+        ..removeSource('bulk');
+    });
     layers
       ..addSource(
         'bulk',
@@ -643,6 +923,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
   Future<void> _applyEngineIcons() async {
     if (!await _registerWidgetIcon()) return;
     final layers = _controller.layers;
+    _teardown.add(() {
+      layers
+        ..removeLayer('bulk-icons')
+        ..removePoints('bulk');
+    });
     layers.addPoints(
       'bulk',
       _dataset(_engineCounts[_engineCountIndex]),
@@ -1114,12 +1399,28 @@ class _MapDemoPageState extends State<MapDemoPage> {
   }
 
   Future<void> _toggleStyle() async {
+    // Just swap the declarative property. Re-applying the scenario is
+    // [_onStyleLoaded]'s job, because only the engine knows when the new
+    // document is actually in.
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
-    // A new style replaces the document, taking our sources and layers with it,
-    // so rebuild the scenario once it has settled. (Widget markers are
-    // unaffected — they live in Flutter, not the style.)
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (mounted) await _applyScenario();
+  }
+
+  /// Re-applies the scenario every time a style finishes loading.
+  ///
+  /// mbgl REPLACES the whole layer list on a style load, so every source, layer
+  /// and image this app added is gone the moment [_style] changes — and
+  /// `MapLibreMap.style` is declarative, so that can happen on any rebuild.
+  /// This callback is the only correct moment to put them back.
+  ///
+  /// It replaced `await Future.delayed(700ms)`, which was a guess: too short and
+  /// the layers were added to the outgoing style and lost, too long and the map
+  /// sat empty. Widget markers are unaffected either way — they live in Flutter,
+  /// not in the style document.
+  void _onStyleLoaded() {
+    if (!mounted) return;
+    setState(() => _styleLoadCount++);
+    _logDiagnostic('style loaded (#$_styleLoadCount) — re-applying scenario');
+    unawaited(_applyScenario());
   }
 
   // --- Markers ----------------------------------------------------------------
@@ -1185,13 +1486,317 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.engineClusters:
       case Scenario.engineIcons:
       case Scenario.engineIconsFlat:
-      // Everything in this one is drawn by the engine from the typed style.
+      // Everything in these is drawn by the engine from the typed style.
       case Scenario.typedStyle:
+      case Scenario.geojsonFeatures:
       // And these are drawn by the engine from a .glb.
       case Scenario.models3d:
       case Scenario.models3dStress:
         return const [];
     }
+  }
+
+  /// What the last tap found, straight off [QueriedFeature].
+  ///
+  /// Every line here is something the old query result could not carry: the
+  /// geometry type (non-points were dropped outright), the feature id (parsed
+  /// and thrown away), and the properties of a fill or line feature (which
+  /// never arrived at all).
+  Widget _queryResultPanel() {
+    final at = _tappedAt;
+    return PointerInterceptor(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 340),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.78),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: DefaultTextStyle(
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'queryRenderedFeatures',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              if (at == null)
+                const Text('Tap the map — the region and the route answer too.')
+              else ...[
+                Text(
+                  'at ${at.latitude.toStringAsFixed(3)}, '
+                  '${at.longitude.toStringAsFixed(3)}',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 4),
+                if (_tapped.isEmpty)
+                  const Text('nothing drawn here')
+                else
+                  for (final feature in _tapped.take(4))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${feature.geometry?.type ?? "no geometry"}'
+                            '  id: ${feature.id ?? "—"}',
+                            style: const TextStyle(
+                              color: Colors.tealAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            feature.properties.isEmpty
+                                ? '(no properties)'
+                                : feature.properties.entries
+                                      .map((e) => '${e.key}: ${e.value}')
+                                      .join('  ·  '),
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ),
+                if (_tapped.length > 4)
+                  Text(
+                    '+ ${_tapped.length - 4} more',
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Live engine reports: `controller.onError`, `onStyleLoaded` and
+  /// `onStyleImageMissing`.
+  ///
+  /// Before this channel existed every one of these was a blank or half-drawn
+  /// map and no signal at all — the failures are asynchronous, so none of them
+  /// could be caught as a thrown exception.
+  Widget _diagnosticsPanel() {
+    return PointerInterceptor(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 220),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.8),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: DefaultTextStyle(
+          style: const TextStyle(color: Colors.white, fontSize: 11),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Engine diagnostics',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Hide',
+                    iconSize: 16,
+                    color: Colors.white70,
+                    onPressed: () => setState(() => _showDiagnostics = false),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_diagnostics.isEmpty)
+                        const Text(
+                          'Nothing reported yet. "Break something" below '
+                          'provokes three different failures.',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      for (final line in _diagnostics)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            line,
+                            style: TextStyle(
+                              color: line.startsWith('style loaded')
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Provokes three genuinely different failures, to show they all arrive.
+  void _breakSomething() {
+    final layers = _controller.layers;
+    // 1. A command that cannot be applied: mbgl returns a null unique_ptr, and
+    //    the shim now reports it instead of discarding it.
+    layers.removeLayer('a-layer-that-was-never-added');
+    // 2. A source a layer still references — the failure that looks exactly
+    //    like the call doing nothing.
+    layers
+      ..addSource(
+        'diag-src',
+        GeoJsonSource(data: GeoJsonData.points(const [_turku])),
+      )
+      ..addLayer(
+        const CircleLayer(
+          id: 'diag-layer',
+          source: 'diag-src',
+          circleRadius: StyleValue(0),
+        ),
+      )
+      ..removeSource('diag-src')
+      // 3. A font no style serves. mbgl 404s the glyph range and reports it
+      //    ONLY through its log — MapObserver::onGlyphsError never fires — so
+      //    this line is what proves the log observer is wired.
+      ..addLayer(
+        const SymbolLayer(
+          id: 'diag-bad-font',
+          source: 'diag-src',
+          textField: StyleValue('x'),
+          textFont: StyleValue(['No Such Font Regular']),
+        ),
+      );
+  }
+
+  /// What this renderer can do, and the value types that describe it.
+  ///
+  /// Everything shown is computed live: the tiers genuinely differ, and
+  /// [MapLibreCapabilities] is the supported way to ask rather than calling
+  /// something and watching it no-op.
+  void _showCapabilities() {
+    final capabilities = _controller.capabilities;
+    // LatLngBounds over the dataset this scenario draws — mbgl's own shape,
+    // south-west/north-east, never gl-js's longitude-first ordering.
+    final bounds = LatLngBounds.fromPoints(
+      _dataset(_engineCounts[_engineCountIndex]),
+    );
+    // A PARTIAL camera: "zoom to 6, leave everything else" without a
+    // read-modify-write that races the render thread.
+    const partial = CameraOptions(zoom: 6);
+
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Renderer capabilities'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _kv('projection', '${capabilities.projection}'),
+              _kv('style layers', '${capabilities.styleLayers}'),
+              _kv('3D models', '${capabilities.models}'),
+              _kv('rotate / tilt', '${capabilities.rotateAndTilt}'),
+              _kv('Dart gestures', '${capabilities.gestures}'),
+              _kv('engine events', '${capabilities.events}'),
+              const Divider(),
+              const Text(
+                'LatLngBounds over the engine dataset',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              _kv('south-west', '${bounds.southwest}'),
+              _kv('north-east', '${bounds.northeast}'),
+              _kv('centre', '${bounds.center}'),
+              _kv('crosses antimeridian', '${bounds.crossesAntimeridian}'),
+              const Divider(),
+              const Text(
+                'CameraOptions — a partial camera',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              _kv('options', '$partial'),
+              const Divider(),
+              const Text(
+                'LatLng hardening',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const Text(
+                'mbgl::LatLng THROWS on these, and a C++ throw crossing the FFI '
+                'boundary is undefined behaviour rather than a catchable error.',
+                style: TextStyle(fontSize: 11),
+              ),
+              _kv('sanitized(120, 190)', '${LatLng.sanitized(120, 190)}'),
+              _kv(
+                'sanitized(NaN, NaN)',
+                '${LatLng.sanitized(double.nan, double.nan)}',
+              ),
+              _kv(
+                'LatLng(60.45, 190).wrapped()',
+                '${const LatLng(60.45, 190).wrapped()}',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(String key, String value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 170,
+          child: Text(key, style: const TextStyle(color: Colors.black54)),
+        ),
+        Expanded(child: Text(value)),
+      ],
+    ),
+  );
+
+  /// Frames the camera on the engine dataset, using [LatLngBounds] to work out
+  /// where that is.
+  ///
+  /// `camera.fitBounds` does not exist yet (stage 3 of the parity ledger), so
+  /// this composes what does: the bounds' centre, and a zoom from its span.
+  /// [CameraOptions.applyTo] resolves the partial camera against the current
+  /// one, so nothing but centre and zoom changes.
+  Future<void> _fitToData() async {
+    final bounds = LatLngBounds.fromPoints(
+      _dataset(_engineCounts[_engineCountIndex]),
+    );
+    final span = math.max(
+      bounds.north - bounds.south,
+      (bounds.east - bounds.west) * 0.5,
+    );
+    final zoom = (math.log(360 / math.max(span, 0.01)) / math.ln2).clamp(
+      1.0,
+      16.0,
+    );
+    final current = await _controller.camera.getPosition();
+    await _controller.camera.move(
+      CameraOptions(center: bounds.center, zoom: zoom).applyTo(current),
+      duration: const Duration(milliseconds: 900),
+    );
   }
 
   // --- UI ---------------------------------------------------------------------
@@ -1203,20 +1808,41 @@ class _MapDemoPageState extends State<MapDemoPage> {
       body: Stack(
         children: [
           Positioned.fill(
-            child: MapLibreMap(
-              controller: _controller,
-              style: _style,
-              options: const MapOptions(
-                initialCamera: MapCamera(center: LatLng(64.5, 26.0), zoom: 4.2),
+            child: Listener(
+              // Records where the pointer went down so a tap can be turned into
+              // a screen-space query box — see [_queryAtTap].
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (event) => _lastPointer = event.localPosition,
+              child: MapLibreMap(
+                controller: _controller,
+                style: _style,
+                options: const MapOptions(
+                  initialCamera: MapCamera(
+                    center: LatLng(64.5, 26.0),
+                    zoom: 4.2,
+                  ),
+                ),
+                markers: _buildMarkers(),
+                // Fires on EVERY style load, so a style swap re-applies the
+                // scenario the moment the new document is in — this replaced a
+                // hardcoded 700 ms delay, which was a guess that raced.
+                onStyleLoaded: _onStyleLoaded,
+                onTap: switch (_scenario) {
+                  Scenario.interaction => (point) => setState(
+                    () => _dropped.add(point),
+                  ),
+                  Scenario.geojsonFeatures => _queryAtTap,
+                  _ => null,
+                },
               ),
-              markers: _buildMarkers(),
-              onTap: _scenario == Scenario.interaction
-                  ? (point) => setState(() => _dropped.add(point))
-                  : null,
             ),
           ),
           Positioned(top: 12, left: 12, right: 12, child: _scenarioBar()),
           const Positioned(bottom: 12, left: 12, child: _FrameStats()),
+          if (_scenario == Scenario.geojsonFeatures)
+            Positioned(top: 140, left: 12, child: _queryResultPanel()),
+          if (_showDiagnostics)
+            Positioned(top: 140, right: 12, child: _diagnosticsPanel()),
           if (_stressing) Positioned(left: 12, bottom: 96, child: _modelHud()),
           if (_modelError != null)
             Positioned(
@@ -1365,6 +1991,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
             _style == _demotiles ? 'Demotiles' : 'Liberty',
             Icons.map_outlined,
             _toggleStyle,
+          ),
+          _mini('Fit to data', Icons.crop_free, _fitToData),
+          _mini('Capabilities', Icons.info_outline, _showCapabilities),
+          _mini('Break something', Icons.bug_report, _breakSomething),
+          _mini(
+            _showDiagnostics ? 'Hide diagnostics' : 'Diagnostics',
+            Icons.receipt_long,
+            () => setState(() => _showDiagnostics = !_showDiagnostics),
           ),
         ],
       ),

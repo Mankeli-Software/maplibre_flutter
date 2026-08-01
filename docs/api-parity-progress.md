@@ -511,3 +511,60 @@ are diff-clean.
 - **Next run:** stage 3 — camera commands. Read the stage's preamble first: `CameraOptions::anchor`
   is discarded whenever `center` is set, and `Transform::rotateBy` / `Map::pitchBy` are both broken
   upstream. It also needs hardware verification per tier, macOS first.
+
+### 2026-08-01 — Example app: every stage 0–2 addition, demonstrated and RUN
+
+The first run of this effort to launch the app on hardware rather than stopping at green tests. It
+found two bugs the whole suite had missed, both in code added earlier the same day.
+
+- **Demonstrated in `packages/maplibre_flutter/example`:**
+  - New **`Typed GeoJSON + queries`** scenario. A `GeoJsonFeatureCollection` of a `GeoJsonPolygon`
+    (region), a `GeoJsonLineString` (route), three `GeoJsonPoint` cities and a `GeoJsonMultiPoint`
+    (buoys), each with an `id` and `properties`, fed in through `GeoJsonData.feature` /
+    `.featureCollection` — no JSON string anywhere. Circle radius is driven by a `population`
+    property that arrived through the typed feature. Plus two points added with
+    `addPoints(properties:)`, the 1.11 fix.
+  - **Tap-to-query.** Verified on macOS: tapping returns a **`MultiPolygon` with `id: 55`** and its
+    properties, from the basemap's country layer — a feature the old decoder dropped on the floor
+    (1.8) along with its id (1.9).
+  - **Engine diagnostics panel** fed by `controller.onError` / `onStyleImageMissing`, and a
+    **"Break something"** button that provokes three genuinely different failures. All observed
+    live: `MapCommandError(removeLayer: no layer with id …)`, `MapCommandError(removeSource: … is
+    still in use)`, and two `MapEngineError`s carrying the glyph 404 that reaches **only** the log
+    observer.
+  - **`MapLibreMap.onStyleLoaded`** replaced `await Future.delayed(700ms)` in the style toggle. The
+    delay was a guess that raced both ways; the callback is the only correct moment.
+  - **Capabilities dialog** showing live `MapLibreCapabilities`, the `LatLngBounds` of the engine
+    dataset, a partial `CameraOptions`, and `LatLng.sanitized` / `wrapped` against values
+    `mbgl::LatLng` would throw on.
+  - **"Fit to data"** composing `LatLngBounds.fromPoints` + `CameraOptions.applyTo` — `fitBounds`
+    itself is stage 3.
+  - The scenario teardown was rewritten from a blanket list of every id any scenario might have used
+    into per-scenario undo closures. That blanket removal was invisible until `onError` existed;
+    now it reported seven `MapCommandError`s per scenario switch. An error channel makes removing
+    optimistically untenable within minutes of existing, which is a fair advertisement for it.
+- **NOT demonstrated, because faking it would be dishonest:** `MapCameraChangeReason` has no
+  producer until stage 4 threads it through the gesture layer, and `CameraAnimation` has no consumer
+  until stage 3 binds `easeTo`/`flyTo`. Both are unit-tested value types today.
+- **Two bugs found by running it — both introduced earlier today, both invisible to the tests:**
+  1. **`onReady` never completed in the real app.** mbgl's `onDidFinishLoadingStyle` is one-shot and
+     fires ~169 ms after create, but a controller can only register its callback *after*
+     `mbl_map_create` returns and, on the texture tiers, after the registrar handshake. So the event
+     was routinely gone before anyone was listening, and 2.7's new readiness rule waited for it
+     forever. **Fixed in the shim**: `mbl_map_set_diagnostic_callback` now replays one
+     `MBL_DIAG_STYLE_LOADED` if a style has already loaded. The native tests could not have caught
+     this — they register immediately after create, which is the one ordering a real app cannot use.
+  2. **The replay was then dropped again, one level up.** The platform controller emitted it into a
+     broadcast `StreamController` before `MapLibreMapController.attach` had subscribed, and a
+     broadcast stream discards events with no listener. Pure race: the scenario drew on one launch
+     and not the next. **Fixed at both levels** — the tier's `onStyleLoaded` and the app-facing one
+     replay to a late subscriber. This matters more than a missed notification: this event is what
+     tells an app to re-apply the layers mbgl just dropped, so losing it leaves the map permanently
+     missing them.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green (221 in `maplibre_flutter`,
+  including 140 conformance assertions) / `test:native` green (34) / `format` clean / ffigen
+  diff-clean / **run on macOS hardware**, the reference tier, with screenshots confirming the layers
+  draw, the query returns a MultiPolygon with its id, and all five failure kinds reach the panel.
+- **Next run:** stage 3, camera commands. Note that the two bugs above are the same shape as what
+  stage 3 will face — an event or command that races creation — and that `_applyScenario` in the
+  example is now a second consumer of `onStyleLoaded` worth re-reading when `fitBounds` lands.

@@ -103,6 +103,12 @@ typedef void (*MblDiagnosticCallback)(void *user, int32_t kind,
 // Register (or clear, with NULL) the diagnostic callback. Installing one on any
 // map also installs the process-wide mbgl log observer, once; it forwards to
 // stderr as well, so nothing that used to be printed stops being printed.
+//
+// If a style has ALREADY finished loading when a callback is registered, one
+// MBL_DIAG_STYLE_LOADED is delivered immediately. Registration cannot precede
+// creation — the caller needs the handle first — and a style often loads within
+// ~200 ms of it, so a strictly live stream would routinely drop the one event a
+// caller most needs: the initial load that says the map is usable.
 FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
     MblMap *map, MblDiagnosticCallback callback, void *user);
 

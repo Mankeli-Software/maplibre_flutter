@@ -93,6 +93,7 @@ class MapLibreMapController {
       StreamController<String>.broadcast();
   final List<StreamSubscription<Object?>> _eventSubscriptions =
       <StreamSubscription<Object?>>[];
+  bool _styleHasLoaded = false;
 
   /// What the map could not do: a style that failed to load, glyphs or sprites
   /// that could not be fetched, a command that could not be applied.
@@ -112,7 +113,16 @@ class MapLibreMapController {
   /// load, so every app-added source, layer and image is dropped, and
   /// [MapLibreMap.style] is a declarative property that can change on any
   /// rebuild. Mirrors gl-js `styledata`.
-  Stream<void> get onStyleLoaded => _styleLoads.stream;
+  ///
+  /// Replays to a late subscriber: if a style has already loaded when you
+  /// listen, you get one event immediately. Without that, whether an app heard
+  /// about the FIRST load would depend on whether it subscribed before the map
+  /// finished creating — and missing it means the layers mbgl dropped never
+  /// come back.
+  Stream<void> get onStyleLoaded async* {
+    if (_styleHasLoaded) yield null;
+    yield* _styleLoads.stream;
+  }
 
   /// The id of an image a layer asked for that the style does not have.
   ///
@@ -129,6 +139,7 @@ class MapLibreMapController {
         if (!_errors.isClosed) _errors.add(e);
       }),
       events.onStyleLoaded.listen((_) {
+        _styleHasLoaded = true;
         if (!_styleLoads.isClosed) _styleLoads.add(null);
       }),
       events.onStyleImageMissing.listen((id) {
@@ -241,6 +252,7 @@ class MapLibreMapController {
     _attached = false;
     layers.attachTo(null);
     await _unpipeEvents();
+    _styleHasLoaded = false;
     await platform?.dispose();
   }
 

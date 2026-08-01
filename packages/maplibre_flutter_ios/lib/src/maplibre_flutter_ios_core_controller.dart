@@ -97,7 +97,17 @@ class MapLibreFlutterIosCoreController
   Stream<MapLibreError> get onError => _errors.stream;
 
   @override
-  Stream<void> get onStyleLoaded => _styleLoads.stream;
+  Stream<void> get onStyleLoaded async* {
+    // Replay to a LATE subscriber. A broadcast stream drops events that arrive
+    // with nobody listening, and registration here necessarily races the first
+    // style load: the controller is constructed after the core, the app-facing
+    // controller subscribes after that, and a style loads in ~200 ms. Losing it
+    // is not a cosmetic miss — this event is what tells an app to re-apply the
+    // layers mbgl just dropped, so a dropped one leaves the map permanently
+    // missing them.
+    if (_styleLoaded) yield null;
+    yield* _styleLoads.stream;
+  }
 
   @override
   Stream<String> get onStyleImageMissing => _missingImages.stream;

@@ -55,6 +55,7 @@
 #include <mbgl/util/size.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -194,6 +195,13 @@ struct MblMap {
   // for observer events, and on whichever thread logged for MBL_DIAG_LOG.
   MblDiagnosticCallback diagCb = nullptr;
   void *diagCbUser = nullptr;
+
+  // How many styles have finished loading. Registration necessarily happens
+  // after mbl_map_create — the caller has to have the handle first — and a
+  // style can finish loading in under 200 ms, so without remembering this a
+  // listener would routinely miss the FIRST load, which is the one that
+  // matters. Replayed once on registration; see mbl_map_set_diagnostic_callback.
+  std::atomic<uint32_t> styleLoadCount{0};
 
   // Zero-copy present. macOS blits mbgl's Metal texture into an IOSurface; the
   // non-Apple (GL) arm blits mbgl's color FBO into an EGLImage-backed texture ring.
@@ -402,6 +410,7 @@ public:
   explicit DiagnosticObserver(MblMap *map) : m(map) {}
 
   void onDidFinishLoadingStyle() override {
+    m->styleLoadCount.fetch_add(1, std::memory_order_relaxed);
     dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
   }
 
@@ -2026,6 +2035,14 @@ void mbl_map_set_diagnostic_callback(MblMap *m, MblDiagnosticCallback callback,
     std::call_once(gLogObserverOnce, [] {
       mbgl::Log::setObserver(std::make_unique<DiagnosticLogObserver>());
     });
+    // Replay the initial style load if it already happened. Registering cannot
+    // precede creation, and a style often loads within ~200 ms of it, so a
+    // strictly live stream would drop the load a caller most needs — the one
+    // that says "the map is usable". Reported once, at registration, so the
+    // repeating semantics of later loads are unaffected.
+    if (m->styleLoadCount.load(std::memory_order_relaxed) > 0) {
+      dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
+    }
   }
 }
 

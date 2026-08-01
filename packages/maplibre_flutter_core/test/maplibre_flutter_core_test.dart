@@ -1153,6 +1153,44 @@ void main() {
     );
   });
 
+  // Registration cannot precede creation — the caller needs the handle first —
+  // and the style often loads within ~200 ms of it. A strictly live stream
+  // therefore drops the initial load routinely, which is exactly what broke the
+  // example app: onReady waits for that event, and the controller registers
+  // after the texture handshake, so the map never became ready.
+  test('a style already loaded is replayed to a late listener', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    // Deliberately register LATE: wait for a frame first, by which time the
+    // style has certainly loaded and the live event has been and gone.
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 10)) {
+      if (seen.any((d) => d.kind == CoreDiagnosticKind.styleLoaded)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      seen.map((d) => d.kind),
+      contains(CoreDiagnosticKind.styleLoaded),
+      reason: 'the load that already happened must still be reported',
+    );
+    expect(
+      seen.where((d) => d.kind == CoreDiagnosticKind.styleLoaded),
+      hasLength(1),
+      reason: 'replayed once, not once per past load',
+    );
+  });
+
   test('a style URL that 404s is reported instead of silently blank', () async {
     final map = MapLibreCoreMap.create(
       width: 256,

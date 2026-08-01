@@ -281,6 +281,33 @@ void main() {
         await c.dispose();
       });
 
+      // The race this closes: the core replays the initial style load when the
+      // controller registers, which happens before the app-facing controller
+      // subscribes — and a broadcast stream drops events with no listener. A
+      // dropped one is not cosmetic: this event is what tells an app to
+      // re-apply the layers mbgl just dropped.
+      test(
+        'a style load is replayed to a listener that arrives late',
+        () async {
+          final fresh = RecordingCoreMap();
+          final c = tier.build(fresh);
+          fresh.emitDiagnostic(CoreDiagnosticKind.styleLoaded);
+          await Future<void>.delayed(Duration.zero);
+
+          // Subscribing only now, after the event has been and gone.
+          final late = <void>[];
+          (c as MapLibreMapEvents).onStyleLoaded.listen(late.add);
+          await Future<void>.delayed(Duration.zero);
+          expect(late, hasLength(1), reason: 'the load that already happened');
+
+          // And the live stream still works on top of the replay.
+          fresh.emitDiagnostic(CoreDiagnosticKind.styleLoaded);
+          await Future<void>.delayed(Duration.zero);
+          expect(late, hasLength(2));
+          await c.dispose();
+        },
+      );
+
       test('unregisters its diagnostic listener on dispose', () async {
         final fresh = RecordingCoreMap();
         final c = tier.build(fresh);
