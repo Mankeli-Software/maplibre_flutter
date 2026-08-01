@@ -773,6 +773,139 @@ void main() {
     );
   });
 
+  // --- Camera-change reason ------------------------------------------------
+  //
+  // The gesture layer is the ONLY thing in the stack that can tell these apart:
+  // mbgl reports just {Immediate, Animated}. So these assertions are the whole
+  // proof that the reason is real rather than guessed.
+
+  /// Pumps a gesture map bound to [controller], so its reason streams can be
+  /// observed. The plain [pumpGestureMap] lets the widget own its controller.
+  Future<_FakeGestureController> pumpGestureMapWith(
+    WidgetTester tester,
+    MapLibreMapController controller,
+  ) async {
+    final platform = _FakePlatform(
+      const TextureHandle(textureId: 19),
+      gestures: true,
+    );
+    MapLibreFlutterPlatform.instance = platform;
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: MapLibreMap(
+          controller: controller,
+          style: _style,
+          options: _options,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return platform.lastController! as _FakeGestureController;
+  }
+
+  testWidgets('a drag reports gesturePan, bracketed by start and end', (
+    tester,
+  ) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final starts = <Set<MapCameraChangeReason>>[];
+    final ends = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveStart.listen(starts.add);
+    controller.onCameraMoveEnd.listen(ends.add);
+    await pumpGestureMapWith(tester, controller);
+
+    await tester.drag(find.byType(MapLibreMap), const Offset(60, 40));
+    await tester.pumpAndSettle();
+
+    expect(starts, isNotEmpty, reason: 'a drag must report a start');
+    expect(starts.first, contains(MapCameraChangeReason.gesturePan));
+    expect(starts.first.isGesture, isTrue);
+    expect(
+      starts.first.isProgrammatic,
+      isFalse,
+      reason: 'a finger is not app code',
+    );
+    expect(ends, isNotEmpty, reason: 'and an end when the finger lifts');
+    expect(controller.isMoving, isFalse);
+  });
+
+  testWidgets('a twisting pinch reports BOTH pinch and rotate', (tester) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final starts = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveStart.listen(starts.add);
+    await pumpGestureMapWith(tester, controller);
+
+    // Two fingers separating AND twisting: the case that makes the payload a
+    // Set rather than a single value.
+    const centre = Offset(400, 400);
+    final f1 = await tester.startGesture(
+      centre - const Offset(60, 0),
+      pointer: 61,
+    );
+    final f2 = await tester.startGesture(
+      centre + const Offset(60, 0),
+      pointer: 62,
+    );
+    await tester.pump();
+    for (var i = 1; i <= 10; i++) {
+      final angle = i * 0.06; // well past the rotate deadzone
+      final r = 60.0 + i * 6; // and separating, so it zooms too
+      final dx = math.cos(angle) * r;
+      final dy = math.sin(angle) * r;
+      await f1.moveTo(centre - Offset(dx, dy));
+      await f2.moveTo(centre + Offset(dx, dy));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pumpAndSettle();
+
+    final union = starts.fold<Set<MapCameraChangeReason>>(
+      <MapCameraChangeReason>{},
+      (acc, r) => acc..addAll(r),
+    );
+    expect(union, contains(MapCameraChangeReason.gesturePinch));
+    expect(union, contains(MapCameraChangeReason.gestureRotate));
+    expect(union.isZoom, isTrue);
+    expect(union.isRotation, isTrue);
+  });
+
+  testWidgets('a shove reports gestureTilt, not pan', (tester) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final starts = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveStart.listen(starts.add);
+    await pumpGestureMapWith(tester, controller);
+
+    const left = Offset(350, 400);
+    const right = Offset(450, 400);
+    final f1 = await tester.startGesture(left, pointer: 71);
+    final f2 = await tester.startGesture(right, pointer: 72);
+    await tester.pump();
+    for (var i = 1; i <= 8; i++) {
+      final dy = -8.0 * i;
+      await f1.moveTo(left + Offset(0, dy));
+      await f2.moveTo(right + Offset(0, dy));
+      await tester.pump();
+    }
+    await f1.up();
+    await f2.up();
+    await tester.pumpAndSettle();
+
+    final union = starts.fold<Set<MapCameraChangeReason>>(
+      <MapCameraChangeReason>{},
+      (acc, r) => acc..addAll(r),
+    );
+    expect(
+      union,
+      contains(MapCameraChangeReason.gestureTilt),
+      reason: 'a shove is a tilt, and only this layer can say so',
+    );
+    expect(union.isTilt, isTrue);
+  });
+
   testWidgets('a two-finger vertical shove tilts and does NOT pan', (
     tester,
   ) async {

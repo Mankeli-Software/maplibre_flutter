@@ -327,4 +327,89 @@ void main() {
       await c.dispose();
     },
   );
+
+  group('camera lifecycle and reason', () {
+    test('a programmatic move brackets itself with a reason', () async {
+      MapLibreFlutterPlatform.instance = _CameraPlatform();
+      final c = MapLibreMapController();
+      final starts = <Set<MapCameraChangeReason>>[];
+      final ends = <Set<MapCameraChangeReason>>[];
+      c.onCameraMoveStart.listen(starts.add);
+      c.onCameraMoveEnd.listen(ends.add);
+      await c.attach(style: 's', options: _attachOptions);
+
+      expect(c.isMoving, isFalse);
+      await c.camera.easeTo(const CameraOptions(zoom: 8));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(starts, hasLength(1));
+      expect(starts.single, {MapCameraChangeReason.programmatic});
+      expect(starts.single.isProgrammatic, isTrue);
+      expect(starts.single.isGesture, isFalse);
+      expect(ends, hasLength(1));
+      expect(c.isMoving, isFalse, reason: 'the move is over');
+      await c.dispose();
+    });
+
+    test('resetNorth reports Apple\'s dedicated reason too', () async {
+      MapLibreFlutterPlatform.instance = _CameraPlatform();
+      final c = MapLibreMapController();
+      final starts = <Set<MapCameraChangeReason>>[];
+      c.onCameraMoveStart.listen(starts.add);
+      await c.attach(style: 's', options: _attachOptions);
+
+      await c.camera.resetNorth();
+      await Future<void>.delayed(Duration.zero);
+
+      // The one "programmatic" move a USER asked for, which is why Apple gives
+      // it its own value rather than folding it into programmatic.
+      expect(starts.first, contains(MapCameraChangeReason.resetNorth));
+      expect(starts.first, contains(MapCameraChangeReason.programmatic));
+      expect(starts.first.isRotation, isTrue);
+      await c.dispose();
+    });
+
+    test('gesture reasons drive isMoving / isZooming / isRotating', () async {
+      MapLibreFlutterPlatform.instance = _CameraPlatform();
+      final c = MapLibreMapController();
+      await c.attach(style: 's', options: _attachOptions);
+
+      // This is what the gesture layer calls.
+      c.reportCameraMove(const {
+        MapCameraChangeReason.gesturePinch,
+      }, ended: false);
+      expect(c.isMoving, isTrue);
+      expect(c.isZooming, isTrue);
+      expect(c.isRotating, isFalse);
+      expect(c.movingBecause.isGesture, isTrue);
+
+      // A twisting pinch is BOTH — which is why the payload is a Set.
+      c.reportCameraMove(const {
+        MapCameraChangeReason.gesturePinch,
+        MapCameraChangeReason.gestureRotate,
+      }, ended: false);
+      expect(c.isZooming, isTrue);
+      expect(c.isRotating, isTrue);
+
+      c.reportCameraMove(const {
+        MapCameraChangeReason.gesturePinch,
+      }, ended: true);
+      expect(c.isMoving, isFalse);
+      expect(c.isZooming, isFalse);
+      await c.dispose();
+    });
+
+    test('an end with nothing started is ignored', () async {
+      MapLibreFlutterPlatform.instance = _CameraPlatform();
+      final c = MapLibreMapController();
+      final ends = <Set<MapCameraChangeReason>>[];
+      c.onCameraMoveEnd.listen(ends.add);
+      await c.attach(style: 's', options: _attachOptions);
+
+      c.reportCameraMove(const {MapCameraChangeReason.gesturePan}, ended: true);
+      await Future<void>.delayed(Duration.zero);
+      expect(ends, isEmpty, reason: 'no spurious end for a move never started');
+      await c.dispose();
+    });
+  });
 }

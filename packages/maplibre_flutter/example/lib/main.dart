@@ -236,6 +236,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
   final List<String> _diagnostics = <String>[];
   bool _showDiagnostics = false;
   bool _constrained = false;
+
+  /// Why the camera is moving right now; empty when it is still.
+  Set<MapCameraChangeReason> _moveReasons = const {};
   int _styleLoadCount = 0;
   final List<StreamSubscription<Object?>> _eventSubscriptions =
       <StreamSubscription<Object?>>[];
@@ -371,6 +374,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
     // first style load that fails, and that happens during creation — the
     // controller's streams are live from construction precisely so this works.
     _eventSubscriptions.addAll([
+      // WHY the camera is moving. Nothing in the engine can answer this —
+      // mbgl reports only {Immediate, Animated} — so the reason is synthesised
+      // by the Dart gesture layer, which is the one place that can tell a pan
+      // from a pinch from a twist from a shove.
+      _controller.onCameraMoveStart.listen((reasons) {
+        if (mounted) setState(() => _moveReasons = reasons);
+      }),
+      _controller.onCameraMoveEnd.listen((_) {
+        if (mounted) setState(() => _moveReasons = const {});
+      }),
       _controller.onError.listen((error) => _logDiagnostic('$error')),
       _controller.onStyleImageMissing.listen(
         (id) => _logDiagnostic('style image missing: $id'),
@@ -1510,6 +1523,46 @@ class _MapDemoPageState extends State<MapDemoPage> {
     }
   }
 
+  /// A live readout of WHY the camera is moving.
+  ///
+  /// Drag, pinch, twist and shove the map and watch this change. mbgl cannot
+  /// tell these apart — its `CameraChangeMode` is only `{Immediate, Animated}`
+  /// — so every value here is synthesised by the Dart gesture layer. A twisting
+  /// pinch shows two reasons at once, which is why the payload is a Set.
+  Widget _reasonBadge() {
+    final gesture = _moveReasons.isGesture;
+    return PointerInterceptor(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: (gesture ? Colors.teal : Colors.indigo).withValues(
+            alpha: 0.85,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: DefaultTextStyle(
+          style: const TextStyle(color: Colors.white, fontSize: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                gesture ? 'moving: user' : 'moving: app',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text(_moveReasons.map((r) => r.name).join(' + ')),
+              Text(
+                'zoom ${_moveReasons.isZoom} · rotate ${_moveReasons.isRotation}'
+                ' · tilt ${_moveReasons.isTilt}',
+                style: const TextStyle(fontSize: 10, color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// What the last tap found, straight off [QueriedFeature].
   ///
   /// Every line here is something the old query result could not carry: the
@@ -1950,6 +2003,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
           ),
           Positioned(top: 12, left: 12, right: 12, child: _scenarioBar()),
           const Positioned(bottom: 12, left: 12, child: _FrameStats()),
+          if (_moveReasons.isNotEmpty)
+            Positioned(bottom: 60, left: 12, child: _reasonBadge()),
           if (_scenario == Scenario.geojsonFeatures)
             Positioned(top: 140, left: 12, child: _queryResultPanel()),
           if (_showDiagnostics)

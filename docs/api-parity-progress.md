@@ -125,16 +125,16 @@ Must be verified per hardware tier — CLAUDE.md §11 forbids blind-porting came
 - [x] 3.6 Define and document the completion contract: camera `Future`s complete on transition **end**;
       superseded animations complete rather than error.
 
-### Stage 4 — Camera lifecycle + reason (pure Dart, no native work)
+### Stage 4 — Camera lifecycle + reason — **CLOSED 2026-08-01**
 
 Our gesture recognisers live in Dart and are the only thing that knows pan vs pinch vs twist vs shove —
 mbgl's `CameraChangeMode` is only `{Immediate, Animated}`. That is a structural advantage; bank it.
 
-- [ ] 4.1 Thread `MapCameraChangeReason` through the Dart gesture layer (`maplibre_map.dart:553-990`)
+- [x] 4.1 Thread `MapCameraChangeReason` through the Dart gesture layer (`maplibre_map.dart:553-990`)
       and through `moveCamera`.
-- [ ] 4.2 `onCameraMoveStart` / `onCameraMoveEnd` streams carrying the reason; keep `onCameraChanged`
+- [x] 4.2 `onCameraMoveStart` / `onCameraMoveEnd` streams carrying the reason; keep `onCameraChanged`
       as the continuous `Listenable`.
-- [ ] 4.3 `isMoving` / `isZooming` / `isRotating`, backed by mbgl `Map::isPanning/isScaling/isRotating`
+- [x] 4.3 `isMoving` / `isZooming` / `isRotating`, backed by mbgl `Map::isPanning/isScaling/isRotating`
       (`map.hpp:66-68`).
 
 ### Stage 5 — Style & data operations, mirroring gl-js `Map` one-for-one
@@ -619,3 +619,43 @@ found two bugs the whole suite had missed, both in code added earlier the same d
   read-modify-write `move(camera.copyWith(...))` in the app is now a partial-camera call.
 - **Next run:** stage 4 — camera lifecycle and reason. Pure Dart, no C ABI. Note 4.2's shape is not
   yet settled (three proposals; see that task's note).
+
+### 2026-08-01 — Stage 4 (4.1, 4.2, 4.3) — stage closed
+
+Pure Dart, no C ABI, exactly as the stage predicted — and it banks the structural advantage the
+stage header names: mbgl's `MapObserver` carries only `CameraChangeMode {Immediate, Animated}`, so
+every SDK synthesises the richer reason in its platform layer, and **ours is in Dart**, the one
+place in the stack that can tell a pan from a pinch from a twist from a shove.
+
+- **4.1** — every gesture path in `_DesktopMapGesturesState` now reports its reason: the scale
+  recognizer's pan/pinch, the two-finger twist and shove, the secondary-drag rotate and tilt, the
+  trackpad pan/pinch/twist fallback, and the mouse wheel. Reasons are **accumulated, not decided up
+  front**: a gesture that grows a second reason mid-flight — a pinch that starts twisting —
+  re-reports, so a listener filtering on `isRotation` is not stuck with the first classification.
+  A wheel notch reports start and end together, since a scroll has no release event.
+- **4.2** — `controller.onCameraMoveStart` / `onCameraMoveEnd`, each carrying a
+  `Set<MapCameraChangeReason>`. The Set is load-bearing: a twisting pinch really is
+  `{gesturePinch, gestureRotate}`, and collapsing that to one value would lose information the
+  layer went to the trouble of having. `onCameraChanged` stays exactly as it was — it is the cheap
+  per-frame `Listenable` the marker overlay repaints from, and these are the discrete bookends.
+  Programmatic moves bracket themselves too, so `easeTo` reports `{programmatic}` and `resetNorth`
+  reports `{programmatic, resetNorth}` (Apple gives the compass tap its own value, and it earns it:
+  it is the one "programmatic" move a user asked for). `stop()` reports `transitionCancelled`.
+- **4.3** — `isMoving` / `isZooming` / `isRotating` plus `movingBecause`, derived from the live
+  reason set. Deliberately **not** bound to mbgl's `Map::isPanning/isScaling/isRotating`: those
+  would need a render-thread round trip per call, and the Dart layer already knows the answer
+  synchronously and for free.
+- **Shape decision settled.** The task carried three competing proposals (spec camera item 10's
+  single `Stream<MapCameraEvent>` with a phase field; spec gestures item 4's Android-named widget
+  callbacks; ledger 4.2's two streams). **Shipped the ledger's**: two streams, reason-only payload.
+  A phase field would be redundant when the stream itself is the phase, and the current camera is
+  already available synchronously from `onCameraChanged` — putting a snapshot in the event would
+  have forced an async read at emit time for data the listener can already reach.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / no generated-file or C
+  ABI diff — this stage needed neither.
+- **Example:** a live badge shows WHY the camera is moving while you drag, pinch, twist or shove —
+  including both reasons at once for a twisting pinch — and colours itself by whether the user or
+  the app caused it.
+- **Next run:** stage 5, style and data operations. Highest row count in the backlog (11 tasks), and
+  the first task is the `controller.layers` → `controller.style` rename, which touches every call
+  site in the example.

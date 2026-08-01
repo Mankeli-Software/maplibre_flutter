@@ -429,6 +429,7 @@ class _TextureMapViewState extends State<_TextureMapView> {
         if (widget.controller.gestureHandler case final gestures?) {
           map = _DesktopMapGestures(
             handler: gestures,
+            onCameraMove: widget.controller.reportCameraMove,
             // Null on a tier without the capability, which simply means no
             // rotate or tilt — pan and zoom are unaffected.
             rotator: widget.controller.rotateHandler,
@@ -548,12 +549,27 @@ class _DesktopMapGestures extends StatefulWidget {
     this.rotator,
     this.rotateEnabled = true,
     this.tiltEnabled = true,
+    this.onCameraMove,
   });
 
   final MapLibreGestureHandler handler;
   final MapLibreRotateHandler? rotator;
   final bool rotateEnabled;
   final bool tiltEnabled;
+
+  /// Reports the start and end of a user-driven camera change, and WHY.
+  ///
+  /// This layer is the only thing in the stack that knows a pan from a pinch
+  /// from a twist from a shove: mbgl's own `CameraChangeMode` is just
+  /// `{Immediate, Animated}`, so every SDK synthesises the richer reason in its
+  /// platform layer. Ours is in Dart, which is a structural advantage worth
+  /// banking rather than an accident.
+  final void Function(
+    Set<MapCameraChangeReason> reasons, {
+    required bool ended,
+  })?
+  onCameraMove;
+
   final Widget child;
 
   @override
@@ -574,6 +590,36 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // it disables the move gesture outright while shoving
   // (MapGestureDetector.java).
   _GestureMode _mode = _GestureMode.none;
+
+  /// The reasons reported for the gesture in progress, or null between them.
+  ///
+  /// Accumulated rather than decided up front, because one gesture legitimately
+  /// carries several: a twisting pinch is `{gesturePinch, gestureRotate}`, which
+  /// is exactly why the payload is a Set and not a single value.
+  Set<MapCameraChangeReason>? _liveReasons;
+
+  /// Starts (or widens) the reported reason set for the gesture in progress.
+  void _reportReason(MapCameraChangeReason reason) {
+    final live = _liveReasons;
+    if (live == null) {
+      _liveReasons = {reason};
+      widget.onCameraMove?.call({reason}, ended: false);
+      return;
+    }
+    if (live.add(reason)) {
+      // A gesture that grows a second reason mid-flight — a pinch that starts
+      // twisting — re-reports rather than staying silent, so a listener
+      // filtering on `isRotation` is not stuck with the first classification.
+      widget.onCameraMove?.call(Set.of(live), ended: false);
+    }
+  }
+
+  /// Ends the reported gesture, if one was reported.
+  void _endReasons() {
+    final live = _liveReasons;
+    _liveReasons = null;
+    if (live != null) widget.onCameraMove?.call(live, ended: true);
+  }
 
   // ScaleUpdateDetails.rotation is CUMULATIVE radians since the gesture began,
   // not a per-frame delta — applying it directly would spin the map by an
@@ -890,6 +936,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       if (meanDy != 0) {
         // Fingers moving UP increase pitch (SDK convention). No Dart-side
         // clamp — the engine clamps to 0..60.
+        _reportReason(MapCameraChangeReason.gestureTilt);
         rotator.pitchBy(-_kShoveDegreesPerPixel * meanDy);
       }
       // A shove must not also pan or zoom; the SDK disables move while shoving.
@@ -901,6 +948,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       // shim takes; the bearing sign lives there, not here.
       if (rotationDelta != 0) {
         final anchor = _rotateAnchor;
+        _reportReason(MapCameraChangeReason.gestureRotate);
         rotator.rotateBy(rotationDelta * 180 / math.pi, anchor.dx, anchor.dy);
       }
       // Fall through: a twist still zooms if the fingers also spread, which is
@@ -934,6 +982,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       final pdx = dx * gain;
       final pdy = dy * gain;
       if (pdx != 0 || pdy != 0) {
+        _reportReason(MapCameraChangeReason.gesturePan);
         widget.handler.moveBy(pdx, pdy);
       }
       // Track a smoothed drag velocity for the release fling — only for a pure
@@ -973,6 +1022,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         final anchor = (_anchorOnCursor && _lastPointerPos != Offset.zero)
             ? _lastPointerPos
             : _zoomAnchor;
+        _reportReason(MapCameraChangeReason.gesturePinch);
         widget.handler.scaleBy(relative, anchor.dx, anchor.dy);
       }
       _lastScale = details.scale;
@@ -980,6 +1030,10 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
+    // The gesture is over as far as the fingers are concerned. Inertia below
+    // keeps moving the map, but it is a continuation of the same pan rather
+    // than a new reason, and `onCameraChanged` still fires throughout.
+    _endReasons();
     // Pan inertia only. Never fling a gesture that zoomed (its focal drift isn't a
     // pan flick) — that was the "map also moves when zoomed" funkiness. A two-finger
     // *pan* (no scale change) still flings. Fling only if released while still moving
@@ -1115,11 +1169,15 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       if (!zooming) {
         final pdx = event.panDelta.dx * _panGain;
         final pdy = event.panDelta.dy * _panGain;
-        if (pdx != 0 || pdy != 0) widget.handler.moveBy(pdx, pdy);
+        if (pdx != 0 || pdy != 0) {
+          _reportReason(MapCameraChangeReason.gesturePan);
+          widget.handler.moveBy(pdx, pdy);
+        }
       }
       if (event.scale > 0) {
         final relative = event.scale / _blockedLastScale;
         if (relative != 1.0) {
+          _reportReason(MapCameraChangeReason.gesturePinch);
           widget.handler.scaleBy(
             relative,
             _blockedAnchor.dx,
@@ -1141,6 +1199,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         if (_blockedRotationAccum.abs() >
                 _kRotateDeadzoneDegrees * math.pi / 180 &&
             deltaRadians != 0) {
+          _reportReason(MapCameraChangeReason.gestureRotate);
           rotator.rotateBy(
             deltaRadians * 180 / math.pi,
             _blockedAnchor.dx,
@@ -1152,6 +1211,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     } else if (event is PointerPanZoomEndEvent) {
       _blockedPanZoom = false;
       _inTrackpadPanZoom = false;
+      _endReasons();
     } else if (event is PointerScrollEvent) {
       // Local path handles it when the event routes to the map.
       if (_hits(box, event.position, event.viewId)) return;
@@ -1159,7 +1219,13 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _stopInertia();
       final anchor = _blockedAnchorFor(box, origin, cursor, event.viewId);
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
-      if (factor != 1.0) widget.handler.scaleBy(factor, anchor.dx, anchor.dy);
+      if (factor != 1.0) {
+        // A wheel notch is a whole gesture: report it and end it at once, since
+        // there is no release event to hang an end on.
+        _reportReason(MapCameraChangeReason.gesturePinch);
+        widget.handler.scaleBy(factor, anchor.dx, anchor.dy);
+        _endReasons();
+      }
     }
   }
 
@@ -1169,11 +1235,15 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       // Scroll up (negative dy) zooms in, about the pointer.
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
       if (factor != 1.0) {
+        // A wheel notch is a whole gesture — start and end together, since a
+        // scroll has no release event to hang an end on.
+        _reportReason(MapCameraChangeReason.gesturePinch);
         widget.handler.scaleBy(
           factor,
           event.localPosition.dx,
           event.localPosition.dy,
         );
+        _endReasons();
       }
     }
   }
@@ -1241,6 +1311,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       if (rotator == null) return;
       if (widget.rotateEnabled && delta.dx != 0) {
         // Dragging RIGHT turns the content clockwise, matching gl-js.
+        _reportReason(MapCameraChangeReason.gestureRotate);
         rotator.rotateBy(
           delta.dx * _kDragRotateDegreesPerPixel,
           _lastPointerPos.dx,
@@ -1249,6 +1320,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       }
       if (widget.tiltEnabled && delta.dy != 0) {
         // Dragging UP tilts toward the horizon.
+        _reportReason(MapCameraChangeReason.gestureTilt);
         rotator.pitchBy(-delta.dy * _kDragPitchDegreesPerPixel);
       }
     }
@@ -1256,12 +1328,18 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   void _onPointerUp(PointerUpEvent e) {
     _pointers.remove(e.pointer);
-    if (e.pointer == _dragRotatePointer) _dragRotatePointer = null;
+    if (e.pointer == _dragRotatePointer) {
+      _dragRotatePointer = null;
+      _endReasons(); // the secondary-drag rotate ends with its own pointer
+    }
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
     _pointers.remove(e.pointer);
-    if (e.pointer == _dragRotatePointer) _dragRotatePointer = null;
+    if (e.pointer == _dragRotatePointer) {
+      _dragRotatePointer = null;
+      _endReasons();
+    }
   }
 
   @override

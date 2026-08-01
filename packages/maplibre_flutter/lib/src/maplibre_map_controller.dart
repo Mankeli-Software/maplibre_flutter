@@ -127,6 +127,75 @@ class MapLibreMapController {
     yield* _styleLoads.stream;
   }
 
+  // --- Camera lifecycle -------------------------------------------------------
+  //
+  // The REASON is synthesised here, not read from the engine: mbgl's own
+  // `MapObserver` carries only `CameraChangeMode {Immediate, Animated}`, so
+  // every SDK builds the richer reason in its platform layer. Ours is the Dart
+  // gesture layer, which is the only thing in the stack that can tell a pan
+  // from a pinch from a twist from a shove.
+
+  final StreamController<Set<MapCameraChangeReason>> _moveStarts =
+      StreamController<Set<MapCameraChangeReason>>.broadcast();
+  final StreamController<Set<MapCameraChangeReason>> _moveEnds =
+      StreamController<Set<MapCameraChangeReason>>.broadcast();
+  Set<MapCameraChangeReason> _movingBecause = const {};
+
+  /// Fires when the camera starts moving, saying why — gl-js `movestart`,
+  /// Apple `-mapView:regionWillChangeWithReason:animated:`.
+  ///
+  /// The payload is a **Set**, because one gesture legitimately carries several
+  /// reasons at once: a twisting pinch is `{gesturePinch, gestureRotate}`. It
+  /// re-fires if a gesture grows a reason mid-flight, so a listener filtering on
+  /// [MapCameraChangeReasons.isRotation] is not stuck with the first
+  /// classification.
+  ///
+  /// This is NOT a replacement for [onCameraChanged], which is the cheap
+  /// per-frame `Listenable` an overlay repaints from. These are the discrete
+  /// bookends.
+  Stream<Set<MapCameraChangeReason>> get onCameraMoveStart =>
+      _moveStarts.stream;
+
+  /// Fires when the camera stops moving, with the reasons it moved for — gl-js
+  /// `moveend`, Apple `-mapView:regionDidChangeWithReason:animated:`.
+  Stream<Set<MapCameraChangeReason>> get onCameraMoveEnd => _moveEnds.stream;
+
+  /// Why the camera is moving right now; empty when it is still.
+  Set<MapCameraChangeReason> get movingBecause => _movingBecause;
+
+  /// Whether the camera is moving at all — gl-js `isMoving`.
+  ///
+  /// Covers gestures and programmatic transitions alike. mbgl has
+  /// `Map::isPanning/isScaling/isRotating` too, but those are unbound and would
+  /// need a render-thread round trip per call; this is synchronous and free
+  /// because the Dart layer already knows.
+  bool get isMoving => _movingBecause.isNotEmpty;
+
+  /// Whether the zoom is changing — gl-js `isZooming`.
+  bool get isZooming => _movingBecause.isZoom;
+
+  /// Whether the bearing is changing — gl-js `isRotating`.
+  bool get isRotating => _movingBecause.isRotation;
+
+  /// Reports a camera movement's start or end. Called by the gesture layer and
+  /// by the camera namespace; not app API.
+  @internal
+  void reportCameraMove(
+    Set<MapCameraChangeReason> reasons, {
+    required bool ended,
+  }) {
+    if (_disposed) return;
+    if (ended) {
+      if (_movingBecause.isEmpty) return; // nothing was started
+      final was = _movingBecause;
+      _movingBecause = const {};
+      if (!_moveEnds.isClosed) _moveEnds.add(was);
+      return;
+    }
+    _movingBecause = reasons;
+    if (!_moveStarts.isClosed) _moveStarts.add(reasons);
+  }
+
   /// The id of an image a layer asked for that the style does not have.
   ///
   /// Register it with [MapLibreLayersController.addImage] or
@@ -200,6 +269,8 @@ class MapLibreMapController {
     layers.attachTo(null);
     await _unpipeEvents();
     await platform?.dispose();
+    await _moveStarts.close();
+    await _moveEnds.close();
     await _errors.close();
     await _styleLoads.close();
     await _missingImages.close();
@@ -451,17 +522,36 @@ class MapLibreCameraController {
   Future<MapCamera> _resolve(CameraOptions options) async =>
       options.applyTo(await getCamera());
 
+  /// Brackets a programmatic move with start/end reports, so
+  /// [MapLibreMapController.onCameraMoveStart] fires for app-driven moves as
+  /// well as gestures.
+  ///
+  /// [extra] adds to the reason set — `resetNorth` reports
+  /// `{programmatic, resetNorth}`, exactly as Apple does.
+  Future<void> _reported(
+    Future<void> Function() move, {
+    Set<MapCameraChangeReason> extra = const {},
+  }) async {
+    final reasons = {MapCameraChangeReason.programmatic, ...extra};
+    _owner.reportCameraMove(reasons, ended: false);
+    try {
+      await move();
+    } finally {
+      _owner.reportCameraMove(reasons, ended: true);
+    }
+  }
+
   /// Applies [camera] instantly. Unset fields are left alone.
   ///
   /// ```dart
   /// // Zoom in without touching centre, bearing or pitch:
   /// await controller.camera.jumpTo(const CameraOptions(zoom: 12));
   /// ```
-  Future<void> jumpTo(CameraOptions camera) async {
+  Future<void> jumpTo(CameraOptions camera) => _reported(() async {
     final commands = _commands;
     if (commands != null) return commands.jumpTo(camera);
     await _owner._platform?.moveCamera(await _resolve(camera));
-  }
+  });
 
   /// Transitions to [camera] along a straight, eased path — gl-js `easeTo`.
   ///
@@ -471,7 +561,7 @@ class MapLibreCameraController {
     CameraOptions camera, {
     Duration duration = const Duration(milliseconds: 300),
     Cubic? easing,
-  }) async {
+  }) => _reported(() async {
     final commands = _commands;
     if (commands != null) {
       return commands.easeTo(
@@ -483,7 +573,7 @@ class MapLibreCameraController {
       await _resolve(camera),
       duration: duration,
     );
-  }
+  });
 
   /// Transitions to [camera] along a van Wijk flight — gl-js `flyTo`.
   ///
@@ -496,7 +586,7 @@ class MapLibreCameraController {
     Cubic? easing,
     double? speed,
     double? apexZoom,
-  }) async {
+  }) => _reported(() async {
     final commands = _commands;
     if (commands != null) {
       return commands.flyTo(
@@ -513,7 +603,7 @@ class MapLibreCameraController {
       await _resolve(camera),
       duration: duration ?? const Duration(milliseconds: 1200),
     );
-  }
+  });
 
   /// Frames [bounds] under [padding] — gl-js `fitBounds`.
   Future<void> fitBounds(
@@ -619,7 +709,13 @@ class MapLibreCameraController {
   /// Puts north back at the top — gl-js `resetNorth`.
   Future<void> resetNorth({
     Duration duration = const Duration(milliseconds: 300),
-  }) => easeTo(const CameraOptions(bearing: 0), duration: duration);
+  }) => _reported(
+    () => easeTo(const CameraOptions(bearing: 0), duration: duration),
+    // Apple gives the compass tap its own reason rather than folding it into
+    // `programmatic`, and it is genuinely useful: it is the one "programmatic"
+    // move a USER asked for.
+    extra: {MapCameraChangeReason.resetNorth},
+  );
 
   /// Levels the map — gl-js `resetNorthPitch` without the north half.
   Future<void> resetPitch({
@@ -628,7 +724,14 @@ class MapLibreCameraController {
 
   /// Stops any transition in flight, leaving the camera where it reached —
   /// gl-js `stop`.
-  Future<void> stop() async => _commands?.stopCamera();
+  Future<void> stop() async {
+    await _commands?.stopCamera();
+    // Apple reports an interrupted transition as its own reason; do the same,
+    // so a listener can tell "arrived" from "was cut short".
+    _owner.reportCameraMove(const {
+      MapCameraChangeReason.transitionCancelled,
+    }, ended: true);
+  }
 
   // --- Constraints ------------------------------------------------------------
 
