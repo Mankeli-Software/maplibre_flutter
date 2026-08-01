@@ -222,10 +222,8 @@ Highest row count in the backlog, correctly last among the core stages.
       network path, which is a different order of risk from anything in this stage.
 - [ ] 8.3 Offline: `MLNOfflineStorage` (`:198`, `.packs` `:287`, `-addPackForRegion:` `:310`),
       `MLNOfflinePack`, `MLNTilePyramidOfflineRegion` / `MLNShapeOfflineRegion`.
-- [ ] 8.4 Snapshotter: `MLNMapSnapshotter` / `MLNMapSnapshotOptions` (`:70-141`). **Build-system note:**
-      `map_snapshotter.cpp` is compiled only on the Apple arm of `src/CMakeLists.txt` — four native
-      tiers need a CMake change, not just a C ABI one. `mbl_map_write_png` already exists and is
-      wrapped in Dart but is exposed on no public controller.
+- [x] 8.4 `MapLibreSnapshotter.take` / `.takeImage` over `MapSnapshotOptions` — a real off-screen
+      render with no map on screen, verified on hardware.
 - [ ] 8.5 Location component: `MLNUserLocation`, `MLNLocationManager`, `MLNUserTrackingMode`.
 - [x] 8.6 Attribution read from every source, parsed into text + links, and rendered over the map by
       `MapLibreAttributionBar` — **on by default**, because for most providers this is a licence
@@ -1251,4 +1249,25 @@ never existed.
   difference between a state and a one-shot, and it is what justifies not replaying.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (77) / `format` clean /
   12 macOS integration tests green on hardware.
+
+### 2026-08-01 — Stage 8 (8.4) — the snapshotter, almost free
+
+- **The architecture had already paid for this.** Every tier renders off-screen, so a snapshotter is
+  a Static-mode `MapLibreCoreMap`, a camera, `awaitFrame`, `copyFrame`, dispose. No new C ABI, no new
+  native code.
+- **Static mode is the whole point, not an implementation detail.** It blocks until every tile for
+  the frame has loaded; a Continuous render would return whatever had arrived, and a snapshot missing
+  its tiles is worse than no snapshot. That is why `timeout` defaults to 30 s rather than a frame's
+  worth, and why the dartdoc says it is slower on purpose.
+- **BGRA → RGBA on the way out**, so callers never learn the engine's byte order — and the test
+  renders **pure red**, not a symmetric colour. An unconverted buffer reads as blue, and a magenta
+  fixture cannot tell the two apart. This repo shipped exactly that mistake once already, in
+  `countColor`, invisible for months for exactly that reason.
+- **`dispose()` in a `finally`.** The map exists only for the render, and leaking a render thread per
+  snapshot would be invisible until an app took a few hundred.
+- **Null, not an exception, on failure.** A snapshot is best-effort; a caller who wanted a picture is
+  better served by "no picture" than by an error thrown out of a background render. A zero size is
+  refused up front rather than handed to the engine.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 4 macOS integration tests
+  green on hardware.
 

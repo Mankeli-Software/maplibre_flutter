@@ -13,6 +13,8 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         LatLng,
         LatLngBounds,
         MapAttribution,
+        MapSnapshot,
+        MapSnapshotOptions,
         AttributionLink,
         MapCamera,
         MapCameraChangeReason,
@@ -36,6 +38,7 @@ export 'src/attribution_bar.dart';
 export 'src/map_style_controller.dart';
 export 'src/maplibre_map.dart';
 export 'src/settings.dart';
+export 'src/snapshotter.dart';
 export 'src/maplibre_map_controller.dart';
 export 'src/marker.dart';
 export 'src/style/style.dart';

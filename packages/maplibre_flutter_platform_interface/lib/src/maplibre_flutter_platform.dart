@@ -2,6 +2,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'maplibre_map_controller.dart';
 import 'map_options.dart';
+import 'snapshot.dart';
 
 /// The interface every platform implementation of `maplibre_flutter` extends.
 ///
@@ -70,4 +71,12 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
   /// The cache path in force, or null on a tier that has no cache. `:memory:`
   /// means there IS no persistent cache.
   String? get cachePath => null;
+
+  /// Renders a style to an image WITHOUT a map on screen — Apple
+  /// `MLNMapSnapshotter`.
+  ///
+  /// Null on a renderer that cannot do it. Throws nothing: a snapshot is a
+  /// best-effort product, and a caller that wanted an image is better served by
+  /// "no image" than by an exception from a background render.
+  Future<MapSnapshot?> takeSnapshot(MapSnapshotOptions options) async => null;
 }

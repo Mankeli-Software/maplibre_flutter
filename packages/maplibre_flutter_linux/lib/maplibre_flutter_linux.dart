@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
 
@@ -49,4 +50,56 @@ class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
 
   @override
   String? get cachePath => MapLibreCoreSettings.cachePath;
+
+  /// Renders off-screen in STATIC mode, which blocks until every tile for the
+  /// frame has loaded — a Continuous map would hand back a half-loaded picture,
+  /// and a snapshot that is missing its tiles is worse than none.
+  @override
+  Future<MapSnapshot?> takeSnapshot(MapSnapshotOptions options) async {
+    final width = (options.size.width * options.pixelRatio).round();
+    final height = (options.size.height * options.pixelRatio).round();
+    if (width <= 0 || height <= 0) return null;
+
+    final map = MapLibreCoreMap.create(
+      width: width,
+      height: height,
+      pixelRatio: options.pixelRatio,
+      styleUri: options.style,
+    );
+    try {
+      map.setCamera(
+        latitude: options.camera.center.latitude,
+        longitude: options.camera.center.longitude,
+        zoom: options.camera.zoom,
+        bearing: options.camera.bearing,
+        pitch: options.camera.pitch,
+      );
+      if (!map.awaitFrame(options.timeout)) return null;
+      final frame = map.copyFrame();
+      if (frame == null) return null;
+      return MapSnapshot(
+        pixels: _bgraToRgba(frame),
+        width: width,
+        height: height,
+      );
+    } finally {
+      // ALWAYS: this map exists only for the render, and leaking a render
+      // thread per snapshot would be invisible until an app took a few hundred.
+      map.dispose();
+    }
+  }
+
+  /// The engine hands back BGRA; Flutter's image APIs want RGBA.
+  ///
+  /// In place on a copy, swapping only the two channels — the alpha and green
+  /// bytes are already where they belong.
+  static Uint8List _bgraToRgba(Uint8List frame) {
+    final out = Uint8List.fromList(frame);
+    for (var i = 0; i + 3 < out.length; i += 4) {
+      final b = out[i];
+      out[i] = out[i + 2];
+      out[i + 2] = b;
+    }
+    return out;
+  }
 }
