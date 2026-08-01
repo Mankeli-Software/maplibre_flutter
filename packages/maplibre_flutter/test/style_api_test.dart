@@ -126,6 +126,29 @@ class _RecordingLayers implements MapLibreStyleLayers {
     List<String>? sourceLayers,
     String? filterJson,
   }) => null;
+
+  @override
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) {}
+
+  @override
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  }) => null;
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {}
 }
 
 void main() {

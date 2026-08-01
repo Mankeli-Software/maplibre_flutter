@@ -498,6 +498,44 @@ class RecordingCoreMap implements MapLibreCoreMap {
     String? layerId,
   }) {}
 
+  // --- feature state ---------------------------------------------------------
+
+  /// Feature state by "sourceId/featureId", as the recording double sees it.
+  final Map<String, String> featureStates = <String, String>{};
+
+  /// What [getFeatureState] returns; null simulates a timeout.
+  String? featureStateResult = '{}';
+
+  @override
+  void setFeatureState(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) => featureStates['$sourceId/$featureId'] = stateJson;
+
+  @override
+  String? getFeatureState(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) => featureStateResult;
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {
+    if (featureId == null) {
+      featureStates.removeWhere((key, _) => key.startsWith('$sourceId/'));
+      return;
+    }
+    featureStates.remove('$sourceId/$featureId');
+  }
+
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 

@@ -628,6 +628,57 @@ external ffi.Pointer<ffi.Char> mbl_map_query_source_features(
   int timeout_ms,
 );
 
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external void mbl_map_set_feature_state(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  ffi.Pointer<ffi.Char> source_layer,
+  ffi.Pointer<ffi.Char> feature_id,
+  ffi.Pointer<ffi.Char> state_json,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_get_feature_state(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  ffi.Pointer<ffi.Char> source_layer,
+  ffi.Pointer<ffi.Char> feature_id,
+  int timeout_ms,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external void mbl_map_remove_feature_state(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  ffi.Pointer<ffi.Char> source_layer,
+  ffi.Pointer<ffi.Char> feature_id,
+  ffi.Pointer<ffi.Char> state_key,
+);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Char>)>()
 external void mbl_string_free(ffi.Pointer<ffi.Char> s);
 

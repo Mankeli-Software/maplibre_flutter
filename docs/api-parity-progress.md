@@ -182,9 +182,8 @@ Highest row count in the backlog, correctly last among the core stages.
       they run on camera ticks and must not throw into a paint callback.
 - [x] 6.3 `querySourceFeatures(sourceId, {sourceLayers, filter})`, with mbgl's two surprises
       (loaded tiles only, results NOT deduplicated) documented at all three layers.
-- [ ] 6.4 `setFeatureState` / `getFeatureState` / `removeFeatureState` (`renderer.hpp:74-86`).
-      **Constraint:** mbgl never parses `promoteId` or `generateId`, so feature state only works on
-      features whose own GeoJSON/MVT `id` is set. Document this loudly.
+- [x] 6.4 `setFeatureState` / `getFeatureState` / `removeFeatureState`, with the no-`promoteId`
+      constraint documented at all four layers and pinned by a test.
 - [ ] 6.5 Cluster helpers `getClusterExpansionZoom` / `getClusterChildren` / `getClusterLeaves`
       (Apple `MLNShapeSource.h:408-437`), taking the int `cluster_id` (gl-js shape).
 - [ ] 6.6 Return `QueriedFeature`; retire `MapLibreQueriedFeature`.
@@ -981,4 +980,35 @@ never existed.
   is likewise null there. → 7.1.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (59) / `format` clean /
   4 macOS integration tests (`macos_queries_test.dart`) green on hardware / ffigen regenerated.
+
+### 2026-08-01 — Stage 6 (6.4) — feature state, and a test helper that had been lying
+
+- **The tests assert PIXELS, not a round trip.** A `set`/`get` pair that agrees with itself proves
+  storage; feature state is only worth anything if a style expression can read it, so the fixture is
+  two circles painted through `["case", ["boolean", ["feature-state","selected"], false], red, blue]`
+  and the assertions are on how many red and blue pixels come back. Two features, so a change that
+  repaints everything cannot pass as feature state working.
+- **`countColor` had been reading BGRA as RGBA for the life of the helper.** Frames are BGRA
+  (`mbl_map_copy_frame`), and it indexed byte 0 as red. Every test that existed asserted magenta
+  (#ff00ff) or green (#00ff00) — **R equals B in both**, so the swap was invisible. The first test to
+  use red and blue found it immediately. This is CLAUDE.md §11's "verify a convention with an
+  ASYMMETRIC fixture" happening to us again, in the test layer this time. Fixed, and pinned by a
+  test that paints a pure red frame and asserts it does NOT read as blue — the assertion the old
+  colours could not make. No existing test changed meaning.
+- **mbgl implements neither `promoteId` nor `generateId`** — verified by grepping the pinned
+  submodule, no hits outside the spec JSON — so feature state only works on features carrying their
+  own id. The failure mode is the worst kind: nothing throws, nothing repaints, mbgl stores the state
+  against an id nothing reads, and the only symptom is that your styling does not change. Documented
+  in the C header, the core wrapper, the platform interface and the app-facing dartdoc, and pinned by
+  a test that sets state for a nonexistent id and asserts both that no pixel changed and that mbgl
+  kept it anyway.
+- **A `set` MERGES**, matching gl-js; replacing would silently drop keys a previous call set. Tested,
+  because "it looked right" and "it merged" are the same picture until the second key matters.
+- **`triggerRepaint` after every mutation.** Feature state changes nothing mbgl invalidates on its
+  own — the tiles are untouched — so without it the repaint never happens in Continuous mode, which
+  is every shipped tier.
+- **State JSON is parsed on the CALLING thread**, like the other JSON paths here, so a bad object is
+  reported before anything is posted rather than failing invisibly on the render thread.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (65) / `format` clean /
+  ffigen regenerated.
 

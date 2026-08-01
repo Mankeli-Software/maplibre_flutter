@@ -194,6 +194,41 @@ class _RecordingLayers implements MapLibreStyleLayers {
     ));
     return sourceQueryResult;
   }
+
+  @override
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) => featureStates['$sourceId/$featureId'] = stateJson;
+
+  /// Feature state as the double saw it.
+  final Map<String, String> featureStates = <String, String>{};
+
+  /// What [getFeatureStateJson] returns.
+  String? featureStateResult = '{}';
+
+  @override
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  }) => featureStateResult;
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {
+    if (featureId == null) {
+      featureStates.removeWhere((key, _) => key.startsWith('$sourceId/'));
+      return;
+    }
+    featureStates.remove('$sourceId/$featureId');
+  }
 }
 
 void main() {
@@ -1171,5 +1206,54 @@ void main() {
         );
       },
     );
+  });
+
+  // 6.4.
+  group('feature state', () {
+    test('a set is JSON-encoded and keyed by source and feature', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      style.setFeatureState('pts', 7, {'selected': true, 'score': 3});
+      expect(
+        platform.featureStates['pts/7'],
+        equals('{"selected":true,"score":3}'),
+      );
+    });
+
+    test('a numeric and a string id reach the engine the same way', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      style
+        ..setFeatureState('pts', 7, {'a': 1})
+        ..setFeatureState('pts', '7', {'a': 1});
+      // GeoJSON ids may be either; mbgl keys on the string form, so 7 and '7'
+      // must not become two different features.
+      expect(platform.featureStates.keys, equals(['pts/7']));
+    });
+
+    test('a failed read is null, an empty state is a map', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      platform.featureStateResult = '{}';
+      expect(style.getFeatureState('pts', 1), isEmpty);
+      platform.featureStateResult = null;
+      expect(
+        style.getFeatureState('pts', 1),
+        isNull,
+        reason: '"could not ask" must stay distinguishable from "nothing set"',
+      );
+    });
+
+    test('removing without a featureId clears the whole source', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      style
+        ..setFeatureState('pts', 1, {'a': 1})
+        ..setFeatureState('pts', 2, {'a': 1})
+        ..setFeatureState('other', 1, {'a': 1})
+        ..removeFeatureState('pts');
+      expect(platform.featureStates.keys, equals(['other/1']));
+    });
   });
 }

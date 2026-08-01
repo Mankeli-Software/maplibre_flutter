@@ -2756,6 +2756,124 @@ char *dupJson(const std::string &json) {
 
 } // namespace
 
+namespace {
+
+// rapidjson -> mbgl::Value. mbgl has converters INTO its typed style classes
+// but none into a bare Value, and feature state is untyped by design, so this
+// is the one place that mapping has to exist.
+mbgl::Value jsonToValue(const rapidjson::Value &v) {
+  if (v.IsBool()) return mbgl::Value{v.GetBool()};
+  if (v.IsString()) return mbgl::Value{std::string(v.GetString(),
+                                                   v.GetStringLength())};
+  if (v.IsUint64()) return mbgl::Value{v.GetUint64()};
+  if (v.IsInt64()) return mbgl::Value{v.GetInt64()};
+  if (v.IsNumber()) return mbgl::Value{v.GetDouble()};
+  if (v.IsArray()) {
+    std::vector<mbgl::Value> out;
+    out.reserve(v.Size());
+    for (const auto &e : v.GetArray()) out.emplace_back(jsonToValue(e));
+    return mbgl::Value{std::move(out)};
+  }
+  if (v.IsObject()) {
+    std::unordered_map<std::string, mbgl::Value> out;
+    for (const auto &e : v.GetObject()) {
+      out.emplace(std::string(e.name.GetString(), e.name.GetStringLength()),
+                  jsonToValue(e.value));
+    }
+    return mbgl::Value{std::move(out)};
+  }
+  return mbgl::Value{mbgl::NullValue{}};
+}
+
+std::optional<std::string> optionalString(const char *s) {
+  if (s == nullptr) return std::nullopt;
+  return std::string(s);
+}
+
+} // namespace
+
+void mbl_map_set_feature_state(MblMap *m, const char *source_id,
+                               const char *source_layer, const char *feature_id,
+                               const char *state_json) {
+  if (m == nullptr || source_id == nullptr || feature_id == nullptr ||
+      state_json == nullptr) {
+    return;
+  }
+  // Parse on the CALLING thread: it needs no map, so bad JSON is reported
+  // before anything is posted rather than failing invisibly later.
+  rapidjson::Document doc;
+  doc.Parse(state_json);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                       "setFeatureState: state must be a JSON object");
+    return;
+  }
+  mbgl::FeatureState state;
+  for (const auto &entry : doc.GetObject()) {
+    state.emplace(
+        std::string(entry.name.GetString(), entry.name.GetStringLength()),
+        jsonToValue(entry.value));
+  }
+
+  m->post([m, sourceId = std::string(source_id),
+           sourceLayer = optionalString(source_layer),
+           featureId = std::string(feature_id), state] {
+    auto *renderer = m->frontend != nullptr ? m->frontend->getRenderer()
+                                            : nullptr;
+    if (renderer == nullptr) return;
+    renderer->setFeatureState(sourceId, sourceLayer, featureId, state);
+    m->renderRequested = true;
+    // Feature state changes nothing mbgl invalidates on its own — the tiles are
+    // unchanged — so without this the repaint never happens in Continuous mode.
+    if (m->map != nullptr) m->map->triggerRepaint();
+  });
+}
+
+char *mbl_map_get_feature_state(MblMap *m, const char *source_id,
+                                const char *source_layer,
+                                const char *feature_id, uint32_t timeout_ms) {
+  if (m == nullptr || source_id == nullptr || feature_id == nullptr) {
+    return nullptr;
+  }
+  auto result = std::make_shared<std::string>();
+  const bool ok = runOnRenderThread(
+      m, timeout_ms,
+      [m, sourceId = std::string(source_id),
+       sourceLayer = optionalString(source_layer),
+       featureId = std::string(feature_id), result] {
+        auto *renderer = m->frontend != nullptr ? m->frontend->getRenderer()
+                                                : nullptr;
+        if (renderer == nullptr) return;
+        mbgl::FeatureState state;
+        renderer->getFeatureState(state, sourceId, sourceLayer, featureId);
+        // An empty state is `{}`, not NULL: "this feature has no state" is a
+        // real answer and must not read as "could not ask".
+        std::unordered_map<std::string, mbgl::Value> asMap(state.begin(),
+                                                           state.end());
+        *result = styleValueToJson(mbgl::Value{std::move(asMap)});
+      });
+  if (!ok) return nullptr;
+  return dupToHeap(*result);
+}
+
+void mbl_map_remove_feature_state(MblMap *m, const char *source_id,
+                                  const char *source_layer,
+                                  const char *feature_id,
+                                  const char *state_key) {
+  if (m == nullptr || source_id == nullptr) return;
+  m->post([m, sourceId = std::string(source_id),
+           sourceLayer = optionalString(source_layer),
+           featureId = optionalString(feature_id),
+           stateKey = optionalString(state_key)] {
+    auto *renderer = m->frontend != nullptr ? m->frontend->getRenderer()
+                                            : nullptr;
+    if (renderer == nullptr) return;
+    renderer->removeFeatureState(sourceId, sourceLayer, featureId, stateKey);
+    m->renderRequested = true;
+    if (m->map != nullptr) m->map->triggerRepaint();
+  });
+}
+
 char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
                                       double max_x, double max_y,
                                       const char *layer_ids,

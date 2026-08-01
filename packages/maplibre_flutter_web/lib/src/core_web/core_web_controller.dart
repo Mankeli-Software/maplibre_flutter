@@ -420,6 +420,32 @@ class MapLibreCoreWebController
     return null;
   }
 
+  // Feature state is not exposed by the embind module either (src/web/), so
+  // these are no-ops rather than a partial implementation that would look like
+  // it worked. → docs/api-parity-progress.md stage 7.1.
+  @override
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) {}
+
+  @override
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  }) => null;
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {}
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;

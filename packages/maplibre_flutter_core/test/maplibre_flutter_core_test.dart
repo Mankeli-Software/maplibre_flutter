@@ -361,12 +361,20 @@ void main() {
 
   /// Counts pixels close to [r],[g],[b] in an RGBA frame — how we prove the
   /// engine actually DREW something, rather than just accepting the calls.
+  /// Counts pixels matching (r, g, b) in a frame from [MapLibreCoreMap.copyFrame].
+  ///
+  /// **Frames are BGRA** (`maplibre_flutter_core.h`, mbl_map_copy_frame), which
+  /// this used to ignore: it read byte 0 as red. Every test that existed then
+  /// asserted magenta (#ff00ff) or green (#00ff00), and R equals B in both, so
+  /// the swap was invisible for the life of the helper — CLAUDE.md §11's
+  /// "verify a convention with an ASYMMETRIC fixture", demonstrated the hard
+  /// way by the first test that used red and blue.
   int countColor(Uint8List f, int r, int g, int b, {int tol = 24}) {
     var n = 0;
     for (var i = 0; i + 3 < f.length; i += 4) {
-      if ((f[i] - r).abs() <= tol &&
+      if ((f[i] - b).abs() <= tol &&
           (f[i + 1] - g).abs() <= tol &&
-          (f[i + 2] - b).abs() <= tol) {
+          (f[i + 2] - r).abs() <= tol) {
         n++;
       }
     }
@@ -1169,6 +1177,179 @@ void main() {
       );
     });
   }
+
+  // Guards the helper above. An asymmetric colour is the whole point: a frame
+  // painted pure RED must be counted as red and NOT as blue. Without this the
+  // channel order is only ever exercised by colours where it cannot matter.
+  test('countColor reads BGRA, and an asymmetric colour proves it', () async {
+    const red =
+        '{'
+        '"version":8,"sources":{},'
+        '"layers":[{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#ff0000"}}]'
+        '}';
+    final map = MapLibreCoreMap.create(
+      width: 64,
+      height: 64,
+      pixelRatio: 1,
+      styleUri: red,
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await settle(map);
+
+    final frame = map.copyFrame()!;
+    expect(countColor(frame, 255, 0, 0), 64 * 64);
+    expect(
+      countColor(frame, 0, 0, 255),
+      0,
+      reason:
+          'a red frame must not read as blue — this is the assertion the '
+          'old magenta-only tests could not make',
+    );
+  });
+
+  // 6.4. Feature state is only worth anything if a style EXPRESSION can read
+  // it, so these assert pixels, not the round trip through getFeatureState —
+  // a get/set pair that agrees with itself proves storage, not rendering.
+  group('feature state', () {
+    // Blue by default, red when feature-state "selected" is true. Two features:
+    // one gets state, the other must not, so a change that applies to
+    // everything cannot pass.
+    const style =
+        '{'
+        '"version":8,'
+        '"sources":{"pts":{"type":"geojson","data":{'
+        '"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":1,"properties":{},'
+        '"geometry":{"type":"Point","coordinates":[-0.01,0]}},'
+        '{"type":"Feature","id":2,"properties":{},'
+        '"geometry":{"type":"Point","coordinates":[0.01,0]}}'
+        ']}}},'
+        '"layers":['
+        '{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#ffffff"}},'
+        '{"id":"dots","type":"circle","source":"pts",'
+        '"paint":{"circle-radius":20,"circle-color":'
+        '["case",["boolean",["feature-state","selected"],false],'
+        '"#ff0000","#0000ff"]}}'
+        ']}';
+
+    Future<MapLibreCoreMap> boot() async {
+      final map = MapLibreCoreMap.create(
+        width: 256,
+        height: 256,
+        pixelRatio: 1,
+        styleUri: style,
+        continuous: true,
+      );
+      addTearDown(map.dispose);
+      map.setCamera(latitude: 0, longitude: 0, zoom: 13);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+      return map;
+    }
+
+    test('state reaches a paint expression, for that feature only', () async {
+      final map = await boot();
+      final before = map.copyFrame()!;
+      expect(
+        countColor(before, 0, 0, 255),
+        greaterThan(100),
+        reason: 'precondition: both circles start blue',
+      );
+      expect(countColor(before, 255, 0, 0), 0);
+
+      map.setFeatureState('pts', '1', '{"selected":true}');
+      await settle(map);
+
+      final after = map.copyFrame()!;
+      final red = countColor(after, 255, 0, 0);
+      final blue = countColor(after, 0, 0, 255);
+      expect(red, greaterThan(100), reason: 'feature 1 must repaint red');
+      expect(
+        blue,
+        greaterThan(100),
+        reason:
+            'feature 2 must stay blue — a change that hits everything is '
+            'indistinguishable from feature state working',
+      );
+      expect(
+        (red - blue).abs(),
+        lessThan(red ~/ 2),
+        reason:
+            'the two circles are the same size, so the counts should be '
+            'comparable — a wild difference means one was not drawn',
+      );
+    });
+
+    test('a set MERGES rather than replacing', () async {
+      final map = await boot();
+      map.setFeatureState('pts', '1', '{"selected":true}');
+      await settle(map);
+      map.setFeatureState('pts', '1', '{"hovered":true}');
+      await settle(map);
+
+      final state = map.getFeatureState('pts', '1');
+      expect(state, isNotNull);
+      final decoded = jsonDecode(state!) as Map<String, Object?>;
+      expect(
+        decoded,
+        containsPair('selected', true),
+        reason: 'gl-js merges; replacing would silently drop the first key',
+      );
+      expect(decoded, containsPair('hovered', true));
+      // And the render still agrees.
+      expect(countColor(map.copyFrame()!, 255, 0, 0), greaterThan(100));
+    });
+
+    test('removing one KEY leaves the rest, removing all clears', () async {
+      final map = await boot();
+      map.setFeatureState('pts', '1', '{"selected":true,"hovered":true}');
+      await settle(map);
+
+      map.removeFeatureState('pts', featureId: '1', stateKey: 'selected');
+      await settle(map);
+      final partial =
+          jsonDecode(map.getFeatureState('pts', '1')!) as Map<String, Object?>;
+      expect(partial, isNot(contains('selected')));
+      expect(partial, containsPair('hovered', true));
+      expect(
+        countColor(map.copyFrame()!, 255, 0, 0),
+        0,
+        reason: 'and the paint went back to blue',
+      );
+
+      map.removeFeatureState('pts', featureId: '1');
+      await settle(map);
+      expect(
+        jsonDecode(map.getFeatureState('pts', '1')!) as Map<String, Object?>,
+        isEmpty,
+      );
+    });
+
+    test('a feature with no state reports {} — not a failure', () async {
+      final map = await boot();
+      // "nothing set" and "could not ask" have to be different answers, or a
+      // caller cannot tell a timeout from an unstyled feature.
+      expect(map.getFeatureState('pts', '2'), '{}');
+    });
+
+    test('state for an id NO FEATURE HAS is silently inert', () async {
+      final map = await boot();
+      // Documented mbgl limitation: no promoteId, no generateId. Worth pinning
+      // because the failure mode is "my styling does not change" with no error
+      // anywhere, and someone will eventually assume we broke it.
+      map.setFeatureState('pts', '999', '{"selected":true}');
+      await settle(map);
+      expect(countColor(map.copyFrame()!, 255, 0, 0), 0);
+      expect(
+        map.getFeatureState('pts', '999'),
+        '{"selected":true}',
+        reason: 'mbgl stores it against that id; nothing ever reads it',
+      );
+    });
+  });
 
   // 5.11. A model layer used to take the app's id verbatim, putting it in the
   // same namespace as every layer the app adds. Three bugs came out of that

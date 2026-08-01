@@ -142,6 +142,29 @@ class _FullController extends _BareController
   }
 
   @override
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) {}
+
+  @override
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  }) => null;
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {}
+
+  @override
   void addModel(MapLibreModel model) {}
   @override
   void updateModel(MapLibreModel model) {}

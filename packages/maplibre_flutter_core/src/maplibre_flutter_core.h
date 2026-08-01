@@ -655,6 +655,49 @@ FFI_PLUGIN_EXPORT char *mbl_map_query_source_features(
     MblMap *map, const char *source_id, const char *source_layers,
     const char *filter_json, uint32_t timeout_ms);
 
+// --- Feature state -----------------------------------------------------------
+//
+// Per-feature data held OUTSIDE the tile, readable from a style expression with
+// ["feature-state", "<key>"] — gl-js setFeatureState, mbgl Renderer::
+// setFeatureState (renderer/renderer.hpp:74-86). This is how hover and
+// selection are done without re-uploading a source: set a key, and a paint
+// property that reads it repaints just that feature.
+//
+// **IT ONLY WORKS ON FEATURES WITH THEIR OWN ID.** The style spec has
+// `promoteId` (and `generateId`) for sources whose features carry their
+// identity in a property instead, and mbgl implements NEITHER — grep the pinned
+// submodule for "promoteId" and there are no hits outside the spec JSON. So a
+// GeoJSON feature needs a top-level "id", and a vector feature needs an id in
+// the MVT. Setting state for an id no feature has is silently a no-op: mbgl
+// stores it against that id and nothing ever reads it.
+
+// Attach state to one feature. `state_json` is a JSON OBJECT, merged into any
+// state already there (gl-js semantics), so setting one key leaves the others.
+// `source_layer` is required for a vector source and may be NULL for a geojson
+// one. Asynchronous; a bad `state_json` reports on the diagnostic callback.
+FFI_PLUGIN_EXPORT void mbl_map_set_feature_state(MblMap *map,
+                                                 const char *source_id,
+                                                 const char *source_layer,
+                                                 const char *feature_id,
+                                                 const char *state_json);
+
+// One feature's state as a JSON object, `{}` when it has none. Release with
+// mbl_string_free; NULL on timeout. BLOCKS up to `timeout_ms`.
+FFI_PLUGIN_EXPORT char *mbl_map_get_feature_state(MblMap *map,
+                                                  const char *source_id,
+                                                  const char *source_layer,
+                                                  const char *feature_id,
+                                                  uint32_t timeout_ms);
+
+// Remove state. NULL `state_key` clears the whole feature's state; NULL
+// `feature_id` clears every feature's state in the source (or source layer) —
+// the same widening gl-js `removeFeatureState` does with omitted arguments.
+FFI_PLUGIN_EXPORT void mbl_map_remove_feature_state(MblMap *map,
+                                                    const char *source_id,
+                                                    const char *source_layer,
+                                                    const char *feature_id,
+                                                    const char *state_key);
+
 // Frees a string returned by this library (e.g. from
 // mbl_map_query_rendered_features).
 FFI_PLUGIN_EXPORT void mbl_string_free(char *s);

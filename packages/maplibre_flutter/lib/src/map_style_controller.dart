@@ -660,6 +660,88 @@ class MapLibreStyleController {
     return _parseFeatures(json);
   }
 
+  // --- Feature state ----------------------------------------------------------
+
+  /// Attaches state to one feature — gl-js `setFeatureState`.
+  ///
+  /// State lives OUTSIDE the tile and is readable from any style expression
+  /// with `Expr.featureState('key')`, so hover and selection cost a repaint
+  /// rather than re-uploading a source:
+  ///
+  /// ```dart
+  /// controller.style.addLayer(CircleLayer(
+  ///   id: 'dots',
+  ///   source: 'pts',
+  ///   circleColor: Expr.caseExpr(
+  ///     Expr.featureState('selected'), const StyleValue(Color(0xFFFF0000)),
+  ///     const StyleValue(Color(0xFF2196F3)),
+  ///   ),
+  /// ));
+  /// controller.style.setFeatureState('pts', 7, {'selected': true});
+  /// ```
+  ///
+  /// [state] is MERGED into whatever the feature already has, so setting one
+  /// key leaves the others alone.
+  ///
+  /// **It only works on features that carry their own id.** The style spec has
+  /// `promoteId` and `generateId` for sources that identify features by a
+  /// property instead, and **mbgl implements neither** — so a GeoJSON feature
+  /// needs a top-level `"id"` and a vector feature needs an id in the MVT.
+  /// State set against an id no feature has is stored and never read: nothing
+  /// throws, nothing repaints, and the only symptom is that your styling does
+  /// not change.
+  void setFeatureState(
+    String sourceId,
+    Object featureId,
+    Map<String, Object?> state, {
+    String? sourceLayer,
+  }) => _layers?.setFeatureStateJson(
+    sourceId,
+    '$featureId',
+    jsonEncode(encodeStyleJson(state)),
+    sourceLayer: sourceLayer,
+  );
+
+  /// One feature's state, `{}` when it has none — gl-js `getFeatureState`.
+  ///
+  /// Returns null when the read failed, which is deliberately distinguishable
+  /// from an empty map.
+  Map<String, Object?>? getFeatureState(
+    String sourceId,
+    Object featureId, {
+    String? sourceLayer,
+  }) {
+    final json = _layers?.getFeatureStateJson(
+      sourceId,
+      '$featureId',
+      sourceLayer: sourceLayer,
+    );
+    if (json == null) return null;
+    try {
+      final decoded = jsonDecode(json);
+      return decoded is Map<String, Object?> ? decoded : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Removes feature state — gl-js `removeFeatureState`.
+  ///
+  /// Widens as arguments are omitted, exactly as gl-js does: no [stateKey]
+  /// clears the feature's whole state, and no [featureId] clears every
+  /// feature's state in the source.
+  void removeFeatureState(
+    String sourceId, {
+    Object? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) => _layers?.removeFeatureState(
+    sourceId,
+    featureId: featureId == null ? null : '$featureId',
+    sourceLayer: sourceLayer,
+    stateKey: stateKey,
+  );
+
   static String? _filterJson(Expression? filter) =>
       filter == null ? null : jsonEncode(encodeStyleJson(filter));
 

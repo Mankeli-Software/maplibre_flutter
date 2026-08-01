@@ -166,4 +166,36 @@ abstract interface class MapLibreStyleLayers {
     List<String>? sourceLayers,
     String? filterJson,
   });
+
+  /// Attaches state to one feature — gl-js `setFeatureState`.
+  ///
+  /// [stateJson] is a JSON object, MERGED into any state already there.
+  ///
+  /// **Only works on features that carry their own id.** The style spec has
+  /// `promoteId` and `generateId` for sources whose features identify
+  /// themselves by a property instead, and mbgl implements neither — so state
+  /// set against an id no feature has is stored and never read.
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  });
+
+  /// One feature's state as a JSON object, `{}` when it has none. Null when the
+  /// read failed — which is not the same as `{}`.
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  });
+
+  /// Removes state. Null [stateKey] clears the feature's whole state; null
+  /// [featureId] clears every feature's state in the source.
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  });
 }

@@ -1094,6 +1094,71 @@ class MapLibreCoreMap {
     });
   }
 
+  /// Attaches state to one feature — gl-js `setFeatureState`.
+  ///
+  /// [stateJson] is a JSON object, MERGED into whatever state the feature
+  /// already has. Only works on features that carry their own id: mbgl
+  /// implements neither `promoteId` nor `generateId`, so state set against an
+  /// id no feature has is silently stored and never read.
+  void setFeatureState(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_set_feature_state(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        _str(arena, sourceLayer),
+        featureId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        stateJson.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+      );
+    });
+  }
+
+  /// One feature's state as a JSON object, `{}` when it has none. Null on
+  /// timeout — which is not the same as `{}`.
+  String? getFeatureState(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = bindings.mbl_map_get_feature_state(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        _str(arena, sourceLayer),
+        featureId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        timeout.inMilliseconds,
+      );
+      return _takeString(out);
+    });
+  }
+
+  /// Removes state. Null [stateKey] clears the feature's whole state; null
+  /// [featureId] clears every feature's state in the source.
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_remove_feature_state(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        _str(arena, sourceLayer),
+        _str(arena, featureId),
+        _str(arena, stateKey),
+      );
+    });
+  }
+
   static ffi.Pointer<ffi.Char> _csv(Arena arena, List<String>? values) =>
       values == null || values.isEmpty
       ? ffi.nullptr

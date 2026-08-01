@@ -561,6 +561,52 @@ class MapLibreFlutterIosCoreController
     );
   }
 
+  @override
+  void setFeatureStateJson(
+    String sourceId,
+    String featureId,
+    String stateJson, {
+    String? sourceLayer,
+  }) {
+    if (_disposed) return;
+    _coreMap.setFeatureState(
+      sourceId,
+      featureId,
+      stateJson,
+      sourceLayer: sourceLayer,
+    );
+  }
+
+  @override
+  String? getFeatureStateJson(
+    String sourceId,
+    String featureId, {
+    String? sourceLayer,
+  }) {
+    if (_disposed) return null;
+    return _coreMap.getFeatureState(
+      sourceId,
+      featureId,
+      sourceLayer: sourceLayer,
+    );
+  }
+
+  @override
+  void removeFeatureState(
+    String sourceId, {
+    String? featureId,
+    String? sourceLayer,
+    String? stateKey,
+  }) {
+    if (_disposed) return;
+    _coreMap.removeFeatureState(
+      sourceId,
+      featureId: featureId,
+      sourceLayer: sourceLayer,
+      stateKey: stateKey,
+    );
+  }
+
   // --- MapLibreMapProjector ---------------------------------------------------
   // Projection runs synchronously over the core's lock-free transform snapshot,
   // so it is cheap to call from a Flow paint every camera tick. Screen space is
