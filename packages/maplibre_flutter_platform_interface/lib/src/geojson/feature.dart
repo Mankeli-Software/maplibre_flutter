@@ -157,21 +157,24 @@ final class QueriedFeature extends GeoJsonFeature {
     );
   }
 
-  /// The id of the source this feature came from.
+  /// The id of the source this feature came from — gl-js
+  /// `MapGeoJSONFeature.source`.
   ///
-  /// **Null on every native tier today.** `mbgl::Feature` carries it, but the C
-  /// shim copies the query result into a `mapbox::feature::feature_collection`
-  /// before serialising, which slices this field, [sourceLayer] and [state] off.
-  /// Fixing that is a shim change, tracked as stage 6 of
-  /// `docs/api-parity-progress.md`.
+  /// Null on a tier that cannot report it (the web WASM tier today).
   final String? source;
 
-  /// The source layer (vector tile layer) this feature came from, or `null` for
-  /// a source that has none. Subject to the same slicing as [source].
+  /// The source layer (vector tile layer) this feature came from — gl-js
+  /// `MapGeoJSONFeature.sourceLayer`.
+  ///
+  /// Null for a source that has none, which includes every GeoJSON source.
   final String? sourceLayer;
 
-  /// The feature state set with `setFeatureState`. Subject to the same slicing
-  /// as [source], so empty on every native tier today.
+  /// The feature state set with `setFeatureState`, empty when there is none —
+  /// gl-js `MapGeoJSONFeature.state`.
+  ///
+  /// This is what makes a query enough to drive selection UI: the same call
+  /// that tells you what is under the cursor also tells you which of those you
+  /// had already marked.
   final Map<String, Object?> state;
 
   /// Where the engine placed it, when the geometry is a single point — which is

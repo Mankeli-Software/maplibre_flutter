@@ -337,12 +337,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // Hybrid state: what the engine reports drawing, promoted to real widgets.
   List<QueriedFeature> _liveFeatures = const [];
 
-  // Typed-GeoJSON scenario: whatever the last tap found under the finger, and
-  // the screen point it was found at (see [_queryAtTap] for why that has to be
-  // captured by hand today).
+  // Typed-GeoJSON scenario: whatever the last tap found under the finger.
   List<QueriedFeature> _tapped = const [];
   LatLng? _tappedAt;
-  Offset? _lastPointer;
 
   // Live engine diagnostics. Kept short — this is a demo, not a log viewer.
   final List<String> _diagnostics = <String>[];
@@ -934,22 +931,20 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// the feature [GeoJsonFeature.id]. Tapping the shaded region returns a
   /// polygon and tapping the route returns a line — both of which a query used
   /// to answer with nothing at all, because the decoder kept only points.
-  /// NOTE the screen point comes from a [Listener] wrapped around the map, not
-  /// from the tap callback. `MapLibreMap.onTap` reports only the unprojected
-  /// [LatLng], and the controller exposes no public `project`, so today there is
-  /// no supported route from a tap to the features under it — an app has to
-  /// capture the pointer position itself, exactly as this does. Tracked as
-  /// stage 6 in docs/api-parity-progress.md.
-  void _queryAtTap(LatLng point) {
-    final screen = _lastPointer;
-    if (screen == null || !_controller.capabilities.styleLayers) return;
-    // A box around the finger rather than a single pixel: a four-pixel line is
-    // hard to hit dead-on.
-    final found = _controller.queryRenderedFeatures(
-      Rect.fromCenter(center: screen, width: 24, height: 24),
+  /// The tap carries the SCREEN point as well as the geographic one, which is
+  /// what makes this two lines. It used to need a [Listener] wrapped around the
+  /// map recording every pointer-down by hand, because `onTap` reported only
+  /// the unprojected [LatLng] and there was no public `project`.
+  void _queryAtTap(MapTapEvent tap) {
+    if (!_controller.capabilities.styleLayers) return;
+    // queryRenderedFeaturesAt pads the point into a box: a four-pixel line is
+    // hard to hit dead-on with a finger.
+    final found = _controller.style.queryRenderedFeaturesAt(
+      tap.screenPoint,
+      tolerance: 12,
     );
     setState(() {
-      _tappedAt = point;
+      _tappedAt = tap.point;
       _tapped = found;
     });
   }
@@ -2206,12 +2201,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
       body: Stack(
         children: [
           Positioned.fill(
-            child: Listener(
-              // Records where the pointer went down so a tap can be turned into
-              // a screen-space query box — see [_queryAtTap].
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (event) => _lastPointer = event.localPosition,
-              child: MapLibreMap(
+            child: Builder(
+              builder: (context) => MapLibreMap(
                 controller: _controller,
                 style: _style,
                 options: const MapOptions(
@@ -2227,8 +2218,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
                 // hardcoded 700 ms delay, which was a guess that raced.
                 onStyleLoaded: _onStyleLoaded,
                 onTap: switch (_scenario) {
-                  Scenario.interaction => (point) => setState(
-                    () => _dropped.add(point),
+                  Scenario.interaction => (tap) => setState(
+                    () => _dropped.add(tap.point),
                   ),
                   Scenario.geojsonFeatures => _queryAtTap,
                   _ => null,

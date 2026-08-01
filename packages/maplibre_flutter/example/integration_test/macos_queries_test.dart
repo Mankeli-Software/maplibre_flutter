@@ -164,4 +164,86 @@ void main() {
       reason: 'the source query ignores styling: all three are still loaded',
     );
   });
+
+  // 6.6: mbgl::Feature carries source/sourceLayer/state, and the shim used to
+  // slice all three off by copying into a feature_collection<double>.
+  testWidgets('a queried feature carries its source and its state', (
+    tester,
+  ) async {
+    final controller = await boot(tester);
+    final rect = wholeScreen(tester);
+
+    controller.style.setFeatureState('pts', 1, {'selected': true});
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final features = controller.style.queryRenderedFeatures(rect);
+    final one = features.firstWhere((f) => f.id == 1);
+    expect(one.source, 'pts');
+    expect(
+      one.state,
+      containsPair('selected', true),
+      reason: 'without this a query cannot tell you which hits are selected, '
+          'which is most of what selection UI needs',
+    );
+    // A GeoJSON source genuinely has no source layer.
+    expect(one.sourceLayer, isNull);
+
+    final other = features.firstWhere((f) => f.id == 2);
+    expect(other.state, isEmpty, reason: 'state is per feature');
+  });
+
+  // 6.7: the tap has to carry the screen point, or there is no route from a tap
+  // to the features under it.
+  testWidgets('a tap reports both coordinates, and they agree', (tester) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    MapTapEvent? tapped;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MapLibreMap(
+          controller: controller,
+          style: _style,
+          onTap: (tap) => tapped = tap,
+          options: const MapOptions(
+            initialCamera: MapCamera(center: LatLng(60.4513, 22.2665), zoom: 16),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await controller.onReady.timeout(const Duration(seconds: 30));
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final at = wholeScreen(tester).center + const Offset(30, -20);
+    await tester.tapAt(at);
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(tapped, isNotNull);
+    expect(tapped!.screenPoint.dx, closeTo(at.dx, 1));
+    expect(tapped!.screenPoint.dy, closeTo(at.dy, 1));
+
+    // The two coordinates must describe the SAME place: projecting the reported
+    // LatLng has to land back on the reported screen point. A round trip is a
+    // weak test in general (CLAUDE.md §7), but here the two values come from
+    // different code paths — unproject in the widget, project on the
+    // controller — so agreement is real evidence.
+    final back = controller.project(tapped!.point);
+    expect(back, isNotNull);
+    expect(back!.dx, closeTo(at.dx, 1.5));
+    expect(back.dy, closeTo(at.dy, 1.5));
+
+    // And absolute direction: tapping right of centre must be EAST of centre,
+    // tapping above it must be NORTH.
+    final centre = (await controller.camera.getCamera()).center;
+    expect(
+      tapped!.point.longitude,
+      greaterThan(centre.longitude),
+      reason: 'right of centre is east',
+    );
+    expect(
+      tapped!.point.latitude,
+      greaterThan(centre.latitude),
+      reason: 'above centre is north — a flipped Y would pass a round trip',
+    );
+  });
 }

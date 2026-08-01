@@ -120,7 +120,7 @@ class _CountingBox extends StatelessWidget {
 Future<void> _pump(
   WidgetTester tester, {
   required List<MapLibreMarker> markers,
-  ValueChanged<LatLng>? onTap,
+  ValueChanged<MapTapEvent>? onTap,
 }) async {
   await tester.pumpWidget(
     Directionality(
@@ -359,10 +359,10 @@ void main() {
     MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
 
     var markerTapped = false;
-    LatLng? mapTapped;
+    MapTapEvent? mapTapped;
     await _pump(
       tester,
-      onTap: (p) => mapTapped = p,
+      onTap: (tap) => mapTapped = tap,
       markers: [
         MapLibreMarker(
           point: const LatLng(0, 0),
@@ -395,10 +395,10 @@ void main() {
     controller.unprojectFn = (o) => LatLng(o.dy / 10, o.dx / 10);
     MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
 
-    LatLng? mapTapped;
+    MapTapEvent? mapTapped;
     await _pump(
       tester,
-      onTap: (p) => mapTapped = p,
+      onTap: (tap) => mapTapped = tap,
       markers: [
         MapLibreMarker(
           point: const LatLng(0, 0),
@@ -413,8 +413,11 @@ void main() {
     expect(mapTapped, isNotNull);
     // The fake unproject scales by 10 so the latitude stays inside the ±90 mbgl
     // accepts: y -> lat, x -> lng, which is the direction being pinned here.
-    expect(mapTapped!.latitude, closeTo(22.2, 1e-9));
-    expect(mapTapped!.longitude, closeTo(12.3, 1e-9));
+    expect(mapTapped!.point.latitude, closeTo(22.2, 1e-9));
+    expect(mapTapped!.point.longitude, closeTo(12.3, 1e-9));
+    // And the SCREEN point comes through untransformed — the whole reason the
+    // event carries both. An app hit-tests with this.
+    expect(mapTapped!.screenPoint, const Offset(123, 222));
   });
 
   testWidgets('dragging a draggable marker reports the unprojected end point', (

@@ -1209,6 +1209,59 @@ void main() {
     );
   });
 
+  // 6.6. mbgl::Feature is a GeoJSONFeature PLUS source/sourceLayer/state, and
+  // copying into a feature_collection<double> slices all three off — which is
+  // what the shim used to do, so gl-js's MapGeoJSONFeature contract was quietly
+  // two-thirds unmet.
+  test('a queried feature carries source and state, not just geometry', () async {
+    const style =
+        '{'
+        '"version":8,'
+        '"sources":{"pts":{"type":"geojson","data":{'
+        '"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":5,"properties":{"kind":"city"},'
+        '"geometry":{"type":"Point","coordinates":[0,0]}}]}}},'
+        '"layers":[{"id":"dots","type":"circle","source":"pts",'
+        '"paint":{"circle-radius":20,"circle-color":"#ff00ff"}}]'
+        '}';
+    final map = MapLibreCoreMap.create(
+      width: 128,
+      height: 128,
+      pixelRatio: 1,
+      styleUri: style,
+    );
+    addTearDown(map.dispose);
+    map.setCamera(latitude: 0, longitude: 0, zoom: 14);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await settle(map);
+
+    map.setFeatureState('pts', '5', '{"selected":true}');
+    await settle(map);
+
+    final json = map.queryRenderedFeatures(0, 0, 128, 128);
+    expect(json, isNotNull);
+    final feature =
+        ((jsonDecode(json!) as Map<String, Object?>)['features']!
+                    as List<Object?>)
+                .single
+            as Map<String, Object?>;
+
+    expect(feature['source'], 'pts', reason: 'sliced off before this fix');
+    expect(
+      feature['state'],
+      containsPair('selected', true),
+      reason:
+          'and so was the feature state — which made it impossible to tell '
+          'from a query which features were selected',
+    );
+    // A geojson source has no source layer, so that one is legitimately absent.
+    expect(feature.containsKey('sourceLayer'), isFalse);
+    // The GeoJSON itself must still be intact after the augmentation.
+    expect(feature['type'], 'Feature');
+    expect(feature['id'], 5);
+    expect((feature['geometry']! as Map<String, Object?>)['type'], 'Point');
+  });
+
   // 6.5. Asserted against REAL supercluster output — the cluster ids are the
   // engine's, discovered by querying, never hardcoded.
   group('cluster helpers', () {

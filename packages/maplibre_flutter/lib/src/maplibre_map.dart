@@ -77,9 +77,20 @@ class MapLibreMap extends StatefulWidget {
   /// camera is imperative (CLAUDE.md §3 three-bucket rule).
   final List<MapLibreModel> models;
 
-  /// Called when the map (not a marker) is tapped, with the geographic point
-  /// under the tap. Only fires on tiers that can project coordinates.
-  final ValueChanged<LatLng>? onTap;
+  /// Called when the map (not a marker) is tapped.
+  ///
+  /// Carries both the geographic point and the SCREEN point, because the screen
+  /// point is what a hit test needs — without it there was no supported route
+  /// from a tap to the features under it:
+  ///
+  /// ```dart
+  /// onTap: (tap) {
+  ///   final hits = controller.style.queryRenderedFeaturesAt(tap.screenPoint);
+  /// }
+  /// ```
+  ///
+  /// Only fires on tiers that can project coordinates.
+  final ValueChanged<MapTapEvent>? onTap;
 
   /// Called each time a style finishes loading — **every** time, including
   /// after [style] changes, not just the first.
@@ -316,7 +327,7 @@ class _MapEmbed extends StatelessWidget {
 
   final MapLibreMapController controller;
   final List<MapLibreMarker> markers;
-  final ValueChanged<LatLng>? onTap;
+  final ValueChanged<MapTapEvent>? onTap;
   final bool rotateGesturesEnabled;
   final bool tiltGesturesEnabled;
 
@@ -356,7 +367,11 @@ class _MapEmbed extends StatelessWidget {
       map = GestureDetector(
         onTapUp: (details) {
           final point = projector.unproject(details.localPosition);
-          if (point != null) onTap(point);
+          if (point != null) {
+            onTap(
+              MapTapEvent(point: point, screenPoint: details.localPosition),
+            );
+          }
         },
         child: map,
       );
@@ -1409,4 +1424,34 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       ),
     );
   }
+}
+
+/// A tap on the map — [MapLibreMap.onTap].
+///
+/// Both coordinates, deliberately. gl-js's `click` carries `lngLat` AND
+/// `point` for the same reason: the geographic point is what you show the user,
+/// and the screen point is what you hit-test with. Reporting only the first
+/// left an app no supported way to ask what it had tapped.
+@immutable
+final class MapTapEvent {
+  const MapTapEvent({required this.point, required this.screenPoint});
+
+  /// Where on the map, geographically.
+  final LatLng point;
+
+  /// Where in the widget, in logical points with a top-left origin — the space
+  /// [MapLibreStyleController.queryRenderedFeaturesAt] takes.
+  final Offset screenPoint;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MapTapEvent &&
+      other.point == point &&
+      other.screenPoint == screenPoint;
+
+  @override
+  int get hashCode => Object.hash(point, screenPoint);
+
+  @override
+  String toString() => 'MapTapEvent($point at $screenPoint)';
 }

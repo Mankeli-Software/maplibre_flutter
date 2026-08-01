@@ -25,6 +25,11 @@ import 'style/style_encoding.dart';
   'now nullable, since non-point geometries are no longer dropped. '
   'Will be removed in a future release.',
 )
+@Deprecated(
+  'Renamed to QueriedFeature, after gl-js MapGeoJSONFeature. The MapLibre '
+  'prefix belongs on types an app constructs, not on a value the engine hands '
+  'back. Will be removed in a future release.',
+)
 typedef MapLibreQueriedFeature = QueriedFeature;
 
 /// Engine-drawn map data: the scalable half of the annotation story.

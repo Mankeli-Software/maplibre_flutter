@@ -458,4 +458,25 @@ void main() {
       );
     });
   });
+
+  // 6.7.
+  group('project / unproject', () {
+    test('a tier with no projector returns null rather than (0,0)', () {
+      MapLibreFlutterPlatform.instance = _FakePlatform();
+      final c = MapLibreMapController();
+      addTearDown(c.dispose);
+      // Offset.zero would be a plausible-looking wrong answer that an overlay
+      // would happily draw at the top-left corner.
+      expect(c.project(const LatLng(60.45, 22.27)), isNull);
+      expect(c.projectAll(const [LatLng(60.45, 22.27)]), isNull);
+      expect(c.unproject(Offset.zero), isNull);
+    });
+
+    test('projectAll of an empty list is null, not an empty list', () {
+      MapLibreFlutterPlatform.instance = _FakePlatform();
+      final c = MapLibreMapController();
+      addTearDown(c.dispose);
+      expect(c.projectAll(const []), isNull);
+    });
+  });
 }

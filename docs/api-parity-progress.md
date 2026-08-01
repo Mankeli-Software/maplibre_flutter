@@ -186,9 +186,10 @@ Highest row count in the backlog, correctly last among the core stages.
       constraint documented at all four layers and pinned by a test.
 - [x] 6.5 `getClusterExpansionZoom` / `getClusterChildren` / `getClusterLeaves` over mbgl's
       feature-extension mechanism, taking gl-js's integer `cluster_id`.
-- [ ] 6.6 Return `QueriedFeature`; retire `MapLibreQueriedFeature`.
-- [ ] 6.7 `MapLibreMap.onTap` must report the screen point, not only the unprojected `LatLng` — today
-      there is no supported path from a tap to the features under it.
+- [x] 6.6 `QueriedFeature` is the name; `MapLibreQueriedFeature` is a `@Deprecated` typedef. The
+      shim no longer slices `source` / `sourceLayer` / `state` off the query result.
+- [x] 6.7 `onTap` carries a `MapTapEvent` with both the geographic and the SCREEN point, and
+      `controller.project` / `projectAll` / `unproject` are public.
 
 ### Stage 7 — Web parity + verification pass (no new API surface)
 
@@ -1039,4 +1040,33 @@ never existed.
   an implementation detail and a test that hardcodes one is testing the fixture.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (70) / `format` clean /
   ffigen regenerated.
+
+### 2026-08-01 — Stage 6 (6.6, 6.7) — the query result, and the route to it. Stage 6 closed.
+
+- **`mbgl::Feature` is a `GeoJSONFeature` PLUS `source`, `sourceLayer` and `state`, and copying into
+  a `feature_collection<double>` slices all three off.** That one-line copy is what the shim did, so
+  two-thirds of gl-js's `MapGeoJSONFeature` contract was quietly unmet — `QueriedFeature` had the
+  fields, parsed them, and documented them as "null on every native tier today". Now re-attached as
+  siblings of `geometry`/`properties`, which is where gl-js puts them. Serialise-then-augment rather
+  than writing geometry by hand: geometry serialisation is the part worth not reimplementing.
+  The practical consequence is that one query now answers both "what is under the cursor" and
+  "which of those did I already select", which is most of what selection UI needs.
+- **`onTap` reports the screen point, and that deleted a hack from our own example app.** The
+  geojsonFeatures scenario had a `Listener` wrapped round the map recording every pointer-down by
+  hand, with a comment explaining that there was no supported route from a tap to the features under
+  it. Two lines now. gl-js's `click` carries `lngLat` AND `point` for exactly this reason. This is a
+  **breaking change** to `onTap`'s payload, taken deliberately: a shadow callback field is worse API
+  than the break, and the field name does not change.
+- **`project` / `projectAll` / `unproject` are public**, and return null rather than `Offset.zero`
+  before the first frame — a plausible-looking wrong answer that an overlay would happily draw at the
+  top-left corner. `projectAll` exists because a marker overlay projects everything it draws on every
+  camera tick, and one FFI call per marker at 120 Hz is the difference between smooth and not.
+- **The tap test asserts absolute directions, not just a round trip.** Round-tripping tap →
+  unproject → project is real evidence here (the two values come from different code paths), but a
+  flipped Y survives any round trip — so it also asserts that right-of-centre is EAST and
+  above-centre is NORTH. CLAUDE.md §7.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (71) / `format` clean /
+  6 macOS integration tests (`macos_queries_test.dart`) green on hardware.
+
+**Stage 6 is closed.** 6.1-6.7 all implemented and verified on the reference tier.
 

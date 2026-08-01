@@ -433,6 +433,46 @@ class MapLibreMapController {
         : null;
   }
 
+  /// Where [point] falls on screen, in logical points with a top-left origin —
+  /// gl-js `map.project`.
+  ///
+  /// Null before the first frame and on a tier that cannot project. Note this
+  /// projects against the **presented** frame, not the newest camera: camera
+  /// commands are applied on the render thread and usually run ahead of what is
+  /// on screen, so projecting against the latest transform makes anchored
+  /// overlays swim (CLAUDE.md §11).
+  Offset? project(LatLng point) {
+    final projector = this.projector;
+    if (projector == null) return null;
+    final out = <Offset>[Offset.zero];
+    // Generation 0 means no frame has been presented, so `out` is untouched —
+    // returning Offset.zero would be a plausible-looking wrong answer.
+    if (projector.project(<LatLng>[point], out) == 0) return null;
+    return out.single;
+  }
+
+  /// Projects many points in one call — gl-js has no equivalent, and this is
+  /// the reason to have it: a marker overlay projects everything it draws on
+  /// every camera tick, and one call per marker at 120 Hz is the difference
+  /// between smooth and not.
+  ///
+  /// Returns null before the first frame or on a tier that cannot project.
+  /// [visible] (same length as [points], if supplied) reports false for points
+  /// behind the camera on a pitched view — which project to a meaningless
+  /// position rather than simply being off screen.
+  List<Offset>? projectAll(List<LatLng> points, {List<bool>? visible}) {
+    final projector = this.projector;
+    if (projector == null || points.isEmpty) return null;
+    final out = List<Offset>.filled(points.length, Offset.zero);
+    if (projector.project(points, out, visible: visible) == 0) return null;
+    return out;
+  }
+
+  /// The geographic point under a screen position — gl-js `map.unproject`.
+  ///
+  /// Null before the first frame and on a tier that cannot project.
+  LatLng? unproject(Offset screenPoint) => projector?.unproject(screenPoint);
+
   /// Draws a 3D model inside the map engine, anchored to a geographic point.
   ///
   /// EXPERIMENTAL and imperative for now. The eventual API is a declarative

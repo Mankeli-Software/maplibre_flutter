@@ -2739,10 +2739,59 @@ std::optional<mbgl::style::Filter> parseFilter(MblMap *m,
 
 // One FeatureCollection string from a feature list. An empty result is still
 // valid GeoJSON rather than a null, so the caller parses one shape.
+//
+// `mbgl::Feature` is a GeoJSONFeature PLUS `source`, `sourceLayer` and `state`,
+// and copying into a `feature_collection<double>` slices those three off — so
+// the obvious one-liner silently loses exactly what gl-js's MapGeoJSONFeature
+// promises. They are re-attached here as siblings of `geometry`/`properties`,
+// which is where gl-js puts them.
+//
+// Serialise-then-augment, rather than writing the geometry by hand: geometry
+// serialisation is the part worth not reimplementing.
 std::string featuresToJson(const std::vector<mbgl::Feature> &features) {
   const mapbox::feature::feature_collection<double> collection(features.begin(),
                                                                features.end());
-  return mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+  const auto json = mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+
+  rapidjson::Document doc;
+  doc.Parse(json.c_str());
+  if (doc.HasParseError() || !doc.IsObject()) return json;
+  auto members = doc.FindMember("features");
+  if (members == doc.MemberEnd() || !members->value.IsArray()) return json;
+  auto array = members->value.GetArray();
+  // Same order, same count — the collection was built from `features` in order.
+  if (array.Size() != features.size()) return json;
+
+  auto &allocator = doc.GetAllocator();
+  for (rapidjson::SizeType i = 0; i < array.Size(); ++i) {
+    if (!array[i].IsObject()) continue;
+    const auto &feature = features[i];
+    if (!feature.source.empty()) {
+      array[i].AddMember(
+          "source",
+          rapidjson::Value(feature.source.c_str(), allocator).Move(), allocator);
+    }
+    if (!feature.sourceLayer.empty()) {
+      array[i].AddMember(
+          "sourceLayer",
+          rapidjson::Value(feature.sourceLayer.c_str(), allocator).Move(),
+          allocator);
+    }
+    if (!feature.state.empty()) {
+      std::unordered_map<std::string, mbgl::Value> asMap(feature.state.begin(),
+                                                         feature.state.end());
+      rapidjson::Document state(&allocator);
+      state.Parse(styleValueToJson(mbgl::Value{std::move(asMap)}).c_str());
+      if (!state.HasParseError()) {
+        array[i].AddMember("state", state.Move(), allocator);
+      }
+    }
+  }
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+  return std::string(buffer.GetString(), buffer.GetSize());
 }
 
 char *dupJson(const std::string &json) {
