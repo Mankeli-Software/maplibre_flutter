@@ -540,13 +540,25 @@ class MapLibreStyleController {
     return out;
   }
 
-  // --- Convenience ------------------------------------------------------------
+  // --- Recipes ----------------------------------------------------------------
+  //
+  // NOT style-spec API. Everything above this line mirrors a gl-js `Map` method
+  // one-for-one; everything below is a MACRO over several of them, with an id
+  // scheme of its own invention. The split is deliberate and the naming carries
+  // it: `addLayer` adds a layer, `addCircleLayersFromPoints` adds a source and
+  // up to three layers whose ids you did not choose.
 
   /// Adds [points] as an engine-drawn circle layer, optionally clustered.
   ///
   /// The common case in one call: builds the GeoJSON, the source and the layers.
   /// With [cluster] on, mbgl runs supercluster internally and this adds cluster
   /// bubbles plus the leftover single points.
+  ///
+  /// **This is a recipe, not spec API.** gl-js has nothing like it — the
+  /// canonical shape there is `addSource(id, {type: 'geojson', cluster: true})`
+  /// followed by three `addLayer` calls, which is exactly what this does. The
+  /// returned [MapLibrePointLayers] owns the ids it invented, so cleaning up no
+  /// longer means knowing the scheme.
   ///
   /// **Cluster counts need a font you know the style has.** Pass
   /// [clusterTextFont] (e.g. `['Open Sans Regular']` for MapLibre demotiles,
@@ -557,11 +569,11 @@ class MapLibreStyleController {
   /// every tile, which at best loses the text and at worst holds up the source.
   ///
   /// Ids are derived from [id] (`<id>`, `<id>-clusters`, `<id>-count`,
-  /// `<id>-points`), so [removePoints] can clean them all up.
+  /// `<id>-points`) — read them off the handle rather than rebuilding them.
   ///
   /// [properties] attaches one property map per point, parallel to [points],
   /// which is what data-driven styling reads (`Expr.get('…')`).
-  void addPoints(
+  MapLibrePointLayers addCircleLayersFromPoints(
     String id,
     List<LatLng> points, {
     List<Map<String, Object?>>? properties,
@@ -575,7 +587,8 @@ class MapLibreStyleController {
     List<String>? clusterTextFont,
     String? beforeId,
   }) {
-    if (_layers == null) return;
+    final handle = MapLibrePointLayers._(this, id, clustered: cluster);
+    if (_layers == null) return handle;
     addSource(
       id,
       GeoJsonSource(
@@ -592,7 +605,7 @@ class MapLibreStyleController {
         _circles(id: id, source: id, radius: radius, color: color),
         beforeId: beforeId,
       );
-      return;
+      return handle;
     }
 
     // `point_count` exists only on features supercluster created, so these two
@@ -645,6 +658,8 @@ class MapLibreStyleController {
       ),
       beforeId: beforeId,
     );
+    handle._labelled = clusterTextFont != null;
+    return handle;
   }
 
   /// The plain-points circle layer, shared by the clustered and unclustered
@@ -667,29 +682,80 @@ class MapLibreStyleController {
 
   static const _white = Color(0xFFFFFFFF);
 
-  /// Replaces the points of a layer added with [addPoints], without rebuilding
-  /// it — the engine re-tiles and re-clusters.
+  /// Replaces the points of a layer added with [addCircleLayersFromPoints].
   ///
   /// [properties] attaches one property map per point, parallel to [points], so
   /// data-driven styling (`Expr.get('…')`) keeps working across an update.
   /// Omitting it clears the properties, exactly as passing new data does in
   /// gl-js `source.setData`.
-  void setPoints(
+  void setPointsData(
     String id,
     List<LatLng> points, {
     List<Map<String, Object?>>? properties,
-  }) => setGeoJsonData(
+  }) => setSourceData(
     id,
     jsonEncode(GeoJsonData.points(points, properties: properties).toJson()),
   );
 
-  /// Removes everything [addPoints] created for [id].
-  void removePoints(String id) {
+  /// Removes everything [addCircleLayersFromPoints] created for [id].
+  void removeCircleLayersFromPoints(String id) {
     for (final layer in ['$id-points', '$id-count', '$id-clusters', id]) {
       removeLayer(layer);
     }
     removeSource(id);
   }
+
+  /// Adds [points] as an engine-drawn circle layer.
+  @Deprecated(
+    'Renamed to addCircleLayersFromPoints. The old name sat next to addLayer '
+    'and read as style-spec API, when it is a macro that adds a source and up '
+    'to three layers under ids it invents. Will be removed in a future release.',
+  )
+  void addPoints(
+    String id,
+    List<LatLng> points, {
+    List<Map<String, Object?>>? properties,
+    bool cluster = false,
+    double radius = 5,
+    Color color = const Color(0xFF1565C0),
+    Color clusterColor = const Color(0xFFF57C00),
+    double clusterRadiusPx = 18,
+    int clusterRadius = 50,
+    int clusterMaxZoom = 14,
+    List<String>? clusterTextFont,
+    String? beforeId,
+  }) => addCircleLayersFromPoints(
+    id,
+    points,
+    properties: properties,
+    cluster: cluster,
+    radius: radius,
+    color: color,
+    clusterColor: clusterColor,
+    clusterRadiusPx: clusterRadiusPx,
+    clusterRadius: clusterRadius,
+    clusterMaxZoom: clusterMaxZoom,
+    clusterTextFont: clusterTextFont,
+    beforeId: beforeId,
+  );
+
+  /// Replaces the points of a recipe layer.
+  @Deprecated(
+    'Renamed to setPointsData, to stop reading as a sibling of setPaintProperty '
+    'and to match setSourceData underneath. Will be removed in a future release.',
+  )
+  void setPoints(
+    String id,
+    List<LatLng> points, {
+    List<Map<String, Object?>>? properties,
+  }) => setPointsData(id, points, properties: properties);
+
+  /// Removes everything the points recipe created for [id].
+  @Deprecated(
+    'Renamed to removeCircleLayersFromPoints, to pair with the recipe that '
+    'created them. Will be removed in a future release.',
+  )
+  void removePoints(String id) => removeCircleLayersFromPoints(id);
 
   /// Paints [widget] off-screen and registers the result as an icon named [id],
   /// usable as `icon-image` in a symbol layer.
@@ -835,6 +901,47 @@ typedef MapLibreLayersController = MapLibreStyleController;
 ///
 /// A thin view onto the live map rather than a snapshot: [setData] reaches the
 /// engine. Obtained from [MapLibreStyleController.getSource].
+/// What [MapLibreStyleController.addCircleLayersFromPoints] built.
+///
+/// The recipe invents ids — `<id>`, `<id>-clusters`, `<id>-count`,
+/// `<id>-points` — and before this handle existed that scheme was undocumented
+/// private knowledge that only `removePoints` knew how to undo. Now the object
+/// that made them owns them: [setData] and [remove] need no ids at all, and
+/// [layerIds] gives you the real ones for [MapLibreStyleController.moveLayer]
+/// or a [MapLibreStyleController.queryRenderedFeatures] filter.
+class MapLibrePointLayers {
+  MapLibrePointLayers._(this._style, this.id, {required this.clustered});
+
+  final MapLibreStyleController _style;
+
+  /// The id passed to the recipe. Also the SOURCE id.
+  final String id;
+
+  /// Whether the engine is clustering this source.
+  final bool clustered;
+
+  /// False when no `clusterTextFont` was given, in which case the count-label
+  /// layer was deliberately omitted rather than pointed at a font the style may
+  /// not serve.
+  bool _labelled = false;
+
+  /// The source id — the same as [id], named so call sites read clearly.
+  String get sourceId => id;
+
+  /// Every layer this recipe created, bottom-most first.
+  List<String> get layerIds => clustered
+      ? ['$id-clusters', if (_labelled) '$id-count', '$id-points']
+      : [id];
+
+  /// Replaces the points, without rebuilding the layers — the engine re-tiles
+  /// and re-clusters.
+  void setData(List<LatLng> points, {List<Map<String, Object?>>? properties}) =>
+      _style.setPointsData(id, points, properties: properties);
+
+  /// Removes the source and every layer this recipe created.
+  void remove() => _style.removeCircleLayersFromPoints(id);
+}
+
 class MapLibreSource {
   const MapLibreSource._(
     this._style, {

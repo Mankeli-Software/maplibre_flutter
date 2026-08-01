@@ -629,22 +629,22 @@ class _MapDemoPageState extends State<MapDemoPage> {
         );
 
       case Scenario.enginePoints:
-        layers.addPoints(
+        layers.addCircleLayersFromPoints(
           'bulk',
           _dataset(_engineCounts[_engineCountIndex]),
           radius: 3,
         );
-        _teardown.add(() => layers.removePoints('bulk'));
+        _teardown.add(() => layers.removeCircleLayersFromPoints('bulk'));
 
       case Scenario.engineClusters:
-        layers.addPoints(
+        layers.addCircleLayersFromPoints(
           'bulk',
           _dataset(_engineCounts[_engineCountIndex]),
           cluster: true,
           radius: 4,
           clusterTextFont: _safeFont,
         );
-        _teardown.add(() => layers.removePoints('bulk'));
+        _teardown.add(() => layers.removeCircleLayersFromPoints('bulk'));
 
       case Scenario.typedStyle:
         _applyTypedStyle();
@@ -731,8 +731,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
         await _applyEngineIconsFlat();
 
       case Scenario.hybrid:
-        _teardown.add(() => layers.removePoints('bulk'));
-        layers.addPoints(
+        _teardown.add(() => layers.removeCircleLayersFromPoints('bulk'));
+        layers.addCircleLayersFromPoints(
           'bulk',
           _dataset(_engineCounts[_engineCountIndex]),
           cluster: true,
@@ -760,7 +760,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
     final layers = _controller.style;
     _teardown.add(() {
       layers
-        ..removePoints('gj-sensors')
+        ..removeCircleLayersFromPoints('gj-sensors')
         ..removeLayer('gj-buoys-dots')
         ..removeSource('gj-buoys')
         ..removeLayer('gj-cities-labels')
@@ -900,7 +900,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
     // And the OTHER way of getting per-point properties in: addPoints now takes
     // them, so a recipe-built layer can carry data-driven attributes too. Query
     // one of these and its properties come back with it.
-    layers.addPoints(
+    layers.addCircleLayersFromPoints(
       'gj-sensors',
       const [LatLng(63.0, 19.5), LatLng(65.0, 24.0)],
       properties: const [
@@ -1151,9 +1151,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
     _teardown.add(() {
       layers
         ..removeLayer('bulk-icons')
-        ..removePoints('bulk');
+        ..removeCircleLayersFromPoints('bulk');
     });
-    layers.addPoints(
+    layers.addCircleLayersFromPoints(
       'bulk',
       _dataset(_engineCounts[_engineCountIndex]),
       cluster: true,

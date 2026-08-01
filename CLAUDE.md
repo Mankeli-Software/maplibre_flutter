@@ -466,18 +466,18 @@ not an accident:
 same namespace; Apple's persistent-vs-transient padding **split** carrying gl-js's word `padding`;
 declarative widget props with no public `controller.setStyle` (§3).
 
-**Renames decided, deliberately not yet executed.** Each is cheap now and breaking after 1.0.
-**Do not add new API under the left-hand vocabulary.** Each lands with a `@Deprecated` alias for
-one release, in the stage named:
+**Renames.** Each is cheap now and breaking after 1.0, so each lands with a `@Deprecated` alias
+for one release. **Do not add new API under a left-hand name.** DONE ones are listed so the
+deprecated aliases are recognisable as scheduled removals rather than live API:
 
 | Today | Becomes | Stage |
 | --- | --- | --- |
-| `camera.move(MapCamera, {Duration?})` | `camera.jumpTo` / `easeTo` / `flyTo` — `move(duration:)` is really `flyTo`, and `easeTo` is unreachable | 3 |
-| `camera.getPosition()` | `camera.getCamera()` — matches the platform interface and `MLNMapCamera` | 3 |
-| `controller.layers` | `controller.style` — it owns sources, images and transitions; queries move off it | 5 |
-| `layers.setGeoJsonData(id, json)` | `style.setSourceData(id, data)`, then `style.getSource(id).setData(…)` | 5 |
+| ~~`camera.move(MapCamera, {Duration?})`~~ | `camera.jumpTo` / `easeTo` / `flyTo` — DONE, `move` is deprecated | 3 |
+| ~~`camera.getPosition()`~~ | `camera.getCamera()` — DONE, matches the platform interface and `MLNMapCamera` | 3 |
+| ~~`controller.layers`~~ | `controller.style` — DONE; it owns sources, images and transitions | 5 |
+| ~~`layers.setGeoJsonData(id, json)`~~ | `style.setSourceData(id, data)` / `style.getSource(id).setData(…)` — DONE | 5 |
+| ~~`layers.addPoints` / `setPoints` / `removePoints`~~ | `style.addCircleLayersFromPoints` (returns a `MapLibrePointLayers` owning its generated ids) / `setPointsData` / `removeCircleLayersFromPoints` — DONE. It is a macro over one source and up to three layers, not spec API | 5 |
 | `MapLibreQueriedFeature` | `QueriedFeature` (gl-js `MapGeoJSONFeature`) over a sealed `GeoJsonFeature` | 1, 6 |
-| `layers.addPoints` / `setPoints` / `removePoints` | a recipe name outside the spec-named namespace — it is a three-layer macro, not spec API | 5 |
 
 ---
 

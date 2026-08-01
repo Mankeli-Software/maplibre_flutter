@@ -574,7 +574,7 @@ void main() {
       final rec = _RecordingLayers();
       final layers = MapLibreStyleController()..attachTo(rec);
 
-      layers.addPoints('pts', const [LatLng(60.45, 22.27)]);
+      layers.addCircleLayersFromPoints('pts', const [LatLng(60.45, 22.27)]);
 
       expect(
         rec.sources['pts'],
@@ -594,7 +594,9 @@ void main() {
       final rec = _RecordingLayers();
       final layers = MapLibreStyleController()..attachTo(rec);
 
-      layers.addPoints('c', const [LatLng(1, 2)], cluster: true);
+      layers.addCircleLayersFromPoints('c', const [
+        LatLng(1, 2),
+      ], cluster: true);
 
       expect(
         rec.sources['c'],
@@ -622,7 +624,7 @@ void main() {
       final rec = _RecordingLayers();
       final layers = MapLibreStyleController()..attachTo(rec);
 
-      layers.setPoints('p', const [LatLng(1, 2)]);
+      layers.setPointsData('p', const [LatLng(1, 2)]);
 
       expect(
         rec.lastData,

@@ -155,9 +155,9 @@ void main() {
     expect(layers.isSupported, isFalse);
     // None of these should throw when nothing is bound.
     layers
-      ..addPoints('x', const [LatLng(1, 2)])
-      ..setPoints('x', const [LatLng(3, 4)])
-      ..removePoints('x')
+      ..addCircleLayersFromPoints('x', const [LatLng(1, 2)])
+      ..setPointsData('x', const [LatLng(3, 4)])
+      ..removeCircleLayersFromPoints('x')
       ..addSourceJson('s', '{}')
       ..addLayerJson('{}')
       ..removeImage('i');
@@ -168,7 +168,7 @@ void main() {
     final layers = MapLibreStyleController()..attachTo(rec);
     expect(layers.isSupported, isTrue);
 
-    layers.addPoints('pts', const [LatLng(60.45, 22.27)]);
+    layers.addCircleLayersFromPoints('pts', const [LatLng(60.45, 22.27)]);
 
     final src = jsonDecode(rec.sources['pts']!) as Map<String, Object?>;
     expect(src['type'], 'geojson');
@@ -188,45 +188,52 @@ void main() {
     expect(layer['source'], 'pts');
   });
 
-  test('addPoints(cluster: true) sets cluster options and partitions layers', () {
-    final rec = _RecordingLayers();
-    final layers = MapLibreStyleController()..attachTo(rec);
+  test(
+    'addCircleLayersFromPoints(cluster: true) sets cluster options and partitions layers',
+    () {
+      final rec = _RecordingLayers();
+      final layers = MapLibreStyleController()..attachTo(rec);
 
-    layers.addPoints(
-      'c',
-      const [LatLng(1, 2), LatLng(3, 4)],
-      cluster: true,
-      clusterRadius: 60,
-      clusterMaxZoom: 12,
-      // Named so the count layer is emitted — see the font-guard test below.
-      clusterTextFont: ['Open Sans Regular'],
-    );
+      layers.addCircleLayersFromPoints(
+        'c',
+        const [LatLng(1, 2), LatLng(3, 4)],
+        cluster: true,
+        clusterRadius: 60,
+        clusterMaxZoom: 12,
+        // Named so the count layer is emitted — see the font-guard test below.
+        clusterTextFont: ['Open Sans Regular'],
+      );
 
-    final src = jsonDecode(rec.sources['c']!) as Map<String, Object?>;
-    expect(src['cluster'], isTrue);
-    expect(src['clusterRadius'], 60);
-    expect(src['clusterMaxZoom'], 12);
+      final src = jsonDecode(rec.sources['c']!) as Map<String, Object?>;
+      expect(src['cluster'], isTrue);
+      expect(src['clusterRadius'], 60);
+      expect(src['clusterMaxZoom'], 12);
 
-    // Cluster bubbles + count labels + leftover single points.
-    expect(rec.layers, hasLength(3));
-    final decoded = rec.layers
-        .map((l) => jsonDecode(l) as Map<String, Object?>)
-        .toList();
-    expect(decoded.map((l) => l['id']), ['c-clusters', 'c-count', 'c-points']);
+      // Cluster bubbles + count labels + leftover single points.
+      expect(rec.layers, hasLength(3));
+      final decoded = rec.layers
+          .map((l) => jsonDecode(l) as Map<String, Object?>)
+          .toList();
+      expect(decoded.map((l) => l['id']), [
+        'c-clusters',
+        'c-count',
+        'c-points',
+      ]);
 
-    // point_count only exists on features supercluster created, so these two
-    // filters must be exact complements or points get drawn twice / not at all.
-    expect(decoded[0]['filter'], ['has', 'point_count']);
-    expect(decoded[2]['filter'], [
-      '!',
-      ['has', 'point_count'],
-    ]);
-    expect(
-      decoded[1]['type'],
-      'symbol',
-      reason: 'count labels are a symbol layer',
-    );
-  });
+      // point_count only exists on features supercluster created, so these two
+      // filters must be exact complements or points get drawn twice / not at all.
+      expect(decoded[0]['filter'], ['has', 'point_count']);
+      expect(decoded[2]['filter'], [
+        '!',
+        ['has', 'point_count'],
+      ]);
+      expect(
+        decoded[1]['type'],
+        'symbol',
+        reason: 'count labels are a symbol layer',
+      );
+    },
+  );
 
   // Regression: addPoints used to emit the count label with no `text-font`, so
   // mbgl fell back to "Open Sans Regular,Arial Unicode MS Regular" — present in
@@ -237,7 +244,7 @@ void main() {
     final rec = _RecordingLayers();
     final layers = MapLibreStyleController()..attachTo(rec);
 
-    layers.addPoints('c', const [LatLng(1, 2)], cluster: true);
+    layers.addCircleLayersFromPoints('c', const [LatLng(1, 2)], cluster: true);
 
     final ids = rec.layers
         .map((l) => (jsonDecode(l) as Map<String, Object?>)['id'])
@@ -254,7 +261,7 @@ void main() {
     final rec = _RecordingLayers();
     final layers = MapLibreStyleController()..attachTo(rec);
 
-    layers.addPoints(
+    layers.addCircleLayersFromPoints(
       'c',
       const [LatLng(1, 2)],
       cluster: true,
@@ -275,8 +282,8 @@ void main() {
     final layers = MapLibreStyleController()..attachTo(rec);
 
     layers
-      ..addPoints('c', const [LatLng(1, 2)], cluster: true)
-      ..removePoints('c');
+      ..addCircleLayersFromPoints('c', const [LatLng(1, 2)], cluster: true)
+      ..removeCircleLayersFromPoints('c');
 
     expect(
       rec.removedLayers,
@@ -290,8 +297,8 @@ void main() {
     final layers = MapLibreStyleController()..attachTo(rec);
 
     layers
-      ..addPoints('p', const [LatLng(1, 2)])
-      ..setPoints('p', const [LatLng(5, 6), LatLng(7, 8)]);
+      ..addCircleLayersFromPoints('p', const [LatLng(1, 2)])
+      ..setPointsData('p', const [LatLng(5, 6), LatLng(7, 8)]);
 
     expect(rec.layers, hasLength(1), reason: 'no new layers on a data update');
     final data = jsonDecode(rec.lastData!) as Map<String, Object?>;
@@ -304,7 +311,7 @@ void main() {
 
     // Without these, data-driven styling — the whole point of an engine layer —
     // is unreachable through this API.
-    layers.addPoints(
+    layers.addCircleLayersFromPoints(
       'p',
       const [LatLng(60.45, 22.27)],
       properties: const [
@@ -317,7 +324,7 @@ void main() {
             as List;
     expect(((added.single as Map)['properties'] as Map)['kind'], 'harbour');
 
-    layers.setPoints(
+    layers.setPointsData(
       'p',
       const [LatLng(59.33, 18.06)],
       properties: const [
@@ -939,6 +946,73 @@ void main() {
         ..replayRetained()
         ..replayRetained();
       expect(platform.layers.length, 1, reason: 'the snapshot is consumed');
+    });
+  });
+
+  // 5.10. The recipe invents four ids; before the handle, undoing that meant
+  // knowing the scheme, and only removePoints did.
+  group('point-layer recipe', () {
+    test('the handle reports the ids the recipe invented', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      final plain = style.addCircleLayersFromPoints('plain', const [
+        LatLng(60, 22),
+      ]);
+      expect(plain.layerIds, equals(['plain']));
+      expect(plain.sourceId, 'plain');
+      expect(plain.clustered, isFalse);
+
+      final clustered = style.addCircleLayersFromPoints(
+        'bulk',
+        const [LatLng(60, 22)],
+        cluster: true,
+        clusterTextFont: const ['Open Sans Regular'],
+      );
+      expect(
+        clustered.layerIds,
+        equals(['bulk-clusters', 'bulk-count', 'bulk-points']),
+        reason: 'bottom-most first, and the caller never guesses the scheme',
+      );
+    });
+
+    test('no clusterTextFont means no count layer, and the handle says so', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      final handle = style.addCircleLayersFromPoints('bulk', const [
+        LatLng(60, 22),
+      ], cluster: true);
+      // Omitted on purpose: naming a font the style does not serve makes mbgl
+      // 404 the glyph range on every tile.
+      expect(handle.layerIds, isNot(contains('bulk-count')));
+      expect(platform.layersById.keys, isNot(contains('bulk-count')));
+    });
+
+    test('remove() cleans up everything the recipe made', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      style
+          .addCircleLayersFromPoints(
+            'bulk',
+            const [LatLng(60, 22)],
+            cluster: true,
+            clusterTextFont: const ['Open Sans Regular'],
+          )
+          .remove();
+
+      expect(platform.layersById, isEmpty);
+      expect(platform.sources, isEmpty);
+    });
+
+    test('the deprecated names still work, and land on the same layers', () {
+      final platform = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(platform);
+      // ignore: deprecated_member_use_from_same_package
+      style.addPoints('bulk', const [LatLng(60, 22)]);
+      expect(platform.layersById.keys, equals(['bulk']));
+      // ignore: deprecated_member_use_from_same_package
+      style.removePoints('bulk');
+      expect(platform.layersById, isEmpty);
     });
   });
 }

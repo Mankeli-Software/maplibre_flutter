@@ -164,8 +164,10 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 5.9b Opt-in `MapLibreMap.retainRuntimeStyle` replaying app-added **sources and layers**.
       Deliberately NOT automatic — every upstream binding requires the app to re-add from the
       style-loaded event, and an automatic replay collides with an app that does.
-- [ ] 5.10 Demote `addPoints`/`setPoints`/`removePoints` to a clearly-named recipe — they have no
-      upstream equivalent and currently read as spec API.
+- [x] 5.10 `addPoints`/`setPoints`/`removePoints` demoted to a named recipe:
+      `addCircleLayersFromPoints` returning a `MapLibrePointLayers` handle that owns the ids it
+      invented, plus `setPointsData` / `removeCircleLayersFromPoints`. Old names kept as
+      `@Deprecated` aliases for one release.
 - [ ] 5.11 Namespace model layers internally (`mbl:model:<id>`) inside the C shim, closing three live
       bugs: a model deleted via `removeLayer` resurrects on the next style load; its Dart `_models`
       entry keeps a `Ticker` calling `triggerRepaint` forever; and `removeModel(id)` can delete an
@@ -892,4 +894,24 @@ never existed.
   after its add, so the live-snapshot behaviour is visible rather than asserted.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (51) / `format` clean /
   2 macOS integration tests (`macos_retain_style_test.dart`) green on hardware.
+
+### 2026-08-01 — Stage 5 (5.10) — the points recipe stops pretending to be spec API
+
+- **The complaint was never the convenience, it was the neighbourhood.** `addPoints` sat next to
+  `addLayer` on a namespace that is otherwise a 1:1 mirror of gl-js's `Map` style methods, so it
+  read as spec API when it is a macro over one source and up to three layers — and it invented ids
+  (`<id>`, `<id>-clusters`, `<id>-count`, `<id>-points`) that were private knowledge only
+  `removePoints` had. gl-js has no equivalent at all; the canonical shape there is exactly what
+  this expands to.
+- **The handle is the actual fix.** `addCircleLayersFromPoints` returns `MapLibrePointLayers`, and
+  `remove()` / `setData()` need no ids, while `layerIds` hands over the real ones for `moveLayer` or
+  a query filter. `_labelled` tracks whether the count layer was built, so the list is honest when
+  no `clusterTextFont` was given — that omission is deliberate (naming a font the style does not
+  serve makes mbgl 404 the glyph range on every tile) and the handle should not claim a layer that
+  is not there.
+- **A section comment now marks the boundary** in `map_style_controller.dart`: everything above is a
+  gl-js method, everything below is a recipe. That is cheaper to maintain than remembering.
+- The example app migrated to the new names in the same commit — it is the first consumer, and a
+  deprecation nobody has walked is a deprecation that does not compile.
+- **Gates:** `analyze` clean / 292 `maplibre_flutter` tests green / `format` clean.
 
