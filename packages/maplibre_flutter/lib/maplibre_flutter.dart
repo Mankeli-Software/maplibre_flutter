@@ -29,7 +29,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapLibreStyleLayers;
 
 export 'geojson.dart';
-export 'src/map_layers_controller.dart';
+export 'src/map_style_controller.dart';
 export 'src/maplibre_map.dart';
 export 'src/maplibre_map_controller.dart';
 export 'src/marker.dart';

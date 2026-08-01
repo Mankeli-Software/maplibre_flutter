@@ -659,3 +659,52 @@ place in the stack that can tell a pan from a pinch from a twist from a shove.
 - **Next run:** stage 5, style and data operations. Highest row count in the backlog (11 tasks), and
   the first task is the `controller.layers` → `controller.style` rename, which touches every call
   site in the example.
+
+### 2026-08-01 — Stage 5 (5.1) + a P0 regression the USER found by running the app
+
+**5.1 done:** `controller.layers` → `controller.style` (Apple's `MLNStyle` is what the object
+actually is — sources, images and the style-wide transition, not a layer list), with the class
+renamed `MapLibreStyleController` and `@Deprecated` aliases for both. `queryRenderedFeatures` moved
+to the controller ROOT, where both upstreams agree queries belong (gl-js `map.queryRenderedFeatures`,
+Apple `-visibleFeaturesInRect:`), keeping a forward on the style namespace. The `attach` parameter
+`style:` became `styleUri:` — it now shadowed the new field.
+
+**The regression, and why every test missed it.** The user reported the example stuck on "loading
+the style". It was: `attached=true, style=false` while the map rendered perfectly.
+
+`FrameObserver::onDidFinishLoadingStyle` overrode `DiagnosticObserver`'s **without delegating**, and
+the base is where `styleLoadCount` is bumped — the bookkeeping that lets a late-registering callback
+be told about a style that has already loaded. **Continuous mode uses FrameObserver, and every
+shipped tier is continuous.** So the count never moved, the replay never fired, and the live event
+had already been missed — a real tier can only register after `mbl_map_create` returns and, on the
+texture tiers, after a registrar round trip, by which time the style has usually loaded (~170 ms).
+
+Three test layers were green throughout:
+- the native replay test used **Static** mode (`continuous: false` is the default), which routes
+  through `DiagnosticObserver` directly and therefore did the bookkeeping;
+- the conformance suite drives a fake core, so it never exercised the observer at all;
+- `macos_camera_test` awaited `onReady` but subscribed to nothing late, and its own timing let it
+  see the live event.
+
+Fixed by delegating, and pinned by two tests chosen to fail without the fix: a **continuous-mode**
+replay test in the native suite, and an integration test that subscribes to `onStyleLoaded` only
+AFTER `onReady` — the exact shape of what the app does.
+
+**Also from the report — the example's structure was wrong.** Each demo is supposed to be a
+`Scenario` case ("one thing under test at a time"; the file's own comment says the app used to be a
+pile of interacting toggles and that this was unclear). The stage 2-4 demos had been added as global
+BUTTONS instead. They are now scenarios — `cameraVerbs`, `cameraConstraints`, `diagnostics`,
+`capabilities` — each with its own teardown, and the control bar is back to actions that make sense
+anywhere plus a couple that appear only for their scenario.
+
+**And the app no longer gates its whole UI on `onReady`.** It enables on ATTACH, because
+`_applyScenario` re-runs from `onStyleLoaded` anyway; a slow or 404ing style used to make the demo
+untestable. The loading label now names what is outstanding (the map / the style / the first frame)
+and counts seconds, so a wait can never again be indistinguishable from a hang.
+
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (41) / `format` clean /
+  ffigen diff-clean / `macos_camera_test` 9 tests and `example_app_test` 2 tests, both on macOS
+  hardware.
+- **Lesson worth keeping:** the harness default (Static) differed from every shipped configuration
+  (Continuous), and that gap hid a P0 for two commits. When a mode flag exists, at least one test
+  must use the one that ships.

@@ -488,7 +488,7 @@ void main() {
   group('controller', () {
     test('addLayer / addSource forward the encoded document', () {
       final rec = _RecordingLayers();
-      final layers = MapLibreLayersController()..attachTo(rec);
+      final layers = MapLibreStyleController()..attachTo(rec);
 
       layers
         ..addSource(
@@ -506,7 +506,7 @@ void main() {
     });
 
     test('addLayer / addSource are no-ops before attach', () {
-      final layers = MapLibreLayersController();
+      final layers = MapLibreStyleController();
       expect(
         () => layers
           ..addSource('s', const GeoJsonSource(data: GeoJsonData.url('u')))
@@ -522,7 +522,7 @@ void main() {
     // point of definition-of-done item 4 in docs/typed-style-api.md.
     test('unclustered: one source, one circle layer', () {
       final rec = _RecordingLayers();
-      final layers = MapLibreLayersController()..attachTo(rec);
+      final layers = MapLibreStyleController()..attachTo(rec);
 
       layers.addPoints('pts', const [LatLng(60.45, 22.27)]);
 
@@ -542,7 +542,7 @@ void main() {
 
     test('clustered: cluster options, complementary filters, step radius', () {
       final rec = _RecordingLayers();
-      final layers = MapLibreLayersController()..attachTo(rec);
+      final layers = MapLibreStyleController()..attachTo(rec);
 
       layers.addPoints('c', const [LatLng(1, 2)], cluster: true);
 
@@ -570,7 +570,7 @@ void main() {
 
     test('setPoints re-encodes the feature collection only', () {
       final rec = _RecordingLayers();
-      final layers = MapLibreLayersController()..attachTo(rec);
+      final layers = MapLibreStyleController()..attachTo(rec);
 
       layers.setPoints('p', const [LatLng(1, 2)]);
 

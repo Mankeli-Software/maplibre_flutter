@@ -42,10 +42,18 @@ typedef MapLibreQueriedFeature = QueriedFeature;
 /// The two compose. The usual shape is bulk data here, and a handful of widget
 /// markers for the things that must be live.
 ///
-/// Reached from the app-facing controller as `controller.layers`. Only available
+/// Reached from the app-facing controller as `controller.style`. Only available
 /// on renderers that can do it (the `mbgl-core` tiers); [isSupported] tells you.
-class MapLibreLayersController {
-  MapLibreLayersController();
+///
+/// **Named for what it is.** This object owns sources, images and the
+/// style-wide transition as well as layers — it is Apple's `MLNStyle`, whose
+/// `sources` / `layers` / `-setImage:forName:` / `transition` it mirrors — so
+/// `layers` was a misnomer that would only get worse as `getSource`, `hasImage`
+/// and `listImages` land on it. `controller.style` does not conflict with the
+/// rule against a public `controller.setStyle`: that rule is about the style
+/// DOCUMENT being a widget property, and a namespace is not a setter.
+class MapLibreStyleController {
+  MapLibreStyleController();
 
   MapLibreStyleLayers? _layers;
 
@@ -513,3 +521,11 @@ class MapLibreLayersController {
     return image;
   }
 }
+
+/// The style namespace.
+@Deprecated(
+  'Renamed to MapLibreStyleController: it owns sources, images and the '
+  'style-wide transition as well as layers, which is Apple MLNStyle rather '
+  'than a layer list. Will be removed in a future release.',
+)
+typedef MapLibreLayersController = MapLibreStyleController;

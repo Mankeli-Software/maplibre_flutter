@@ -136,7 +136,10 @@ class _MapLibreMapState extends State<MapLibreMap> {
     _styleLoads = _controller.onStyleLoaded.listen((_) {
       if (mounted) widget.onStyleLoaded?.call();
     });
-    _attach = _controller.attach(style: widget.style, options: widget.options);
+    _attach = _controller.attach(
+      styleUri: widget.style,
+      options: widget.options,
+    );
     _applyModelsWhenAttached(const <MapLibreModel>[], widget.models);
   }
 
@@ -205,7 +208,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
       }
       setState(() {
         _attach = _controller.attach(
-          style: widget.style,
+          styleUri: widget.style,
           options: widget.options,
         );
       });

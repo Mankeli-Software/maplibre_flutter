@@ -1434,6 +1434,41 @@ void main() {
     );
   });
 
+  // CONTINUOUS mode, deliberately — and this is the whole point of the test.
+  // Continuous uses FrameObserver, Static uses DiagnosticObserver directly, and
+  // the replay bookkeeping lived only in the latter. Every SHIPPED tier is
+  // continuous, so a Static-only replay test passed while the real app waited
+  // for a style-loaded event that never came.
+  test('a late listener gets the replay in CONTINUOUS mode too', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+      continuous: true,
+    );
+    addTearDown(map.dispose);
+    // Register LATE, as a real tier must: it can only do so after create
+    // returns, and on the texture tiers after a registrar round trip.
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 10)) {
+      if (seen.any((d) => d.kind == CoreDiagnosticKind.styleLoaded)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      seen.map((d) => d.kind),
+      contains(CoreDiagnosticKind.styleLoaded),
+      reason:
+          'without this the app renders a map and waits for readiness forever',
+    );
+  });
+
   test('a style URL that 404s is reported instead of silently blank', () async {
     final map = MapLibreCoreMap.create(
       width: 256,

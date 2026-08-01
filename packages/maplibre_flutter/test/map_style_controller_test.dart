@@ -68,7 +68,7 @@ class _RecordingLayers implements MapLibreStyleLayers {
 
 void main() {
   test('is a no-op (not a crash) before attach / on unsupported renderers', () {
-    final layers = MapLibreLayersController();
+    final layers = MapLibreStyleController();
     expect(layers.isSupported, isFalse);
     // None of these should throw when nothing is bound.
     layers
@@ -82,7 +82,7 @@ void main() {
 
   test('addPoints builds a geojson source with lng,lat order', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
     expect(layers.isSupported, isTrue);
 
     layers.addPoints('pts', const [LatLng(60.45, 22.27)]);
@@ -107,7 +107,7 @@ void main() {
 
   test('addPoints(cluster: true) sets cluster options and partitions layers', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     layers.addPoints(
       'c',
@@ -152,7 +152,7 @@ void main() {
   // rendering, so the dataset silently vanished after a style toggle.
   test('omits the cluster count layer unless a font is named', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     layers.addPoints('c', const [LatLng(1, 2)], cluster: true);
 
@@ -169,7 +169,7 @@ void main() {
 
   test('adds the count layer with the given font when one is named', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     layers.addPoints(
       'c',
@@ -189,7 +189,7 @@ void main() {
 
   test('removePoints tears down every layer addPoints created', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     layers
       ..addPoints('c', const [LatLng(1, 2)], cluster: true)
@@ -204,7 +204,7 @@ void main() {
 
   test('setPoints replaces data without touching layers', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     layers
       ..addPoints('p', const [LatLng(1, 2)])
@@ -217,7 +217,7 @@ void main() {
 
   test('addPoints and setPoints carry per-point properties', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     // Without these, data-driven styling — the whole point of an engine layer —
     // is unreachable through this API.
@@ -253,7 +253,7 @@ void main() {
 
   test('queryRenderedFeatures parses clusters and single points', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
     rec.queryJson = jsonEncode({
       'type': 'FeatureCollection',
       'features': [
@@ -297,7 +297,7 @@ void main() {
 
   test('queryRenderedFeatures keeps every geometry type, not just points', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
     // Turku (north-east) and Stockholm (south-west of it) — asymmetric on both
     // axes, so a swapped or mirrored coordinate cannot pass by symmetry.
     rec.queryJson = jsonEncode({
@@ -364,7 +364,7 @@ void main() {
 
   test('queryRenderedFeatures degrades to empty, never throws', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
 
     // Runs on camera ticks, so a bad/absent payload must not blow up the frame.
     rec.queryJson = null;
@@ -380,7 +380,7 @@ void main() {
 
   test('one unreadable feature does not lose the readable ones', () {
     final rec = _RecordingLayers();
-    final layers = MapLibreLayersController()..attachTo(rec);
+    final layers = MapLibreStyleController()..attachTo(rec);
     // These used to throw TypeError, which the `on FormatException` catch did
     // not cover — the method's own dartdoc promised it never throws.
     rec.queryJson = jsonEncode({
@@ -429,7 +429,7 @@ void main() {
   testWidgets('rasterizeWidget paints a widget off-screen', (tester) async {
     await tester.runAsync(() async {
       // Deliberately never added to the visible tree.
-      final image = await MapLibreLayersController.rasterizeWidget(
+      final image = await MapLibreStyleController.rasterizeWidget(
         const ColoredBox(color: Color(0xFF00FF00)),
         size: const Size(10, 10),
         pixelRatio: 2,
@@ -455,7 +455,7 @@ void main() {
   ) async {
     await tester.runAsync(() async {
       final rec = _RecordingLayers();
-      final layers = MapLibreLayersController()..attachTo(rec);
+      final layers = MapLibreStyleController()..attachTo(rec);
 
       await layers.addWidgetIcon(
         'pin',

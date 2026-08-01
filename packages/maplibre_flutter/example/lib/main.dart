@@ -116,6 +116,44 @@ enum Scenario {
         'dropped silently, so a fill or line layer answered every query with '
         'nothing.',
   ),
+  cameraVerbs(
+    'Camera verbs',
+    'The gl-js camera API running in the ENGINE, not in Dart: jumpTo with a '
+        'PARTIAL camera (zoom only — centre, bearing and pitch survive), easeTo '
+        'along a straight line, flyTo along mbgl\'s own van Wijk arc, rotateTo, '
+        'resetNorth, and zoomIn/zoomOut anchored on a CORNER so you can see the '
+        'anchor is honoured. Each step is awaited: the Future completes when the '
+        'engine says the transition ended, and a superseded one completes too '
+        'rather than hanging. Then fitBounds frames the dataset.',
+  ),
+  cameraConstraints(
+    'Camera constraints',
+    'gl-js setMaxBounds semantics: the whole VIEWPORT is kept inside the '
+        'Nordics, and zoom is clamped to 3..12. Try to pan away or zoom out — '
+        'the engine refuses. mbgl\'s own BoundOptions constrains the camera '
+        'CENTRE under that same word, so the controller sets the constrain mode '
+        'to match gl-js rather than shipping Android semantics under a gl-js '
+        'name.',
+  ),
+  diagnostics(
+    'Engine diagnostics',
+    'Everything mbgl fails at asynchronously used to be a blank map and total '
+        'silence. This provokes three DIFFERENT failures — removing a layer '
+        'that is not there, removing a source a layer still uses, and a font no '
+        'style serves — and shows each arriving on controller.onError. The font '
+        'one is the important one: mbgl reports a glyph 404 ONLY through its '
+        'log, never through the observer.',
+  ),
+  capabilities(
+    'Capabilities + value types',
+    'What this renderer can actually do, read live from '
+        'controller.capabilities — the tiers genuinely differ, and this is the '
+        'supported way to ask rather than calling something and watching it '
+        'no-op. Also shows LatLngBounds over the engine dataset, a partial '
+        'CameraOptions, and LatLng.sanitized/wrapped against values mbgl::LatLng '
+        'would throw on (a throw across the FFI boundary being undefined '
+        'behaviour rather than a catchable error).',
+  ),
   hybrid(
     'Hybrid: animated + 50k',
     'All 50k live in the engine, clustered there. queryRenderedFeatures asks '
@@ -196,6 +234,15 @@ class MapDemoPage extends StatefulWidget {
 class _MapDemoPageState extends State<MapDemoPage> {
   final MapLibreMapController _controller = MapLibreMapController();
   bool _ready = false;
+
+  /// Whether a style has finished loading at least once. Separate from [_ready]
+  /// so the UI can say WHICH half of readiness is outstanding — an eternal
+  /// spinner that cannot say why is indistinguishable from a hang.
+  bool _styleSeen = false;
+
+  /// Ticks while waiting, so the loading label can report how long it has been.
+  Timer? _readyWatchdog;
+  int _waitingSeconds = 0;
   String _style = _demotiles;
   int _placeIndex = 0;
 
@@ -235,7 +282,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // Live engine diagnostics. Kept short — this is a demo, not a log viewer.
   final List<String> _diagnostics = <String>[];
   bool _showDiagnostics = false;
-  bool _constrained = false;
+  bool _showCapabilities = false;
 
   /// Why the camera is moving right now; empty when it is still.
   Set<MapCameraChangeReason> _moveReasons = const {};
@@ -384,6 +431,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
       _controller.onCameraMoveEnd.listen((_) {
         if (mounted) setState(() => _moveReasons = const {});
       }),
+      _controller.onStyleLoaded.listen((_) {
+        if (mounted && !_styleSeen) setState(() => _styleSeen = true);
+      }),
       _controller.onError.listen((error) => _logDiagnostic('$error')),
       _controller.onStyleImageMissing.listen(
         (id) => _logDiagnostic('style image missing: $id'),
@@ -391,8 +441,28 @@ class _MapDemoPageState extends State<MapDemoPage> {
     ]);
     _controller.onReady.then((_) async {
       if (!mounted) return;
-      setState(() => _ready = true);
+      _readyWatchdog?.cancel();
+      setState(() {
+        _ready = true;
+        _waitingSeconds = 0;
+      });
       await _applyScenario();
+    });
+    // Report how long readiness is taking, and to say what is missing. A map
+    // whose style 404s never becomes ready — correctly, since gl-js never fires
+    // `load` either — and without this the app would just sit there.
+    _readyWatchdog = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || _ready) {
+        timer.cancel();
+        return;
+      }
+      setState(() => _waitingSeconds++);
+      if (_waitingSeconds == 8) {
+        _logDiagnostic(
+          'still waiting: attached=${_controller.isAttached} '
+          'style=$_styleSeen — check the network, or watch for an error above',
+        );
+      }
     });
   }
 
@@ -408,6 +478,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   @override
   void dispose() {
+    _readyWatchdog?.cancel();
     for (final subscription in _eventSubscriptions) {
       subscription.cancel();
     }
@@ -435,8 +506,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// Also re-run after a style swap: loading a style REPLACES the whole
   /// document, so every source and layer we added goes with it.
   Future<void> _applyScenario() async {
-    if (!_ready) return;
-    final layers = _controller.layers;
+    // Needs a bound map, not a fully READY one: engine calls before the style
+    // lands are dropped by mbgl, but onStyleLoaded re-runs this the moment the
+    // document is in, so an early switch costs nothing and an early return
+    // would leave the scenario unapplied.
+    if (!_controller.isAttached) return;
+    final layers = _controller.style;
 
     // Clear everything the PREVIOUS scenario added — exactly that, and nothing
     // else.
@@ -467,7 +542,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
     // number hangs in the air for a few frames after the circle has gone.
     //
     // Deliberately NOT worked around here. Every lever is style-wide — see
-    // MapLibreLayersController.setTransitionOptions — so buying this back means
+    // MapLibreStyleController.setTransitionOptions — so buying this back means
     // overriding the style's own transition behaviour and changing how the
     // BASEMAP's labels fade, which is a worse trade than the artifact. The knob
     // is there for apps that decide otherwise. maplibre-gl-js behaves the same.
@@ -505,6 +580,23 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
       case Scenario.geojsonFeatures:
         _applyGeoJsonFeatures();
+
+      case Scenario.cameraVerbs:
+        // Runs on entry so the scenario demonstrates itself; the Replay button
+        // in the control bar runs it again.
+        await _runCameraTour();
+
+      case Scenario.cameraConstraints:
+        await _applyConstraints(on: true);
+        _teardown.add(() => unawaited(_applyConstraints(on: false)));
+
+      case Scenario.diagnostics:
+        setState(() => _showDiagnostics = true);
+        _breakSomething();
+
+      case Scenario.capabilities:
+        setState(() => _showCapabilities = true);
+        _teardown.add(() => setState(() => _showCapabilities = false));
 
       case Scenario.models3d:
         await _placeModel();
@@ -546,7 +638,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// `GeoJsonData.featureCollection(...)`. No JSON string is written anywhere,
   /// and the `[lng, lat]` flip happens once, inside the types.
   void _applyGeoJsonFeatures() {
-    final layers = _controller.layers;
+    final layers = _controller.style;
     _teardown.add(() {
       layers
         ..removePoints('gj-sensors')
@@ -734,7 +826,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
     if (screen == null || !_controller.capabilities.styleLayers) return;
     // A box around the finger rather than a single pixel: a four-pixel line is
     // hard to hit dead-on.
-    final found = _controller.layers.queryRenderedFeatures(
+    final found = _controller.queryRenderedFeatures(
       Rect.fromCenter(center: screen, width: 24, height: 24),
     );
     setState(() {
@@ -752,7 +844,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// [_applyEngineIconsFlat] before this existed — the same document was a
   /// nested pile of maps.
   void _applyTypedStyle() {
-    final layers = _controller.layers;
+    final layers = _controller.style;
     // Layers before sources: mbgl refuses to remove a source a layer still
     // references, and now says so out loud.
     _teardown.add(() {
@@ -883,7 +975,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   ///
   /// Returns false if the widget went away mid-rasterize (it is async).
   Future<bool> _registerWidgetIcon() async {
-    await _controller.layers.addWidgetIcon(
+    await _controller.style.addWidgetIcon(
       'bulk-pin',
       const _IconFrame(child: _FancyMarker()),
       // A generous CAP, not a demand: the widget lays out loose and the icon
@@ -903,7 +995,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// exists next to it.
   Future<void> _applyEngineIconsFlat() async {
     if (!await _registerWidgetIcon()) return;
-    final layers = _controller.layers;
+    final layers = _controller.style;
     _teardown.add(() {
       layers
         ..removeLayer('bulk-icons')
@@ -936,7 +1028,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// at. Cluster bubbles carry the counts; leaves appear as you zoom in.
   Future<void> _applyEngineIcons() async {
     if (!await _registerWidgetIcon()) return;
-    final layers = _controller.layers;
+    final layers = _controller.style;
     _teardown.add(() {
       layers
         ..removeLayer('bulk-icons')
@@ -992,7 +1084,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   void _refreshLiveWidgets() {
     if (!mounted || _scenario != Scenario.hybrid) return;
     final size = MediaQuery.sizeOf(context);
-    final found = _controller.layers.queryRenderedFeatures(
+    final found = _controller.queryRenderedFeatures(
       Offset.zero & size,
       // Only our own layers — otherwise every basemap road comes back too.
       layerIds: const ['bulk-clusters', 'bulk-points'],
@@ -1516,6 +1608,10 @@ class _MapDemoPageState extends State<MapDemoPage> {
       // Everything in these is drawn by the engine from the typed style.
       case Scenario.typedStyle:
       case Scenario.geojsonFeatures:
+      case Scenario.cameraVerbs:
+      case Scenario.cameraConstraints:
+      case Scenario.diagnostics:
+      case Scenario.capabilities:
       // And these are drawn by the engine from a .glb.
       case Scenario.models3d:
       case Scenario.models3dStress:
@@ -1716,7 +1812,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   /// Provokes three genuinely different failures, to show they all arrive.
   void _breakSomething() {
-    final layers = _controller.layers;
+    final layers = _controller.style;
     // 1. A command that cannot be applied: mbgl returns a null unique_ptr, and
     //    the shim now reports it instead of discarding it.
     layers.removeLayer('a-layer-that-was-never-added');
@@ -1753,7 +1849,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// Everything shown is computed live: the tiers genuinely differ, and
   /// [MapLibreCapabilities] is the supported way to ask rather than calling
   /// something and watching it no-op.
-  void _showCapabilities() {
+  Widget _capabilitiesPanel() {
     final capabilities = _controller.capabilities;
     // LatLngBounds over the dataset this scenario draws — mbgl's own shape,
     // south-west/north-east, never gl-js's longitude-first ordering.
@@ -1764,21 +1860,30 @@ class _MapDemoPageState extends State<MapDemoPage> {
     // read-modify-write that races the render thread.
     const partial = CameraOptions(zoom: 6);
 
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Renderer capabilities'),
-        content: SingleChildScrollView(
+    return PointerInterceptor(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 460),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              const Text(
+                'controller.capabilities',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               _kv('projection', '${capabilities.projection}'),
               _kv('style layers', '${capabilities.styleLayers}'),
               _kv('3D models', '${capabilities.models}'),
               _kv('rotate / tilt', '${capabilities.rotateAndTilt}'),
               _kv('Dart gestures', '${capabilities.gestures}'),
               _kv('engine events', '${capabilities.events}'),
+              _kv('camera commands', '${capabilities.cameraCommands}'),
               const Divider(),
               const Text(
                 'LatLngBounds over the engine dataset',
@@ -1816,12 +1921,6 @@ class _MapDemoPageState extends State<MapDemoPage> {
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
       ),
     );
   }
@@ -1899,12 +1998,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
   /// gl-js `setMaxBounds` — the WHOLE VIEWPORT is kept inside the box.
   ///
-  /// mbgl's own BoundOptions.bounds constrains only the camera CENTRE under
-  /// that same word, so the controller sets the constrain mode too. Pan and
-  /// zoom out after switching this on: the map refuses to leave the Nordics.
-  Future<void> _toggleConstraints() async {
-    final on = !_constrained;
-    setState(() => _constrained = on);
+  /// mbgl's own `BoundOptions.bounds` constrains only the camera CENTRE under
+  /// that same word, so the controller sets the constrain mode too. Driven by
+  /// the scenario rather than a button, so leaving the scenario always takes
+  /// the constraint back off.
+  Future<void> _applyConstraints({required bool on}) async {
     final camera = _controller.camera;
     if (on) {
       await camera.setMaxBounds(
@@ -1915,15 +2013,22 @@ class _MapDemoPageState extends State<MapDemoPage> {
       );
       await camera.setMinZoom(3);
       await camera.setMaxZoom(12);
+      await camera.fitBounds(
+        const LatLngBounds(
+          southwest: LatLng(54.0, 4.0),
+          northeast: LatLng(71.0, 32.0),
+        ),
+        transition: CameraTransition.ease,
+      );
       _logDiagnostic('constrained: viewport locked to the Nordics, zoom 3..12');
+      final limits = await camera.getConstraints();
+      if (limits != null) _logDiagnostic('constraints now: $limits');
     } else {
       await camera.setMaxBounds(null);
       await camera.setMinZoom(0);
       await camera.setMaxZoom(22);
       _logDiagnostic('unconstrained');
     }
-    final limits = await camera.getConstraints();
-    if (limits != null) _logDiagnostic('constraints now: $limits');
   }
 
   /// Frames the camera on the engine dataset — gl-js `fitBounds`.
@@ -2009,6 +2114,8 @@ class _MapDemoPageState extends State<MapDemoPage> {
             Positioned(top: 140, left: 12, child: _queryResultPanel()),
           if (_showDiagnostics)
             Positioned(top: 140, right: 12, child: _diagnosticsPanel()),
+          if (_showCapabilities)
+            Positioned(top: 140, left: 12, child: _capabilitiesPanel()),
           if (_stressing) Positioned(left: 12, bottom: 96, child: _modelHud()),
           if (_modelError != null)
             Positioned(
@@ -2041,12 +2148,55 @@ class _MapDemoPageState extends State<MapDemoPage> {
                     style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   const SizedBox(width: 8),
+                  if (!_ready) ...[
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white70,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      // Says WHICH half is outstanding. A style that 404s never
+                      // completes onReady — correctly, since gl-js never fires
+                      // `load` either — so an unexplained spinner would be
+                      // indistinguishable from a hang.
+                      'waiting for '
+                      '${!_controller.isAttached
+                          ? "the map"
+                          : !_styleSeen
+                          ? "the style"
+                          : "the first frame"}'
+                      '${_waitingSeconds > 2 ? " (${_waitingSeconds}s)" : ""}…',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                  // Disabled until the map is ready — switching scenarios adds
+                  // engine layers, and mbgl drops everything added before the
+                  // style lands. Without the spinner above, that greyed-out
+                  // control reads as broken rather than as "not yet".
+                  // Present but DISABLED until the map is ready — switching
+                  // scenarios adds engine layers, and mbgl drops everything
+                  // added before the style lands. Kept in the tree rather than
+                  // removed so the bar does not jump, and so a test can see it;
+                  // the spinner above is what stops a greyed-out control
+                  // reading as broken.
                   DropdownButton<Scenario>(
                     value: _scenario,
                     dropdownColor: Colors.black87,
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     underline: const SizedBox.shrink(),
-                    onChanged: _ready
+                    // Enabled as soon as the map is ATTACHED, not on onReady.
+                    // Gating the whole demo on a successful style load meant one
+                    // slow or 404ing style made the app untestable, and
+                    // _applyScenario re-runs from onStyleLoaded anyway — so
+                    // switching early is safe.
+                    onChanged: _controller.isAttached
                         ? (s) => s == null ? null : _selectScenario(s)
                         : null,
                     items: [
@@ -2158,20 +2308,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
             Icons.map_outlined,
             _toggleStyle,
           ),
-          _mini('Fit to data', Icons.crop_free, _fitToData),
-          _mini('Camera verbs', Icons.videocam_outlined, _runCameraTour),
-          _mini(
-            _constrained ? 'Unconstrain' : 'Constrain to Nordics',
-            Icons.lock_outline,
-            _toggleConstraints,
-          ),
-          _mini('Capabilities', Icons.info_outline, _showCapabilities),
-          _mini('Break something', Icons.bug_report, _breakSomething),
-          _mini(
-            _showDiagnostics ? 'Hide diagnostics' : 'Diagnostics',
-            Icons.receipt_long,
-            () => setState(() => _showDiagnostics = !_showDiagnostics),
-          ),
+          // Scenario-specific actions only appear for their scenario, so the
+          // control bar stays the set of things that make sense ANYWHERE. Each
+          // demo is a Scenario case; this is not a second menu.
+          if (_scenario == Scenario.cameraVerbs) ...[
+            _mini('Replay the tour', Icons.replay, _runCameraTour),
+            _mini('Fit to data', Icons.crop_free, _fitToData),
+          ],
+          if (_scenario == Scenario.diagnostics)
+            _mini('Break something again', Icons.bug_report, _breakSomething),
         ],
       ),
     );
@@ -2239,7 +2384,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       padding: const EdgeInsets.only(top: 8),
       child: FloatingActionButton.extended(
         heroTag: label,
-        onPressed: _ready ? onPressed : null,
+        onPressed: _controller.isAttached ? onPressed : null,
         icon: Icon(icon),
         label: Text(label),
       ),
@@ -2269,7 +2414,7 @@ class _Dot extends StatelessWidget {
 
 /// Padding around a marker being rasterized into an engine icon.
 ///
-/// [MapLibreLayersController.rasterizeWidget] captures exactly the box it is
+/// [MapLibreStyleController.rasterizeWidget] captures exactly the box it is
 /// given, so anything drawn OUTSIDE the child's bounds — a shadow, a glow — is
 /// clipped at the edges. Framing the child leaves room for it.
 class _IconFrame extends StatelessWidget {

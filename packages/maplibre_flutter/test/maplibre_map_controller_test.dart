@@ -159,7 +159,7 @@ void main() {
     'attach binds a platform controller and forwards camera reads',
     () async {
       final c = MapLibreMapController();
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       expect(c.isAttached, isTrue);
       final cam = await c.camera.getCamera();
       expect(cam.center, const LatLng(10, 20)); // forwarded from the platform
@@ -169,16 +169,16 @@ void main() {
 
   test('onReady completes once attached', () async {
     final c = MapLibreMapController();
-    await c.attach(style: 's', options: _attachOptions);
+    await c.attach(styleUri: 's', options: _attachOptions);
     await c.onReady; // would hang the test if never completed
     await c.dispose();
   });
 
   test('attaching twice throws', () async {
     final c = MapLibreMapController();
-    await c.attach(style: 's', options: _attachOptions);
+    await c.attach(styleUri: 's', options: _attachOptions);
     await expectLater(
-      () => c.attach(style: 's', options: _attachOptions),
+      () => c.attach(styleUri: 's', options: _attachOptions),
       throwsStateError,
     );
     await c.dispose();
@@ -189,14 +189,14 @@ void main() {
     await c.dispose();
     expect(c.isDisposed, isTrue);
     await expectLater(
-      () => c.attach(style: 's', options: _attachOptions),
+      () => c.attach(styleUri: 's', options: _attachOptions),
       throwsStateError,
     );
   });
 
   test('dispose tears down the platform controller', () async {
     final c = MapLibreMapController();
-    await c.attach(style: 's', options: _attachOptions);
+    await c.attach(styleUri: 's', options: _attachOptions);
     await c.dispose();
     expect(platform.last!.disposed, isTrue);
     expect(c.isDisposed, isTrue);
@@ -207,7 +207,7 @@ void main() {
     'detach tears down the native map but leaves the controller reusable',
     () async {
       final c = MapLibreMapController();
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       final first = platform.last!;
       await c.detach();
       expect(first.disposed, isTrue);
@@ -215,7 +215,7 @@ void main() {
       expect(c.isDisposed, isFalse);
 
       // Re-attach is allowed and binds a fresh native map.
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       expect(c.isAttached, isTrue);
       expect(platform.last, isNot(same(first)));
       await c.dispose();
@@ -238,7 +238,7 @@ void main() {
       c.onStyleLoaded.listen(styleLoads.add);
       c.onStyleImageMissing.listen(missing.add);
 
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       eventful.last!
         ..errors.add(const MapStyleError('404'))
         ..styleLoads.add(null)
@@ -258,7 +258,7 @@ void main() {
       final c = MapLibreMapController();
       final errors = <MapLibreError>[];
       c.onError.listen(errors.add);
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       expect(c.capabilities.events, isFalse);
       await Future<void>.delayed(Duration.zero);
       expect(errors, isEmpty);
@@ -272,7 +272,7 @@ void main() {
       final errors = <MapLibreError>[];
       c.onError.listen(errors.add);
 
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       final platform = eventful.last!;
       expect(c.capabilities.events, isTrue);
 
@@ -293,7 +293,7 @@ void main() {
     final platform = _CameraPlatform();
     MapLibreFlutterPlatform.instance = platform;
     final c = MapLibreMapController();
-    await c.attach(style: 's', options: _attachOptions);
+    await c.attach(styleUri: 's', options: _attachOptions);
 
     await c.camera.panBy(const Offset(40, 0), duration: Duration.zero);
 
@@ -315,7 +315,7 @@ void main() {
       // resolving the partial camera against the current one.
       MapLibreFlutterPlatform.instance = _FakePlatform();
       final c = MapLibreMapController();
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
       expect(c.capabilities.cameraCommands, isFalse);
       await c.camera.jumpTo(const CameraOptions(zoom: 12));
       // fitBounds has no fallback — there is nothing sensible to compute without
@@ -336,7 +336,7 @@ void main() {
       final ends = <Set<MapCameraChangeReason>>[];
       c.onCameraMoveStart.listen(starts.add);
       c.onCameraMoveEnd.listen(ends.add);
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
 
       expect(c.isMoving, isFalse);
       await c.camera.easeTo(const CameraOptions(zoom: 8));
@@ -356,7 +356,7 @@ void main() {
       final c = MapLibreMapController();
       final starts = <Set<MapCameraChangeReason>>[];
       c.onCameraMoveStart.listen(starts.add);
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
 
       await c.camera.resetNorth();
       await Future<void>.delayed(Duration.zero);
@@ -372,7 +372,7 @@ void main() {
     test('gesture reasons drive isMoving / isZooming / isRotating', () async {
       MapLibreFlutterPlatform.instance = _CameraPlatform();
       final c = MapLibreMapController();
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
 
       // This is what the gesture layer calls.
       c.reportCameraMove(const {
@@ -404,7 +404,7 @@ void main() {
       final c = MapLibreMapController();
       final ends = <Set<MapCameraChangeReason>>[];
       c.onCameraMoveEnd.listen(ends.add);
-      await c.attach(style: 's', options: _attachOptions);
+      await c.attach(styleUri: 's', options: _attachOptions);
 
       c.reportCameraMove(const {MapCameraChangeReason.gesturePan}, ended: true);
       await Future<void>.delayed(Duration.zero);

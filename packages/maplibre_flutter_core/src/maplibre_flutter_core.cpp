@@ -1093,9 +1093,18 @@ public:
     if (!m->models.empty()) {
       requestModelRender(m);
     }
-    // AFTER the re-adds, so a listener that re-applies its own layers runs on a
-    // style that already has ours back.
-    dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
+    // Delegate rather than re-dispatch. Duplicating the dispatch here is what
+    // broke the app: the base ALSO bumps styleLoadCount, which is what lets a
+    // late-registering callback be told about a style that already loaded — and
+    // a real tier always registers late, because the controller can only do it
+    // after mbl_map_create returns and, on the texture tiers, after the
+    // registrar handshake. Continuous mode uses THIS observer, so the count
+    // never moved, the replay never fired, and the live event had already been
+    // missed. The map rendered and the app waited for a style load forever.
+    //
+    // Called AFTER the re-adds, so a listener that re-applies its own layers
+    // runs on a style that already has ours back.
+    DiagnosticObserver::onDidFinishLoadingStyle();
   }
 };
 

@@ -61,6 +61,38 @@ void main() {
     );
   });
 
+  // THE regression that made the example app unusable: the app renders a map
+  // and then waits forever for a style-loaded event that already happened.
+  //
+  // A real tier can only register its diagnostic callback after mbl_map_create
+  // returns — and on the texture tiers after a registrar round trip — by which
+  // time a style has usually loaded (~170 ms). So the live event is missed and
+  // everything depends on the replay. Continuous mode uses FrameObserver, which
+  // overrode onDidFinishLoadingStyle WITHOUT delegating, so the replay
+  // bookkeeping never ran and the app hung on "loading the style".
+  testWidgets('onStyleLoaded reaches a subscriber that arrives late', (
+    tester,
+  ) async {
+    final controller = await _boot(tester);
+
+    // Subscribe only NOW — after onReady, so the first style load is long past.
+    final loads = <void>[];
+    final subscription = controller.onStyleLoaded.listen(loads.add);
+    addTearDown(subscription.cancel);
+
+    final stopwatch = Stopwatch()..start();
+    while (loads.isEmpty && stopwatch.elapsed < const Duration(seconds: 10)) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(
+      loads,
+      isNotEmpty,
+      reason:
+          'a late subscriber must still be told the style is in — otherwise an '
+          'app that gates itself on this waits forever over a working map',
+    );
+  });
+
   testWidgets('jumpTo applies a PARTIAL camera and leaves the rest', (
     tester,
   ) async {

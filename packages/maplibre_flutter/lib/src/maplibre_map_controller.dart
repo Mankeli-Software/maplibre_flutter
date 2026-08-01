@@ -1,15 +1,16 @@
 import 'dart:async';
-import 'dart:ui' show Offset, Size;
+import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:flutter/animation.dart' show Cubic;
 import 'package:flutter/painting.dart' show EdgeInsets;
 
 import 'package:flutter/foundation.dart' show Listenable;
 
+import 'package:maplibre_flutter_platform_interface/geojson.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:meta/meta.dart';
 
-import 'map_layers_controller.dart';
+import 'map_style_controller.dart';
 
 /// Imperative handle to a [MapLibreMap].
 ///
@@ -56,11 +57,39 @@ class MapLibreMapController {
   /// sub-domains, e.g. Mapbox's annotation/style managers).
   late final MapLibreCameraController camera = MapLibreCameraController._(this);
 
-  /// Engine-drawn sources, layers and icons — the scalable annotation path for
-  /// datasets past what widget markers can carry, with clustering built in. See
-  /// [MapLibreLayersController]; `layers.isSupported` is false on renderers that
+  /// The map's STYLE: engine-drawn sources, layers, images and the style-wide
+  /// transition — the scalable annotation path for datasets past what widget
+  /// markers can carry, with clustering built in.
+  ///
+  /// Mirrors Apple's `MLNStyle`, which owns exactly this set. See
+  /// [MapLibreStyleController]; `style.isSupported` is false on renderers that
   /// cannot do it, and every call is then a no-op.
-  final MapLibreLayersController layers = MapLibreLayersController();
+  ///
+  /// Note this is a NAMESPACE, not a setter: the style DOCUMENT is the
+  /// declarative [MapLibreMap.style] widget property, and there is deliberately
+  /// no public `controller.setStyle` (CLAUDE.md §3).
+  final MapLibreStyleController style = MapLibreStyleController();
+
+  /// The style namespace.
+  @Deprecated(
+    'Renamed to controller.style: this owns sources, images and the style-wide '
+    'transition as well as layers. Will be removed in a future release.',
+  )
+  MapLibreStyleController get layers => style;
+
+  /// The features the engine actually drew inside [rect] (logical pixels in the
+  /// map widget's own coordinate space).
+  ///
+  /// Queries live on the MAP, not on the style — both upstreams agree
+  /// (gl-js `map.queryRenderedFeatures`, Apple `-visibleFeaturesInRect:`), and
+  /// asking "what did you draw" is a question about the rendered map rather
+  /// than about the style document.
+  ///
+  /// See [MapLibreStyleController.queryRenderedFeatures] for the full contract.
+  List<QueriedFeature> queryRenderedFeatures(
+    Rect rect, {
+    List<String>? layerIds,
+  }) => style.queryRenderedFeatures(rect, layerIds: layerIds);
 
   /// Whether a native map is currently bound (true between [attach] and
   /// [detach]/[dispose]).
@@ -266,7 +295,7 @@ class MapLibreMapController {
     final platform = _platform;
     _platform = null;
     _attached = false;
-    layers.attachTo(null);
+    style.attachTo(null);
     await _unpipeEvents();
     await platform?.dispose();
     await _moveStarts.close();
@@ -285,7 +314,7 @@ class MapLibreMapController {
   /// to a map or has been disposed.
   @internal
   Future<void> attach({
-    required String style,
+    required String styleUri,
     required MapOptions options,
   }) async {
     if (_disposed) {
@@ -300,7 +329,7 @@ class MapLibreMapController {
     _attached = true;
     _options = options;
     final platform = await MapLibreFlutterPlatform.instance.createMap(
-      style: style,
+      style: styleUri,
       options: options,
     );
     // Disposed or detached while createMap was in flight — drop the native map.
@@ -309,7 +338,7 @@ class MapLibreMapController {
       return;
     }
     _platform = platform;
-    layers.attachTo(platform);
+    style.attachTo(platform);
     _pipeEvents(platform);
     platform.onReady.then((_) {
       if (!_ready.isCompleted) _ready.complete();
@@ -324,7 +353,7 @@ class MapLibreMapController {
     final platform = _platform;
     _platform = null;
     _attached = false;
-    layers.attachTo(null);
+    style.attachTo(null);
     await _unpipeEvents();
     _styleHasLoaded = false;
     await platform?.dispose();
@@ -442,7 +471,7 @@ class MapLibreMapController {
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.
   @internal
-  Future<void> setStyle(String style) async => _platform?.setStyle(style);
+  Future<void> setStyle(String styleUri) async => _platform?.setStyle(styleUri);
 
   /// Reports the embedding view's size so the desktop texture tier can resize
   /// its off-screen surface. A no-op on the mobile/web tiers.

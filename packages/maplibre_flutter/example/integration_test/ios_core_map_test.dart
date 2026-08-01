@@ -267,7 +267,7 @@ void main() {
     await controller.onReady.timeout(const Duration(seconds: 30));
 
     expect(
-      controller.layers.isSupported,
+      controller.style.isSupported,
       isTrue,
       reason: 'the iOS core tier must offer MapLibreStyleLayers',
     );
@@ -281,7 +281,7 @@ void main() {
     // 700ms delay.)
     await settleMap(tester, seconds: 5);
 
-    controller.layers
+    controller.style
       ..addSourceJson('pts', '''
         {"type":"geojson","data":{"type":"Feature",
          "properties":{"tag":"probe"},
@@ -301,7 +301,7 @@ void main() {
     // full-viewport box is y-symmetric and so cannot detect a flipped box.
     final size = tester.getSize(find.byType(MapLibreMap));
     final at = Offset(size.width / 2, size.height / 2);
-    final found = controller.layers.queryRenderedFeatures(
+    final found = controller.queryRenderedFeatures(
       Rect.fromCenter(center: at, width: 40, height: 40),
     );
     expect(
@@ -314,7 +314,7 @@ void main() {
 
     // And the vertically mirrored box must NOT match — which is what proves
     // this would catch a flipped query rect rather than passing by luck.
-    final mirrored = controller.layers.queryRenderedFeatures(
+    final mirrored = controller.queryRenderedFeatures(
       Rect.fromCenter(
         center: Offset(at.dx, size.height - at.dy - size.height / 4),
         width: 40,
