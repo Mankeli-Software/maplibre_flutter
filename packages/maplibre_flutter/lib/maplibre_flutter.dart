@@ -11,8 +11,19 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         LatLng,
         LatLngBounds,
         MapCamera,
+        MapCameraChangeReason,
+        MapCameraChangeReasons,
+        MapLibreCapabilities,
         MapLibreModel,
-        MapOptions;
+        MapOptions,
+        // The capability interfaces, so an app can feature-detect with `is`.
+        // They are implemented by platform packages, never by apps — see
+        // MapLibreCapabilities.
+        MapLibreGestureHandler,
+        MapLibreMapProjector,
+        MapLibreModelHost,
+        MapLibreRotateHandler,
+        MapLibreStyleLayers;
 
 export 'geojson.dart';
 export 'src/map_layers_controller.dart';

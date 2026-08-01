@@ -2,7 +2,9 @@
 library;
 
 export 'src/camera.dart';
+export 'src/camera_change_reason.dart';
 export 'src/camera_options.dart';
+export 'src/capabilities.dart';
 export 'src/fly_animation.dart';
 export 'src/gesture_handler.dart';
 export 'src/lat_lng.dart';

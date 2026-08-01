@@ -63,6 +63,21 @@ class MapLibreMapController {
   /// [detach]/[dispose]).
   bool get isAttached => _platform != null;
 
+  /// What the bound renderer can actually do.
+  ///
+  /// The tiers have genuinely different ceilings — the web tier has no
+  /// projector, so no widget markers — and this is the supported way to ask,
+  /// rather than calling something and watching it no-op. All false before
+  /// attach, so re-read it after [onReady].
+  ///
+  /// ```dart
+  /// if (controller.capabilities.rotateAndTilt) CompassButton(controller),
+  /// ```
+  ///
+  /// The capability interfaces themselves are exported too, for anything this
+  /// object does not cover: `if (controller is MapLibreModelHost)`.
+  MapLibreCapabilities get capabilities => MapLibreCapabilities.of(_platform);
+
   /// Fires on every camera change — each gesture step, animation frame and
   /// imperative move — for code that must track the view, e.g. re-running
   /// [MapLibreLayersController.queryRenderedFeatures] to keep an overlay in

@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
-import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 /// Records what reached the platform, so the generated style JSON can be
 /// asserted rather than guessed at.

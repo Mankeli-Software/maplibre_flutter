@@ -42,7 +42,7 @@ Stages are dependency-ordered. **Do not start a stage until every task in the st
       `addPoints`/`setPoints`/`removePoints` → a recipe name.
 - [x] 0.4 Append a dated `docs/decision-log.md` entry for the policy.
 
-### Stage 1 — Value types (pure Dart, zero native work)
+### Stage 1 — Value types (pure Dart, zero native work) — **CLOSED 2026-08-01**
 
 No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
 
@@ -57,8 +57,8 @@ No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
       types), `GeoJsonFeature` (id + geometry + properties), `GeoJsonFeatureCollection`, and
       `QueriedFeature` carrying gl-js `MapGeoJSONFeature`'s extras (~~`layer`~~, `source`,
       `sourceLayer`, `state` — **no `layer`**, mbgl destroys it; see the run log).
-- [ ] 1.5 `MapCameraChangeReason` — Apple `MLNCameraChangeReason.h:30-64` values, as a Dart `Set`.
-- [ ] 1.6 `MapLibreCapabilities` + re-export the capability interfaces from
+- [x] 1.5 `MapCameraChangeReason` — Apple `MLNCameraChangeReason.h:30-64` values, as a Dart `Set`.
+- [x] 1.6 `MapLibreCapabilities` + re-export the capability interfaces from
       `packages/maplibre_flutter/lib/maplibre_flutter.dart` (today an app cannot even write
       `if (controller is MapLibreModelHost)`).
 - [x] 1.7 Harden `LatLng`: normalise/assert NaN, inf, |lat| > 90, wrap longitude. `mbgl::LatLng`
@@ -372,3 +372,39 @@ Append one entry per run. Newest last.
 - **Next run:** 1.5 (`MapCameraChangeReason`, Apple's bitmask as a Dart `Set`) and 1.6
   (`MapLibreCapabilities` + re-exporting the capability interfaces) close stage 1. Then stage 2 —
   which is the first stage needing a C ABI change and an ffigen regen on macOS.
+
+### 2026-08-01 — Stage 1 (1.5, 1.6) — stage closed
+
+- **Done:** 1.5, 1.6.
+  - **1.5 `MapCameraChangeReason`** — Apple's `MLNCameraChangeReason` value for value, as a Dart
+    `enum` used through a `Set`, so `MLNCameraChangeReasonNone` is the empty set and a twisting
+    pinch is `{gesturePinch, gestureRotate}` rather than a mask. Apple's own documented groupings
+    ship as `anyGesture` / `anyZoom` / `anyRotation` static sets, and a
+    `MapCameraChangeReasons` extension gives `isGesture` (Android's coarse `REASON_API_GESTURE`),
+    `isProgrammatic`, `isZoom`, `isRotation`, `isTilt`, `isCancelled`. Nothing produces one yet —
+    stage 4 threads it through the gesture layer.
+  - **1.6 `MapLibreCapabilities`** — `controller.capabilities`, derived in one place by the same
+    `is` checks the controller already makes, reporting `projection` / `styleLayers` / `models` /
+    `rotateAndTilt` / `gestures`. The five capability interfaces are now **also** exported from
+    `package:maplibre_flutter`, so `if (controller is MapLibreModelHost)` works — previously
+    impossible, since the app-facing library re-exported only four value types.
+- **Left half-done:** none. **Stage 1 is closed**; stage 2 is open.
+- **Deferred / rejected:** none.
+- **Spec corrections found:** one, resolved by doing both halves.
+  - Spec `:224` argues for the value object *instead of* exporting the interfaces ("keeps the
+    interfaces internal to implementers"); ledger 1.6 asks for both. Both landed, because they
+    answer different questions — `capabilities` is the ergonomic probe, and `is` is the escape
+    hatch for anything the value object does not name. The spec's underlying worry is real and is
+    handled in the dartdoc instead: these are `abstract interface class`es for **platform packages**
+    to implement, and an app that implements one will be broken by the next member added, which
+    CLAUDE.md §3 says is a deliberate all-tiers-at-once event.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green (203 in `maplibre_flutter`,
+  65 in the platform interface) / `format` clean / stage-1 gate satisfied — no `*_generated.dart`,
+  no `maplibre_flutter_core.{h,cpp}`.
+- **Next run:** **stage 2, the observer and diagnostics channel** — and it is a different kind of
+  run from the last three. It needs a C ABI change (`mbl_map_set_diagnostic_callback`), an ffigen
+  regeneration **on macOS**, an extension to the fake in
+  `packages/maplibre_flutter_core/lib/testing.dart`, and a Dart-side **field** reference to the
+  registered callback or the GC collects the proxy. Start with 2.1 + 2.2 (the callback and
+  `mbgl::Log::setObserver`, which is the only hook that sees a glyph 404), then 2.5/2.6/2.8 on the
+  Dart side. 2.3 and 2.4 are independent and small.

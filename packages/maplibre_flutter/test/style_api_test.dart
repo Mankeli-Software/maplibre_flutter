@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
-import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 /// Records the documents that reached the platform, so the generated JSON can
 /// be asserted verbatim rather than described.
