@@ -532,6 +532,13 @@ FFI_PLUGIN_EXPORT char *mbl_map_get_layer_property(MblMap *map,
 
 // The style's layer ids, top-most last, as a JSON array of strings — gl-js
 // `getLayersOrder`. Release with mbl_string_free; NULL on timeout.
+//
+// mbgl's OWN annotation layers ("org.maplibre.annotations…") are omitted.
+// AnnotationManager::updateStyle() injects them on every style load, whether or
+// not anything uses them, so an unfiltered list reports a layer that is in no
+// style document, has no gl-js counterpart, and cannot be driven through any
+// API we expose. They are still reachable by id through
+// mbl_map_get_layer_json — filtered out of the ENUMERATION, not hidden.
 FFI_PLUGIN_EXPORT char *mbl_map_get_layer_ids(MblMap *map, uint32_t timeout_ms);
 
 // One layer as its full style-spec JSON — gl-js `getLayer`.

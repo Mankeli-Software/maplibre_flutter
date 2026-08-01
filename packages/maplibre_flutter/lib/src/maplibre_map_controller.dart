@@ -4,10 +4,11 @@ import 'dart:ui' show Offset, Rect, Size;
 import 'package:flutter/animation.dart' show Cubic;
 import 'package:flutter/painting.dart' show EdgeInsets;
 
-import 'package:flutter/foundation.dart' show Listenable;
+import 'package:flutter/foundation.dart' show FlutterError, Listenable;
 
 import 'package:maplibre_flutter_platform_interface/geojson.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:meta/meta.dart';
 
 import 'map_style_controller.dart';
@@ -309,6 +310,30 @@ class MapLibreMapController {
   // Widget glue — driven by [MapLibreMap], not app code.
   // ---------------------------------------------------------------------------
 
+  /// Resolves a style specification to something the engine can load.
+  ///
+  /// Three forms are supported, and the engine already understood two: a URL,
+  /// and the style DOCUMENT itself as JSON (the C shim sniffs a leading `{`).
+  /// This adds the third — `asset://path/listed/in/pubspec.yaml` — by reading
+  /// the Flutter asset here, because the engine has no idea what a Flutter
+  /// asset is and the six platform packages should not each learn.
+  static Future<String> _resolveStyle(String style) async {
+    const prefix = 'asset://';
+    if (!style.startsWith(prefix)) return style;
+    final key = style.substring(prefix.length);
+    try {
+      return await rootBundle.loadString(key);
+    } on FlutterError catch (error) {
+      // A missing asset is a build-time mistake, so say which key failed
+      // rather than handing the engine a string it will fail to parse.
+      throw ArgumentError.value(
+        style,
+        'style',
+        'no such Flutter asset "$key" — is it listed in pubspec.yaml? ($error)',
+      );
+    }
+  }
+
   /// Binds this controller to a freshly created native map. Called by
   /// [MapLibreMap] when it mounts. Throws if the controller is already attached
   /// to a map or has been disposed.
@@ -329,7 +354,7 @@ class MapLibreMapController {
     _attached = true;
     _options = options;
     final platform = await MapLibreFlutterPlatform.instance.createMap(
-      style: styleUri,
+      style: await _resolveStyle(styleUri),
       options: options,
     );
     // Disposed or detached while createMap was in flight — drop the native map.
@@ -471,7 +496,8 @@ class MapLibreMapController {
   /// [MapLibreMap.style] property (declarative), so the widget calls this on
   /// change; app code changes the widget property instead.
   @internal
-  Future<void> setStyle(String styleUri) async => _platform?.setStyle(styleUri);
+  Future<void> setStyle(String styleUri) async =>
+      _platform?.setStyle(await _resolveStyle(styleUri));
 
   /// Reports the embedding view's size so the desktop texture tier can resize
   /// its off-screen surface. A no-op on the mobile/web tiers.

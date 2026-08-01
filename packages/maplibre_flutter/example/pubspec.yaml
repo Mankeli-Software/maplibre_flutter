@@ -37,3 +37,7 @@ flutter:
     # their own licences.
     - assets/models/alto_k10.glb
     - assets/models/demo_vehicle.glb
+    # A style DOCUMENT shipped in the app bundle, for the styleForms scenario:
+    # `style: 'asset://assets/styles/nordic_night.json'`. Bundling a style is
+    # how you ship a map that renders with no style server at all.
+    - assets/styles/nordic_night.json

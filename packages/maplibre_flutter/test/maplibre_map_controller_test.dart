@@ -412,4 +412,50 @@ void main() {
       await c.dispose();
     });
   });
+
+  group('style specification', () {
+    test('a URL and an inline document pass straight through', () async {
+      final platform = _FakePlatform();
+      MapLibreFlutterPlatform.instance = platform;
+      final c = MapLibreMapController();
+
+      // Only asset:// is rewritten here; the engine itself sniffs a leading {
+      // and calls loadJSON instead of loadURL.
+      await c.attach(
+        styleUri: 'https://example.test/s.json',
+        options: _attachOptions,
+      );
+      await c.dispose();
+
+      final c2 = MapLibreMapController();
+      await c2.attach(
+        styleUri: '{"version":8,"sources":{},"layers":[]}',
+        options: _attachOptions,
+      );
+      await c2.dispose();
+    });
+
+    test('a missing asset names the key rather than failing later', () async {
+      MapLibreFlutterPlatform.instance = _FakePlatform();
+      final c = MapLibreMapController();
+      addTearDown(c.dispose);
+
+      // The alternative is handing the engine a string it cannot parse, which
+      // surfaces as a blank map and an error about JSON — pointing nowhere near
+      // the actual mistake, a key missing from pubspec.yaml.
+      await expectLater(
+        c.attach(
+          styleUri: 'asset://assets/no/such/style.json',
+          options: _attachOptions,
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('assets/no/such/style.json'), contains('pubspec')),
+          ),
+        ),
+      );
+    });
+  });
 }

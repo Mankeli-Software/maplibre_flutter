@@ -38,10 +38,19 @@ class MapLibreMap extends StatefulWidget {
     this.tiltGesturesEnabled = true,
   });
 
-  /// MapLibre style document: a URL, asset path, or inline JSON.
+  /// The MapLibre style, in any of three forms:
+  ///
+  /// * a **URL** — `https://demotiles.maplibre.org/style.json`;
+  /// * the **document itself** as JSON — anything starting with `{`;
+  /// * a **Flutter asset** — `asset://assets/styles/dark.json`, which must be
+  ///   listed in your `pubspec.yaml`.
   ///
   /// Declarative — change it (e.g. via `setState`) to switch styles at runtime.
   /// This is the single source of truth for the map's style (CLAUDE.md §3).
+  ///
+  /// **A style load drops every source and layer added through
+  /// `controller.style`**, so re-apply them from [onStyleLoaded] rather than
+  /// after a delay.
   final String style;
 
   /// Flutter widgets glued to geographic points, composited above the map and

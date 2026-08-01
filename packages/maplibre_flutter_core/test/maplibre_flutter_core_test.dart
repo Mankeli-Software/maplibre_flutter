@@ -1069,6 +1069,113 @@ void main() {
     );
   });
 
+  // The C header has promised "URL, file path, or inline JSON" since it was
+  // written, and four Dart doc comments repeat it — but every load went to
+  // Style::loadURL, so an inline document silently failed. loadJSON existed and
+  // was never called.
+  test('a style can be the DOCUMENT itself, not just a URL', () async {
+    // A complete, self-contained style: no network, no sprite, no glyphs.
+    // Magenta background, so "did it load" is a pixel count rather than a guess.
+    const inline =
+        '{'
+        '"version":8,'
+        '"name":"inline",'
+        '"sources":{},'
+        '"layers":[{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#ff00ff"}}]'
+        '}';
+    final map = MapLibreCoreMap.create(
+      width: 128,
+      height: 128,
+      pixelRatio: 1,
+      styleUri: inline,
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    await settle(map);
+
+    expect(
+      countColor(map.copyFrame()!, 255, 0, 255),
+      greaterThan(128 * 128 ~/ 2),
+      reason: 'the inline document must actually paint',
+    );
+  });
+
+  test(
+    'getLayerIds reports the DOCUMENT, not mbgl\'s annotation plumbing',
+    () async {
+      // mbgl::AnnotationManager::updateStyle() runs on every style load and adds
+      // "org.maplibre.annotations.points" whether or not anything uses it. That
+      // layer is in no style document, has no gl-js counterpart, and cannot be
+      // driven through anything this ABI exposes — so enumerating it makes
+      // getLayersOrder report a layer the app can neither have added nor act on.
+      //
+      // Found by an integration test that loaded a two-line inline style and got
+      // back two layers.
+      const inline =
+          '{'
+          '"version":8,'
+          '"sources":{},'
+          '"layers":[{"id":"bg","type":"background",'
+          '"paint":{"background-color":"#ff00ff"}}]'
+          '}';
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: inline,
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+
+      expect(
+        map.getLayerIds(),
+        equals(<String>['bg']),
+        reason: 'exactly the document\'s layers, in the document\'s order',
+      );
+      // Not HIDDEN — still reachable by id, so nothing is unreachable, it is just
+      // not enumerated.
+      expect(
+        map.getLayerJson('org.maplibre.annotations.points'),
+        isNotNull,
+        reason: 'the layer is still there; the filter is on the listing only',
+      );
+    },
+  );
+
+  test(
+    'setStyle also takes a document, and leading space does not fool it',
+    () async {
+      final map = MapLibreCoreMap.create(
+        width: 128,
+        height: 128,
+        pixelRatio: 1,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+      // Whitespace-led, because the sniff has to skip it rather than give up and
+      // treat a perfectly good document as a URL.
+      map.setStyle(
+        '\n  {"version":8,"name":"inline","sources":{},'
+        '"layers":[{"id":"bg","type":"background",'
+        '"paint":{"background-color":"#00ff00"}}]}',
+      );
+      final sw = Stopwatch()..start();
+      while (sw.elapsed < const Duration(seconds: 15)) {
+        await settle(map);
+        if (countColor(map.copyFrame()!, 0, 255, 0) > 128 * 128 ~/ 2) break;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      expect(
+        countColor(map.copyFrame()!, 0, 255, 0),
+        greaterThan(128 * 128 ~/ 2),
+      );
+    },
+  );
+
   // --- Sources and images ----------------------------------------------------
 
   test(

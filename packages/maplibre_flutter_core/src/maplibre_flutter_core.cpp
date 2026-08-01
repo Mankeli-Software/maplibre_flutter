@@ -826,6 +826,24 @@ void capDesktopRequestConcurrency() {
 #endif
 }
 
+namespace {
+
+// A style can arrive three ways — a URL, a file path, or the document itself —
+// and mbgl has two entry points with no sniffing between them. Everything used
+// to go to loadURL, so inline JSON silently failed to load even though the C
+// header (and four Dart doc comments) have always said it works. This is where
+// that promise becomes true.
+void loadStyleSpec(mbgl::style::Style &style, const std::string &spec) {
+  const auto first = spec.find_first_not_of(" \t\r\n");
+  if (first != std::string::npos && spec[first] == '{') {
+    style.loadJSON(spec);
+    return;
+  }
+  style.loadURL(spec);
+}
+
+} // namespace
+
 void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                       float pixelRatio, std::string styleUri) {
   mbgl::util::RunLoop loop;
@@ -846,7 +864,7 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
   m->renderWidth = width;
   m->renderHeight = height;
   if (!styleUri.empty()) {
-    map.getStyle().loadURL(styleUri);
+    loadStyleSpec(map.getStyle(), styleUri);
   }
 
   {
@@ -1140,7 +1158,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
   m->renderWidth = width;
   m->renderHeight = height;
   if (!styleUri.empty()) {
-    map.getStyle().loadURL(styleUri);
+    loadStyleSpec(map.getStyle(), styleUri);
   }
   m->renderLoop = &loop;
 
@@ -1244,7 +1262,7 @@ void mbl_map_set_style(MblMap *m, const char *style_uri) {
   }
   const std::string style(style_uri);
   m->post([m, style] {
-    m->map->getStyle().loadURL(style);
+    loadStyleSpec(m->map->getStyle(), style);
     m->renderRequested = true;
   });
 }
@@ -2384,13 +2402,23 @@ char *mbl_map_get_layer_property(MblMap *m, const char *layer_id,
   return dupToHeap(*result);
 }
 
+// mbgl::AnnotationManager's SourceID, and the stem of both its layer ids.
+// Hardcoded rather than referenced: annotation_manager.hpp is a private header
+// under src/, not part of mbgl's installed interface.
+constexpr const char *kAnnotationLayerPrefix = "org.maplibre.annotations";
+
 char *mbl_map_get_layer_ids(MblMap *m, uint32_t timeout_ms) {
   if (m == nullptr) return nullptr;
   auto result = std::make_shared<std::string>();
   const bool ok = runOnRenderThread(m, timeout_ms, [m, result] {
     std::vector<mbgl::Value> ids;
     for (const auto *layer : m->map->getStyle().getLayers()) {
-      ids.emplace_back(layer->getID());
+      // Skip mbgl's own annotation layers — see the header. Prefix, not equality:
+      // shape annotations are "org.maplibre.annotations.shape.<n>", one per
+      // shape, so an app with annotations would otherwise see the list grow.
+      const auto &id = layer->getID();
+      if (id.rfind(kAnnotationLayerPrefix, 0) == 0) continue;
+      ids.emplace_back(id);
     }
     *result = styleValueToJson(mbgl::Value{ids});
   });

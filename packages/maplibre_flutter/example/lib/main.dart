@@ -34,6 +34,50 @@ class ExampleApp extends StatelessWidget {
 
 /// Two keyless styles to toggle between (no API key required).
 const _demotiles = 'https://demotiles.maplibre.org/style.json';
+
+/// A whole style document, written here rather than fetched — the third way to
+/// say "this is the map". No glyphs and no label layers, so it needs no font
+/// endpoint.
+const _inlineStyle = '''
+{
+  "version": 8,
+  "sources": {
+    "maplibre": {
+      "type": "vector",
+      "url": "https://demotiles.maplibre.org/tiles/tiles.json"
+    }
+  },
+  "layers": [
+    {"id": "bg", "type": "background",
+     "paint": {"background-color": "#f6f1e7"}},
+    {"id": "land", "type": "fill", "source": "maplibre",
+     "source-layer": "countries",
+     "paint": {"fill-color": "#c9b79c", "fill-outline-color": "#8a7a5f"}}
+  ]
+}
+''';
+
+/// A style shipped in the app bundle, listed under `assets:` in pubspec.yaml.
+/// `asset://` is ours, not MapLibre's: the engine cannot read a Flutter asset,
+/// so [MapLibreMapController] reads it and hands the engine the document.
+const _assetStyle = 'asset://assets/styles/nordic_night.json';
+
+/// The three forms, in the order the scenario cycles them.
+const _styleForms = <(String, String, String)>[
+  ('URL', _demotiles, 'style.json fetched over HTTP — the usual case'),
+  (
+    'Inline document',
+    _inlineStyle,
+    'the JSON itself, passed straight in — the engine sees a leading { and '
+        'calls Style::loadJSON rather than loadURL',
+  ),
+  (
+    'Bundled asset',
+    _assetStyle,
+    'asset://assets/styles/nordic_night.json, read from the app bundle by the '
+        'controller before the engine ever sees it',
+  ),
+];
 const _liberty = 'https://tiles.openfreemap.org/styles/liberty';
 
 /// A font BOTH styles actually serve.
@@ -162,6 +206,15 @@ enum Scenario {
         'point_count, individual pins once zoomed in. Live widget count stays '
         'small however big the dataset is.',
   ),
+  styleForms(
+    'Style: URL, document, asset',
+    'The same widget property, `MapLibreMap.style`, given a style three ways: '
+        'a URL, the style DOCUMENT itself as inline JSON, and a JSON file '
+        'shipped in the app bundle as `asset://…`. The engine sniffs a leading '
+        '`{` and calls loadJSON instead of loadURL; the asset form is resolved '
+        'in Dart, because mbgl has no idea what a Flutter asset is. A bundled '
+        'document is how you ship a map that renders with no style server.',
+  ),
   models3d(
     '3D model',
     'A .glb model drawn INSIDE the engine (mbgl CustomDrawableLayer), so it '
@@ -287,6 +340,9 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// Why the camera is moving right now; empty when it is still.
   Set<MapCameraChangeReason> _moveReasons = const {};
   int _styleLoadCount = 0;
+
+  /// Which of [_styleForms] the styleForms scenario is showing.
+  int _styleFormIndex = 0;
   final List<StreamSubscription<Object?>> _eventSubscriptions =
       <StreamSubscription<Object?>>[];
 
@@ -597,6 +653,15 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.capabilities:
         setState(() => _showCapabilities = true);
         _teardown.add(() => setState(() => _showCapabilities = false));
+
+      case Scenario.styleForms:
+        // The scenario OWNS the style while it is on screen, so entering it
+        // pushes the current form and leaving it restores the default. Setting
+        // it to the value it already holds is a no-op: MapLibreMap only pushes
+        // a style when the property actually changed, so the reload this very
+        // callback came from does not start another one.
+        setState(() => _style = _styleForms[_styleFormIndex].$2);
+        _teardown.add(() => setState(() => _style = _demotiles));
 
       case Scenario.models3d:
         await _placeModel();
@@ -1524,6 +1589,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
     setState(() => _style = _style == _demotiles ? _liberty : _demotiles);
   }
 
+  /// Cycles the styleForms scenario through URL, inline document and asset.
+  void _nextStyleForm() {
+    setState(() {
+      _styleFormIndex = (_styleFormIndex + 1) % _styleForms.length;
+      _style = _styleForms[_styleFormIndex].$2;
+    });
+  }
+
   /// Re-applies the scenario every time a style finishes loading.
   ///
   /// mbgl REPLACES the whole layer list on a style load, so every source, layer
@@ -1612,6 +1685,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
       case Scenario.cameraConstraints:
       case Scenario.diagnostics:
       case Scenario.capabilities:
+      case Scenario.styleForms:
       // And these are drawn by the engine from a .glb.
       case Scenario.models3d:
       case Scenario.models3dStress:
@@ -2303,11 +2377,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
             Icons.flight,
             _flyToNextPlace,
           ),
-          _mini(
-            _style == _demotiles ? 'Demotiles' : 'Liberty',
-            Icons.map_outlined,
-            _toggleStyle,
-          ),
+          // The styleForms scenario drives the style itself, so the global
+          // toggle would fight it.
+          if (_scenario != Scenario.styleForms)
+            _mini(
+              _style == _demotiles ? 'Demotiles' : 'Liberty',
+              Icons.map_outlined,
+              _toggleStyle,
+            ),
           // Scenario-specific actions only appear for their scenario, so the
           // control bar stays the set of things that make sense ANYWHERE. Each
           // demo is a Scenario case; this is not a second menu.
@@ -2317,6 +2394,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
           ],
           if (_scenario == Scenario.diagnostics)
             _mini('Break something again', Icons.bug_report, _breakSomething),
+          if (_scenario == Scenario.styleForms)
+            _mini(
+              'Form: ${_styleForms[_styleFormIndex].$1}',
+              Icons.data_object,
+              _nextStyleForm,
+            ),
         ],
       ),
     );

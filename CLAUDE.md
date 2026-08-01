@@ -564,6 +564,12 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 
 - **Loading a style overwrites style-level state** — transition options are replaced by the
   document's, and **every custom layer is dropped**. Re-apply from `onDidFinishLoadingStyle`.
+- **mbgl injects its own annotation layers into EVERY style**, on every load:
+  `AnnotationManager::updateStyle()` adds `org.maplibre.annotations.points` (and
+  `…annotations.shape.<n>` per shape) whether or not anything uses them. They are in no style
+  document and have no gl-js counterpart, so `mbl_map_get_layer_ids` filters them out of the
+  listing by prefix — reachable by id, just not enumerated. A `contains` assertion cannot see this;
+  assert the exact layer list.
 - The style JSON path buys the whole spec through `convertJSON<T>`. Parse **synchronously on the
   calling thread** (it needs no map) so bad JSON throws immediately; post only the mutation.
 - `mbgl::LatLng`'s constructor **throws on NaN/inf/|lat|>90**, and a throw across `extern "C"` is

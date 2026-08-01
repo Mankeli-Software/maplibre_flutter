@@ -155,9 +155,9 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 5.6 `getSource(id)` handle with `setData` (renaming `setGeoJsonData`); **`isSourceLoaded`
       REJECTED** — mbgl cannot answer it, see the run log.
 - [x] 5.7 `hasImage`, `listImages`, `updateImage`.
-- [ ] 5.8 Style from **inline JSON** and from a Flutter asset. `Style::loadJSON` exists
-      (`style.hpp:29`) and is never called; five doc comments — including the C header at
-      `maplibre_flutter_core.h:41` and `:56` — already promise inline JSON works.
+- [x] 5.8 Style from **inline JSON** and from a Flutter asset. Both forms work and are verified on
+      macOS hardware; `asset://` is ours, resolved in Dart. Also fixed `getLayersOrder` reporting
+      mbgl's own annotation layer — found by this task's integration test, see the run log.
 - [ ] 5.9 Re-apply app-added sources, layers and images after a style load (today the shim re-applies
       **only** models and transition options, `maplibre_flutter_core.cpp:890-899`).
 - [ ] 5.10 Demote `addPoints`/`setPoints`/`removePoints` to a clearly-named recipe — they have no
@@ -788,3 +788,36 @@ never existed.
   style's own sprite images, which is what makes the call useful for finding an icon name to reuse.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (45) / `format` clean /
   ffigen regenerated.
+
+### 2026-08-01 — Stage 5 (5.8) — a style is a URL, a document, or a bundled asset
+
+- **The header had promised inline JSON since M2 and nothing implemented it.** `mbl_map_create` and
+  `mbl_map_set_style` both documented "(URL, file path, or inline JSON)"; both called
+  `Style::loadURL` unconditionally, and mbgl resolves a JSON document as a *relative URL* rather
+  than failing — so the symptom was an empty map and total silence. Now one `loadStyleSpec()` sniffs
+  the first non-whitespace character for `{` and routes to `Style::loadJSON`, at all three load
+  sites. Whitespace-led documents are covered by a test, because the obvious `spec[0] == '{'`
+  would have shipped a sniff that a leading newline defeats.
+- **`asset://` is OURS, and deliberately resolved in Dart.** The engine has no idea what a Flutter
+  asset is, and teaching six platform packages to read one would be six implementations of
+  `rootBundle`. `MapLibreMapController` reads it and hands the engine the document, so every tier
+  gets it for free. A missing key throws an `ArgumentError` naming the key and pointing at
+  `pubspec.yaml` — the alternative was handing the engine a string it fails to parse, which
+  surfaces as a blank map and an error about JSON, nowhere near the actual mistake.
+- **`getLayersOrder` was reporting a layer that is in no style document.**
+  `mbgl::AnnotationManager::updateStyle()` runs on every style load and injects
+  `org.maplibre.annotations.points` whether or not anything uses it, so the read side shipped in
+  5.4 answered a two-layer inline style with three layers. It has no gl-js counterpart and cannot
+  be driven through anything this ABI exposes. Now filtered from the ENUMERATION by prefix (shape
+  annotations are `…annotations.shape.<n>`, one per shape) — still reachable by id through
+  `mbl_map_get_layer_json`, so nothing is unreachable, it is just not listed.
+  **Found only because a test asserted the exact layer list rather than `contains`** — every
+  earlier test of this call used `contains` and was blind to it.
+- **Example app:** new `styleForms` scenario cycling the three forms, with a bundled
+  `assets/styles/nordic_night.json`. The global style toggle is hidden while it is on screen, since
+  the scenario owns the style.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (48) / `format` clean /
+  4 macOS integration tests (`macos_style_forms_test.dart`) green on hardware /
+  `example_app_test.dart` green.
+- **Harness note:** two integration-test FILES in one `flutter test -d macos` invocation fails the
+  second app launch ("Unable to start the app on the device"). Run them one file at a time.
