@@ -751,8 +751,17 @@ FFI_PLUGIN_EXPORT int mbl_map_d3d_active(MblMap *map);
 // vertices because mbgl's indices are uint16. There is no lighting, so bake it
 // into the texture. See docs/3d-models-research.md.
 //
-// Call after the style has loaded — a subsequent mbl_map_set_style REPLACES the
-// style and drops the layer.
+// Call after the style has loaded. A subsequent mbl_map_set_style replaces the
+// style and drops every custom layer, but this shim retains the model and
+// re-adds it, so a style change does not lose it.
+//
+// `layer_id` IS NOT the style-layer id. The layer is created as
+// "mbl:model:<layer_id>", in a namespace of its own, so a model can never
+// collide with a layer the app added by the same name — mbl_map_remove_model
+// used to be able to delete an unrelated style layer, and mbl_map_remove_layer
+// used to leave the model's retention behind so the next style load brought it
+// back. Pass the plain id to every mbl_map_*_model call; the prefixed form is
+// what mbl_map_get_layer_ids reports and what mbl_map_move_layer takes.
 FFI_PLUGIN_EXPORT int mbl_map_add_model(MblMap *map, const char *layer_id,
                                         const char *glb_path, double lat,
                                         double lng, double scale,
@@ -794,7 +803,9 @@ FFI_PLUGIN_EXPORT uint64_t mbl_map_frame_count(MblMap *map);
 // real draw-call counts instead of guessing from primitive counts.
 FFI_PLUGIN_EXPORT uint32_t mbl_model_part_count(const char *glb_path);
 
-// Remove a model layer added by mbl_map_add_model. A no-op if `layer_id` names
+// Remove a model layer added by mbl_map_add_model. Takes the PLAIN id (see
+// mbl_map_add_model), and drops the retention even when the style layer is
+// already gone. A no-op if `layer_id` names
 // no layer. Asynchronous (applied on the render thread).
 FFI_PLUGIN_EXPORT void mbl_map_remove_model(MblMap *map, const char *layer_id);
 
@@ -808,8 +819,12 @@ FFI_PLUGIN_EXPORT void mbl_map_remove_model(MblMap *map, const char *layer_id);
 // catches anchor mirroring, a flipped up-axis, inverted winding, and depth that
 // has silently degraded to painter's order.
 //
+// `layer_id` may be NULL, meaning "mbl-test-model". As with mbl_map_add_model
+// it is the PLAIN id — the layer lands at "mbl:model:<layer_id>".
+//
 // Asynchronous — the layer is added on the render thread.
-FFI_PLUGIN_EXPORT void mbl_map_add_test_model(MblMap *map, double lat,
+FFI_PLUGIN_EXPORT void mbl_map_add_test_model(MblMap *map, const char *layer_id,
+                                              double lat,
                                               double lng,
                                               double metres_per_unit,
                                               double spin_dps,

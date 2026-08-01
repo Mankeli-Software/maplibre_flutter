@@ -168,10 +168,9 @@ Highest row count in the backlog, correctly last among the core stages.
       `addCircleLayersFromPoints` returning a `MapLibrePointLayers` handle that owns the ids it
       invented, plus `setPointsData` / `removeCircleLayersFromPoints`. Old names kept as
       `@Deprecated` aliases for one release.
-- [ ] 5.11 Namespace model layers internally (`mbl:model:<id>`) inside the C shim, closing three live
-      bugs: a model deleted via `removeLayer` resurrects on the next style load; its Dart `_models`
-      entry keeps a `Ticker` calling `triggerRepaint` forever; and `removeModel(id)` can delete an
-      unrelated style layer that took the freed id.
+- [x] 5.11 Model layers namespaced `mbl:model:<id>` inside the C shim, closing all three bugs.
+      Still enumerated by `getLayersOrder` — unlike mbgl's annotation layers, a model layer IS the
+      app's, so `moveLayer` and queries must be able to name it.
 
 ### Stage 6 — Queries and feature state (over stage-1's GeoJSON types)
 
@@ -914,4 +913,28 @@ never existed.
 - The example app migrated to the new names in the same commit — it is the first consumer, and a
   deprecation nobody has walked is a deprecation that does not compile.
 - **Gates:** `analyze` clean / 292 `maplibre_flutter` tests green / `format` clean.
+
+### 2026-08-01 — Stage 5 (5.11) — model layers get their own id namespace
+
+- **One overlap, three bugs.** A model layer took the app's id verbatim, so it shared a namespace
+  with every layer the app added. That produced: `removeLayer("car")` dropping the style layer while
+  leaving `m->models` holding it, so the next style load replayed a model the app had removed (and
+  the Dart side went on ticking `triggerRepaint` for it); and `removeModel("car")` calling
+  `removeLayer("car")`, which would happily delete an unrelated style layer of that name. Prefixing
+  with `mbl:model:` removes the overlap by construction — `:` is not a character mbgl's own layer
+  ids use.
+- **Namespaced at exactly one place.** `addModelLayer` converts once; `m->models`, the style-load
+  replay and the transform lookup all speak the style id from there down, so the replay loop needed
+  no change and there is one line where the two namespaces meet.
+- **Still enumerated, deliberately.** Unlike mbgl's annotation layers (filtered in 5.8), a model
+  layer is the app's own, so `getLayersOrder` reports it and `moveLayer` can reorder it. That makes
+  `removeLayer("mbl:model:x")` reachable, so it now drops the retention too — the fix has to hold on
+  every route to it, not just the polite one.
+- **`mbl_map_add_test_model` grew a `layer_id`** (NULL keeps the old `mbl-test-model`). Without it
+  the shim could only ever have one test model, and none of the three regressions above could be
+  written without shipping a `.glb` into the core package's tests. ffigen regenerated on macOS.
+- **The third test is the control.** "a model that was NOT removed still survives a style load"
+  exists because the other two would both pass if the replay were simply broken.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (54) / `format` clean /
+  ffigen regenerated, no unexplained diff.
 

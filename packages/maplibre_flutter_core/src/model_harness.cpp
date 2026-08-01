@@ -246,7 +246,8 @@ int main(int argc, char **argv) {
 
   // --- 1. does the model render at all? ---
   if (glb.empty()) {
-    mbl_map_add_test_model(map, lat, lng, metresPerUnit, spinDps, elevationM);
+    mbl_map_add_test_model(map, nullptr, lat, lng, metresPerUnit, spinDps,
+                           elevationM);
   } else {
     char err[512] = {0};
     if (mbl_map_add_model(map, "mbl-model", glb.c_str(), lat, lng, metresPerUnit,

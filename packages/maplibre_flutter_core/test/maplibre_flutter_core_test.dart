@@ -1169,6 +1169,93 @@ void main() {
     });
   }
 
+  // 5.11. A model layer used to take the app's id verbatim, putting it in the
+  // same namespace as every layer the app adds. Three bugs came out of that
+  // overlap; each assertion below is one of them.
+  group('model layers live in their own id namespace', () {
+    Future<MapLibreCoreMap> boot() async {
+      const inline =
+          '{'
+          '"version":8,"sources":{},'
+          '"layers":[{"id":"car","type":"background",'
+          '"paint":{"background-color":"#123456"}}]'
+          '}';
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: inline,
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+      return map;
+    }
+
+    test(
+      'a model does not collide with a style layer of the same name',
+      () async {
+        final map = await boot();
+        // Deliberately the same name as the background layer in the document.
+        map.addTestModel(latitude: 60.45, longitude: 22.27, layerId: 'car');
+        await settle(map);
+
+        expect(
+          map.getLayerIds(),
+          containsAll(<String>['car', 'mbl:model:car']),
+          reason: 'the app\'s layer and the model must both exist, separately',
+        );
+
+        // Bug 3: this used to remove the app's "car" background layer.
+        map.removeModel('car');
+        await settle(map);
+        expect(
+          map.getLayerIds(),
+          contains('car'),
+          reason: 'removeModel must not touch a style layer of the same name',
+        );
+        expect(map.getLayerIds(), isNot(contains('mbl:model:car')));
+      },
+    );
+
+    test('a removed model does not come back on the next style load', () async {
+      final map = await boot();
+      map.addTestModel(latitude: 60.45, longitude: 22.27, layerId: 'ghost');
+      await settle(map);
+      expect(map.getLayerIds(), contains('mbl:model:ghost'));
+
+      // Bug 1 + 2: removeLayer dropped the style layer but left the retention,
+      // so the style-load replay put it back — and the Dart side kept ticking
+      // triggerRepaint for a model the app had removed.
+      map.removeLayer('mbl:model:ghost');
+      await settle(map);
+      map.setStyle('{"version":8,"sources":{},"layers":[]}');
+      await settle(map);
+
+      expect(
+        map.getLayerIds(),
+        isNot(contains('mbl:model:ghost')),
+        reason: 'a model removed through removeLayer must stay removed',
+      );
+    });
+
+    test('a model that was NOT removed still survives a style load', () async {
+      final map = await boot();
+      map.addTestModel(latitude: 60.45, longitude: 22.27, layerId: 'keeper');
+      await settle(map);
+
+      map.setStyle('{"version":8,"sources":{},"layers":[]}');
+      await settle(map);
+      expect(
+        map.getLayerIds(),
+        contains('mbl:model:keeper'),
+        reason:
+            'the retention still has to work — this is the control for the '
+            'test above, which would otherwise pass if replay were broken',
+      );
+    });
+  });
+
   test('getSourceIds omits mbgl\'s annotation source too', () async {
     const inline =
         '{'

@@ -441,6 +441,33 @@ std::string describeException(std::exception_ptr error) {
 // here and, apart from its log stream, nowhere else — so a 404ing style or a
 // missing sprite is a blank map and total silence.
 //
+// The style-layer id a model is drawn under.
+//
+// A model layer is a CustomDrawableLayer this shim creates and owns, but until
+// now it took the app's id VERBATIM, putting it in the same namespace as every
+// layer the app adds itself. Three live bugs came out of that overlap:
+//
+//   * removeLayer("car") deleted the model's layer but left m->models holding
+//     it, so the next style load replayed a model the app had removed;
+//   * that stale entry kept the Dart side ticking triggerRepaint forever;
+//   * removeModel("car") called removeLayer("car"), which would happily delete
+//     an unrelated style layer that happened to be called "car".
+//
+// Prefixing removes the overlap by construction. The layer is still enumerated
+// by mbl_map_get_layer_ids — unlike mbgl's annotation layers, this one IS the
+// app's, so moveLayer and queries must be able to name it — it just cannot
+// collide with a style-document id, since ':' is not a character mbgl's own
+// layer ids use.
+constexpr const char *kModelLayerPrefix = "mbl:model:";
+
+std::string modelLayerId(const std::string &appId) {
+  return std::string(kModelLayerPrefix) + appId;
+}
+
+bool isModelLayerId(const std::string &id) {
+  return id.rfind(kModelLayerPrefix, 0) == 0;
+}
+
 // Used as-is in Static mode; the Continuous map uses the FrameObserver subclass.
 void replayRetainedStyleState(MblMap *m);
 
@@ -1362,6 +1389,10 @@ void addModelLayer(MblMap *m, std::string layerId,
   // PremultipliedImage (move-only, it owns a unique_ptr buffer), so capturing it
   // by move would make the lambda move-only and fail to convert.
   auto placementPtr = std::make_shared<MblModelPlacement>(placement);
+  // Namespace HERE, once. Everything below this line — m->models, the
+  // style-load replay, the transform lookup — speaks the style id, so there is
+  // exactly one place the two namespaces meet.
+  layerId = modelLayerId(layerId);
   m->post([m, layerId = std::move(layerId), meshPtr = std::move(mesh),
            meshKey = std::move(meshKey), placementPtr] {
     // Resolve the shared texture set HERE, on the render thread: gpuByPath is
@@ -1460,8 +1491,8 @@ void mbl_map_set_model_transform(MblMap *m, const char *layer_id, double lat,
   if (m == nullptr || layer_id == nullptr) {
     return;
   }
-  m->post([m, layerId = std::string(layer_id), lat, lng, scale, heading_deg,
-           elevation_m] {
+  m->post([m, layerId = modelLayerId(std::string(layer_id)), lat, lng, scale,
+           heading_deg, elevation_m] {
     const auto it = m->models.find(layerId);
     if (it == m->models.end() || !it->second.placement) {
       return;
@@ -1502,7 +1533,7 @@ void mbl_map_remove_model(MblMap *m, const char *layer_id) {
   if (m == nullptr || layer_id == nullptr) {
     return;
   }
-  m->post([m, layerId = std::string(layer_id)] {
+  m->post([m, layerId = modelLayerId(std::string(layer_id))] {
     if (m->map == nullptr) {
       return;
     }
@@ -1510,17 +1541,21 @@ void mbl_map_remove_model(MblMap *m, const char *layer_id) {
       m->map->getStyle().removeLayer(layerId);
       requestModelRender(m);
     }
+    // ALWAYS erase, even when the style layer was already gone: the retention is
+    // what the style-load replay reads, so leaving it behind is precisely how a
+    // removed model came back.
     m->models.erase(layerId);
   });
 }
 
-void mbl_map_add_test_model(MblMap *m, double lat, double lng,
+void mbl_map_add_test_model(MblMap *m, const char *layer_id, double lat,
+                            double lng,
                             double metres_per_unit, double spin_dps,
                             double elevation_m) {
   if (m == nullptr) {
     return;
   }
-  addModelLayer(m, "mbl-test-model",
+  addModelLayer(m, layer_id == nullptr ? "mbl-test-model" : layer_id,
                 std::make_shared<const MblMeshData>(mblMakeTestPyramid()),
                 "<test-pyramid>",
                 MblModelPlacement{.lat = lat,
@@ -2307,6 +2342,13 @@ void mbl_map_remove_layer(MblMap *m, const char *id) {
   if (m == nullptr || id == nullptr) return;
   std::string layerId(id);
   m->post([m, layerId] {
+    // A model layer reached through the generic remove still has to drop its
+    // retention, or the next style load replays it. Reachable because model
+    // layers ARE enumerated by mbl_map_get_layer_ids — deliberately, since they
+    // are the app's own.
+    if (isModelLayerId(layerId)) {
+      m->models.erase(layerId);
+    }
     // The unique_ptr this returns is the whole error signal: null means there
     // was no such layer. Discarding it, as this used to, makes a typo'd id
     // indistinguishable from a successful removal.
@@ -2459,7 +2501,6 @@ char *mbl_map_get_layer_property(MblMap *m, const char *layer_id,
 // Hardcoded rather than referenced: annotation_manager.hpp is a private header
 // under src/, not part of mbgl's installed interface.
 constexpr const char *kAnnotationLayerPrefix = "org.maplibre.annotations";
-
 char *mbl_map_get_layer_ids(MblMap *m, uint32_t timeout_ms) {
   if (m == nullptr) return nullptr;
   auto result = std::make_shared<std::string>();

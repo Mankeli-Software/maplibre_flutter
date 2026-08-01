@@ -449,6 +449,7 @@ class RecordingCoreMap implements MapLibreCoreMap {
     double metresPerUnit = 50,
     double spinDegreesPerSecond = 90,
     double elevationMetres = 0,
+    String? layerId,
   }) {}
 
   @override

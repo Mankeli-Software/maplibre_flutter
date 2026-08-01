@@ -724,6 +724,7 @@ external void mbl_map_remove_model(
 @ffi.Native<
   ffi.Void Function(
     ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
     ffi.Double,
     ffi.Double,
     ffi.Double,
@@ -733,6 +734,7 @@ external void mbl_map_remove_model(
 >()
 external void mbl_map_add_test_model(
   ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> layer_id,
   double lat,
   double lng,
   double metres_per_unit,

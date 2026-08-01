@@ -590,16 +590,22 @@ class MapLibreCoreMap {
     double metresPerUnit = 50,
     double spinDegreesPerSecond = 90,
     double elevationMetres = 0,
+    String? layerId,
   }) {
     _checkAlive();
-    bindings.mbl_map_add_test_model(
-      _handle,
-      latitude,
-      longitude,
-      metresPerUnit,
-      spinDegreesPerSecond,
-      elevationMetres,
-    );
+    using((arena) {
+      bindings.mbl_map_add_test_model(
+        _handle,
+        layerId == null
+            ? ffi.nullptr
+            : layerId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        latitude,
+        longitude,
+        metresPerUnit,
+        spinDegreesPerSecond,
+        elevationMetres,
+      );
+    });
   }
 
   /// Asks mbgl for one more frame.
