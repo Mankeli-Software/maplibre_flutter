@@ -385,14 +385,13 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(PNG REQUIRED)
   find_package(PkgConfig REQUIRED)
   find_package(Threads REQUIRED)
-  if(MAPLIBRE_FLUTTER_LINUX_VULKAN)
-    # Verification arm: no EGL/GL. Vulkan is loaded through the vendored headers
-    # + the loader mbgl links itself.
-    set(_linux_gl_libs "")
-  else()
-    find_package(OpenGL REQUIRED EGL) # GLVND libOpenGL + libEGL
-    set(_linux_gl_libs OpenGL::EGL)
-  endif()
+  # EGL/GL stay linked even on the Vulkan verification arm. Only mbgl's RENDERER
+  # switches; the shim still compiles maplibre_flutter_core_gl.cpp (the zero-copy
+  # EGLImage present helper), which references GL symbols at link time whether or
+  # not it is ever called. Dropping the link left the harness with undefined
+  # references to glGetError/glBindTexture.
+  find_package(OpenGL REQUIRED EGL) # GLVND libOpenGL + libEGL
+  set(_linux_gl_libs OpenGL::EGL)
   pkg_search_module(WEBP libwebp REQUIRED)
   pkg_search_module(LIBUV libuv REQUIRED)
   pkg_search_module(ICUUC icu-uc)
@@ -700,7 +699,7 @@ if(APPLE)
     "-framework Metal"
     "-framework IOSurface"
     "-framework CoreVideo")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MAPLIBRE_FLUTTER_LINUX_VULKAN)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # mbgl links OpenGL::EGL PRIVATEly, so the shim needs its own EGL + GLES symbols
   # for the zero-copy EGLImage present (maplibre_flutter_core_gl.cpp). OpenGL::EGL is
   # already found above (find_package(OpenGL REQUIRED EGL)).
