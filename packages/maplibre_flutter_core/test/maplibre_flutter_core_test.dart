@@ -1069,6 +1069,53 @@ void main() {
     );
   });
 
+  // --- Sources and images ----------------------------------------------------
+
+  test(
+    'getSource reports what mbgl exposes; images list and hasImage',
+    () async {
+      final map = MapLibreCoreMap.create(
+        width: 256,
+        height: 256,
+        pixelRatio: 1,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+      map.addSourceJson(
+        'p',
+        '{"type":"geojson","data":${pointsAround(0, 0, 3, 0.1)}}',
+      );
+      await settle(map);
+
+      final json = map.getSourceJson('p');
+      expect(json, isNotNull);
+      expect(json, contains('"type":"geojson"'));
+      expect(map.getSourceJson('no-such-source'), isNull);
+      expect(map.getSourceIds(), contains('p'));
+
+      // The demo style brings its OWN sources, so this is not just ours.
+      expect(map.getSourceIds()!.length, greaterThan(1));
+
+      // Images: absent, then registered, then listed.
+      expect(map.hasImage('probe'), isFalse);
+      map.addImage(
+        'probe',
+        Uint8List.fromList(List<int>.filled(4 * 4 * 4, 255)),
+        4,
+        4,
+      );
+      await settle(map);
+      expect(map.hasImage('probe'), isTrue);
+      expect(map.getImageIds(), contains('probe'));
+
+      map.removeImage('probe');
+      await settle(map);
+      expect(map.hasImage('probe'), isFalse);
+    },
+  );
+
   // --- Layer properties ------------------------------------------------------
 
   test('ONE entry point sets paint, layout, filter and zoom range', () async {

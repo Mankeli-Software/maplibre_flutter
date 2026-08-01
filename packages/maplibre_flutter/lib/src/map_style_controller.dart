@@ -283,6 +283,35 @@ class MapLibreStyleController {
 
   void removeImage(String id) => _layers?.removeImage(id);
 
+  /// Replaces an image already registered under [id] — gl-js `updateImage`.
+  ///
+  /// The same call as [addImage]: mbgl's own comment on `Style::Impl::addImage`
+  /// is "We permit using addImage to update", so this is a name rather than a
+  /// second code path. It exists because reaching for `addImage` to *change*
+  /// something reads like a mistake.
+  void updateImage(
+    String id,
+    Uint8List rgba,
+    int width,
+    int height, {
+    double pixelRatio = 1.0,
+    bool sdf = false,
+  }) => addImage(id, rgba, width, height, pixelRatio: pixelRatio, sdf: sdf);
+
+  /// Whether the style has an image called [id] — gl-js `hasImage`.
+  ///
+  /// Null when the engine could not answer in time, which is deliberately NOT
+  /// false: code deciding whether to register an image needs "could not ask" to
+  /// be distinguishable from "not there", or it will re-rasterise on every
+  /// hiccup.
+  bool? hasImage(String id) => _layers?.hasImage(id);
+
+  /// Every image id in the style — gl-js `listImages`.
+  ///
+  /// Includes the style's OWN sprite images, not just ones this API added,
+  /// which is what makes it useful for finding an icon name to reuse.
+  List<String> listImages() => _layers?.getImageIds() ?? const [];
+
   /// Style-wide transition behaviour.
   ///
   /// The reason this is exposed: **symbol layers fade, circle layers do not.**

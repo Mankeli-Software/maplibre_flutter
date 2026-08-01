@@ -476,6 +476,16 @@ FFI_PLUGIN_EXPORT void mbl_map_remove_layer(MblMap *map, const char *id);
 // now) and the mutation is posted. A property the layer does not have is
 // therefore reported asynchronously, through the diagnostic channel as
 // MBL_DIAG_COMMAND_FAILED.
+// Whether the style has an image called `id` — gl-js `hasImage`.
+// Returns 1 yes, 0 no, -1 if the read timed out (which is NOT "no").
+FFI_PLUGIN_EXPORT int mbl_map_has_image(MblMap *map, const char *id,
+                                        uint32_t timeout_ms);
+
+// Every image id in the style, as a JSON array — gl-js `listImages`. Includes
+// the style's own sprite images, not just ones this ABI added. Release with
+// mbl_string_free; NULL on timeout.
+FFI_PLUGIN_EXPORT char *mbl_map_get_image_ids(MblMap *map, uint32_t timeout_ms);
+
 // One source as JSON: `{"id":…,"type":…,"attribution":…,"volatile":…}`, or
 // NULL if absent or timed out. Release with mbl_string_free.
 //

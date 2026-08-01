@@ -81,6 +81,15 @@ class _RecordingLayers implements MapLibreStyleLayers {
     double pixelRatio = 1.0,
     bool sdf = false,
   }) => images[id] = (w: width, h: height, pr: pixelRatio, bytes: rgba.length);
+  bool? hasImageResult;
+  List<String>? imageIdsResult;
+
+  @override
+  bool? hasImage(String id) => hasImageResult;
+
+  @override
+  List<String>? getImageIds() => imageIdsResult;
+
   @override
   void removeImage(String id) {}
 
@@ -711,6 +720,45 @@ void main() {
       expect(unbound.getSourceIds(), isEmpty);
       expect(unbound.getSource('a'), isNull);
       unbound.setSourceData('a', '{}');
+    });
+  });
+
+  group('images', () {
+    test('updateImage is addImage — mbgl permits it, so this is a name', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+      final pixels = Uint8List(4 * 4 * 4);
+
+      style.addImage('pin', pixels, 4, 4, pixelRatio: 2);
+      style.updateImage('pin', pixels, 4, 4, pixelRatio: 2, sdf: true);
+
+      expect(rec.images.length, 1, reason: 'same id, so the map holds one');
+      expect(rec.images['pin']!.pr, 2);
+    });
+
+    test('hasImage keeps "could not ask" apart from "not there"', () {
+      final rec = _RecordingLayers();
+      final style = MapLibreStyleController()..attachTo(rec);
+
+      rec.hasImageResult = true;
+      expect(style.hasImage('pin'), isTrue);
+      rec.hasImageResult = false;
+      expect(style.hasImage('pin'), isFalse);
+      // A timeout must not read as absence, or a caller re-rasterises on every
+      // hiccup.
+      rec.hasImageResult = null;
+      expect(style.hasImage('pin'), isNull);
+    });
+
+    test('listImages includes the style sprite, and is safe unbound', () {
+      final rec = _RecordingLayers()
+        ..imageIdsResult = const ['airport-15', 'pin'];
+      expect((MapLibreStyleController()..attachTo(rec)).listImages(), [
+        'airport-15',
+        'pin',
+      ]);
+      expect(MapLibreStyleController().listImages(), isEmpty);
+      expect(MapLibreStyleController().hasImage('pin'), isNull);
     });
   });
 }

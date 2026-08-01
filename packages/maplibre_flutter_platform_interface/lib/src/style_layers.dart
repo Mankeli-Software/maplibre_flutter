@@ -99,6 +99,13 @@ abstract interface class MapLibreStyleLayers {
 
   void removeImage(String id);
 
+  /// Whether the style has an image called [id]. Null when the read timed out,
+  /// which is deliberately not false.
+  bool? hasImage(String id);
+
+  /// Every image id in the style, including the style's own sprite images.
+  List<String>? getImageIds();
+
   /// Style-wide transition behaviour; see the app-facing
   /// `MapLibreLayersController.setTransitionOptions` for the rationale.
   ///

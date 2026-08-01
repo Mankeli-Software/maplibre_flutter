@@ -29,7 +29,9 @@
 #include <mbgl/map/transform_state.hpp>
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/resource_options.hpp>
+#include <mbgl/style/image_impl.hpp>
 #include <mbgl/style/style.hpp>
+#include <mbgl/style/style_impl.hpp>
 #include <mbgl/style/transition_options.hpp>
 // Style mutation (sources/layers/images) for engine-drawn datasets. The
 // conversion headers live under mbgl's private src/, which is already on this
@@ -2452,6 +2454,37 @@ std::string sourceToJson(const mbgl::style::Source &source) {
 }
 
 } // namespace
+
+int mbl_map_has_image(MblMap *m, const char *id, uint32_t timeout_ms) {
+  if (m == nullptr || id == nullptr) return 0;
+  const std::string name(id);
+  auto present = std::make_shared<bool>(false);
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, name, present] {
+    *present = m->map->getStyle().getImage(name).has_value();
+  });
+  // -1 rather than 0 on timeout: "we could not ask" is not "it is not there",
+  // and a caller deciding whether to re-register an image needs the difference.
+  if (!ok) return -1;
+  return *present ? 1 : 0;
+}
+
+char *mbl_map_get_image_ids(MblMap *m, uint32_t timeout_ms) {
+  if (m == nullptr) return nullptr;
+  auto result = std::make_shared<std::string>();
+  const bool ok = runOnRenderThread(m, timeout_ms, [m, result] {
+    // INTERNAL API: the public Style has getImage() but no getImages(), so the
+    // collection comes from Style::Impl::getImageImpls() — a public accessor on
+    // an internal class. `impl` is a public member and the shim already
+    // includes internal headers, but this is a coupling to re-check on a core
+    // bump; the marker to grep for is `style_impl.hpp`.
+    std::vector<mbgl::Value> ids;
+    for (const auto &image : *m->map->getStyle().impl->getImageImpls()) {
+      ids.emplace_back(image->id);
+    }
+    *result = styleValueToJson(mbgl::Value{ids});
+  });
+  return ok ? dupToHeap(*result) : nullptr;
+}
 
 char *mbl_map_get_source_json(MblMap *m, const char *source_id,
                               uint32_t timeout_ms) {

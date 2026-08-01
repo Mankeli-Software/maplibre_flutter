@@ -79,6 +79,10 @@ class _FullController extends _BareController
     bool sdf = false,
   }) {}
   @override
+  bool? hasImage(String id) => null;
+  @override
+  List<String>? getImageIds() => null;
+  @override
   void removeImage(String id) {}
   @override
   void setTransitionOptions({

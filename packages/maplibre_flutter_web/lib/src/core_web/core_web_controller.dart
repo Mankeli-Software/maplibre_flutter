@@ -342,6 +342,12 @@ class MapLibreCoreWebController
   }
 
   @override
+  bool? hasImage(String id) => null;
+
+  @override
+  List<String>? getImageIds() => null;
+
+  @override
   void removeImage(String id) {
     if (_disposed) return;
     _map?.removeImage(id);

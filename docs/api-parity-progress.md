@@ -154,7 +154,7 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 5.5 `setLayerZoomRange`.
 - [x] 5.6 `getSource(id)` handle with `setData` (renaming `setGeoJsonData`); **`isSourceLoaded`
       REJECTED** — mbgl cannot answer it, see the run log.
-- [ ] 5.7 `hasImage`, `listImages`, `updateImage`.
+- [x] 5.7 `hasImage`, `listImages`, `updateImage`.
 - [ ] 5.8 Style from **inline JSON** and from a Flutter asset. `Style::loadJSON` exists
       (`style.hpp:29`) and is never called; five doc comments — including the C header at
       `maplibre_flutter_core.h:41` and `:56` — already promise inline JSON works.
@@ -769,3 +769,22 @@ never existed.
   engine limit rather than a missing binding) moved off `fprintf(stderr)` onto the diagnostic
   channel, which is where 2.3 put the rest of them.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / ffigen regenerated.
+
+### 2026-08-01 — Stage 5 (5.7) — the image surface
+
+- **`updateImage` is a NAME, not a code path.** mbgl's own comment on
+  `Style::Impl::addImage` reads "We permit using addImage to update", so this forwards to
+  `addImage`. It exists because reaching for `addImage` to *change* something reads like a mistake
+  at the call site.
+- **`hasImage` returns `bool?`, and the null matters.** A timed-out read is deliberately not
+  `false`: code deciding whether to register an image needs "could not ask" distinguishable from
+  "not there", or it re-rasterises a widget icon on every hiccup. The C ABI carries that as `-1`.
+- **`listImages` needed one internal header, and nearly did not work at all.** The public `Style`
+  has `getImage()` but no `getImages()`. `Style::Impl::images` is **private** — the first attempt
+  failed to compile against it — but `Style::Impl::getImageImpls()` is a public accessor on that
+  internal class, so the list is reachable without patching mbgl. Coupling recorded in the shim with
+  `style_impl.hpp` as the grep marker for a core bump.
+  Verified against a real style, where the count exceeds our own additions — it includes the
+  style's own sprite images, which is what makes the call useful for finding an icon name to reuse.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (45) / `format` clean /
+  ffigen regenerated.

@@ -1183,6 +1183,47 @@ class MapLibreCoreMap {
     previous?.close();
   }
 
+  // --- Images -----------------------------------------------------------------
+
+  /// Whether the style has an image called [id] — gl-js `hasImage`.
+  ///
+  /// Null when the read timed out, which is deliberately NOT false: a caller
+  /// deciding whether to re-register an image needs "could not ask" to be
+  /// distinguishable from "not there".
+  bool? hasImage(
+    String id, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final result = bindings.mbl_map_has_image(
+        _handle,
+        id.toNativeUtf8(allocator: arena).cast(),
+        timeout.inMilliseconds,
+      );
+      return result < 0 ? null : result == 1;
+    });
+  }
+
+  /// Every image id in the style — gl-js `listImages`. Null on timeout.
+  ///
+  /// Includes the style's own sprite images, not just ones this API added.
+  List<String>? getImageIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    final result = bindings.mbl_map_get_image_ids(
+      _handle,
+      timeout.inMilliseconds,
+    );
+    if (result == ffi.nullptr) return null;
+    final json = result.cast<Utf8>().toDartString();
+    bindings.mbl_string_free(result);
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return null;
+    return decoded.whereType<String>().toList();
+  }
+
   // --- Sources ----------------------------------------------------------------
 
   /// One source as JSON — id, type, attribution, volatile — or null if absent.

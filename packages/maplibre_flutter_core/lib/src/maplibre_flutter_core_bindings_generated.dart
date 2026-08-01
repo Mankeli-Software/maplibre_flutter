@@ -409,6 +409,21 @@ external void mbl_map_remove_layer(
 );
 
 @ffi.Native<
+  ffi.Int Function(ffi.Pointer<MblMap>, ffi.Pointer<ffi.Char>, ffi.Uint32)
+>()
+external int mbl_map_has_image(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> id,
+  int timeout_ms,
+);
+
+@ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<MblMap>, ffi.Uint32)>()
+external ffi.Pointer<ffi.Char> mbl_map_get_image_ids(
+  ffi.Pointer<MblMap> map,
+  int timeout_ms,
+);
+
+@ffi.Native<
   ffi.Pointer<ffi.Char> Function(
     ffi.Pointer<MblMap>,
     ffi.Pointer<ffi.Char>,

@@ -54,6 +54,11 @@ class _RecordingLayers implements MapLibreStyleLayers {
     bool sdf = false,
   }) {}
   @override
+  bool? hasImage(String id) => null;
+  @override
+  List<String>? getImageIds() => null;
+
+  @override
   void removeImage(String id) {}
 
   ({Duration? duration, Duration? delay, bool placement})? transitions;

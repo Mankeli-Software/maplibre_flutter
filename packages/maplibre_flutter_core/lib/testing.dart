@@ -454,6 +454,25 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 
+  // --- images ----------------------------------------------------------------
+
+  /// What [hasImage] returns; null simulates a timeout.
+  bool? hasImageResult = false;
+
+  /// What [getImageIds] returns; null simulates a timeout.
+  List<String>? imageIds = const [];
+
+  @override
+  bool? hasImage(
+    String id, {
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => hasImageResult;
+
+  @override
+  List<String>? getImageIds({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => imageIds;
+
   // --- sources ---------------------------------------------------------------
 
   /// What [getSourceJson] returns; null simulates absent or timed out.

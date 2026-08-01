@@ -516,6 +516,12 @@ class MapLibreFlutterAndroidCoreController
   }
 
   @override
+  bool? hasImage(String id) => _disposed ? null : _coreMap.hasImage(id);
+
+  @override
+  List<String>? getImageIds() => _disposed ? null : _coreMap.getImageIds();
+
+  @override
   void removeImage(String id) {
     if (_disposed) return;
     _coreMap.removeImage(id);
