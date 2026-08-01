@@ -160,10 +160,16 @@ class MapLibreStyleController {
   /// is a no-op in that case, so feature-detecting is optional.
   bool get isSupported => _layers != null;
 
+  /// The projector, when the tier has one. Only [queryRenderedFeaturesIn] needs
+  /// it — a geographic box has to become a screen box before the engine, whose
+  /// query is screen-space, can answer it.
+  MapLibreMapProjector? _projector;
+
   /// Binds the platform controller (called by the widget on attach).
   @internal
   void attachTo(Object? platform) {
     _layers = platform is MapLibreStyleLayers ? platform : null;
+    _projector = platform is MapLibreMapProjector ? platform : null;
   }
 
   // --- Typed style-spec access ------------------------------------------------
@@ -503,9 +509,20 @@ class MapLibreStyleController {
   ///
   /// Mirrors gl-js `map.queryRenderedFeatures(geometry?, options?)` and Apple's
   /// `-visibleFeaturesInRect:` (`MLNMapView.h`).
+  ///
+  /// [filter] is a style-spec expression evaluated INSIDE the engine, so it is
+  /// cheaper than fetching everything and filtering in Dart, and it can reach
+  /// feature properties that never cross the boundary.
+  ///
+  /// **Best-effort by design.** A failed or timed-out query returns `const []`,
+  /// the same as "nothing there". That is deliberate: this runs on camera ticks
+  /// and must not throw into a paint callback. When you need to tell the two
+  /// apart, use [queryRenderedFeaturesAsync], which reports failure as an
+  /// error on the Future.
   List<QueriedFeature> queryRenderedFeatures(
     Rect rect, {
     List<String>? layerIds,
+    Expression? filter,
   }) {
     final json = _layers?.queryRenderedFeaturesJson(
       rect.left,
@@ -513,6 +530,7 @@ class MapLibreStyleController {
       rect.right,
       rect.bottom,
       layerIds: layerIds,
+      filterJson: _filterJson(filter),
     );
     if (json == null || json.isEmpty) return const [];
     // Runs on camera ticks, so this must not throw into its caller — and that
@@ -534,6 +552,172 @@ class MapLibreStyleController {
         out.add(QueriedFeature.fromJson(f));
       } on FormatException {
         // One unreadable feature should not lose the rest of the frame's.
+        continue;
+      }
+    }
+    return out;
+  }
+
+  /// The features drawn at one screen POINT — gl-js
+  /// `queryRenderedFeatures(point)`.
+  ///
+  /// [tolerance] grows the point into a box, in logical points. A literal
+  /// zero-area query is technically valid and practically useless on touch:
+  /// gl-js and both SDKs all pad a tap, and a 1 px box misses a 4 px circle the
+  /// user was clearly aiming at.
+  List<QueriedFeature> queryRenderedFeaturesAt(
+    Offset point, {
+    double tolerance = 8,
+    List<String>? layerIds,
+    Expression? filter,
+  }) => queryRenderedFeatures(
+    Rect.fromCircle(center: point, radius: tolerance),
+    layerIds: layerIds,
+    filter: filter,
+  );
+
+  /// The features drawn inside a geographic box.
+  ///
+  /// Needs a projector to turn the corners into screen space, so it returns
+  /// `const []` on a tier without one. Note the box is the SCREEN-ALIGNED
+  /// rectangle through the projected corners: under a bearing or a pitch that
+  /// is a superset of the geographic bounds, never a subset, so nothing inside
+  /// the bounds is missed.
+  List<QueriedFeature> queryRenderedFeaturesIn(
+    LatLngBounds bounds, {
+    List<String>? layerIds,
+    Expression? filter,
+  }) {
+    final rect = _projectBounds(bounds);
+    if (rect == null) return const [];
+    return queryRenderedFeatures(rect, layerIds: layerIds, filter: filter);
+  }
+
+  /// [queryRenderedFeatures] without blocking the UI isolate.
+  ///
+  /// The synchronous form waits on a render-thread round trip, which stalls
+  /// frame production for as long as the render thread takes to get to it —
+  /// fine for a one-off hit test, wrong for a query driven by the camera at
+  /// frame rate, which is the usual reason to run one.
+  ///
+  /// **Throws [MapQueryException] when the query could not be answered**, which
+  /// is the difference from the synchronous form: there, failure and "nothing
+  /// found" are both `const []`.
+  Future<List<QueriedFeature>> queryRenderedFeaturesAsync(
+    Rect rect, {
+    List<String>? layerIds,
+    Expression? filter,
+  }) async {
+    final layers = _layers;
+    if (layers == null) {
+      throw const MapQueryException('this renderer cannot query features');
+    }
+    final json = await layers.queryRenderedFeaturesAsyncJson(
+      rect.left,
+      rect.top,
+      rect.right,
+      rect.bottom,
+      layerIds: layerIds,
+      filterJson: _filterJson(filter),
+    );
+    if (json == null || json.isEmpty) {
+      throw const MapQueryException(
+        'the engine did not answer the query — it was busy, or the map is gone',
+      );
+    }
+    return _parseFeatures(json);
+  }
+
+  /// Features in a source's LOADED TILES, drawn or not — gl-js
+  /// `querySourceFeatures`.
+  ///
+  /// This answers "what data is loaded here", not "what is on screen": a
+  /// feature excluded by a layer filter, hidden behind another, or outside a
+  /// layer's zoom range still comes back.
+  ///
+  /// Two behaviours that surprise everyone once, and are mbgl's and gl-js's
+  /// alike:
+  ///
+  /// * it only sees tiles **already fetched** — there is no request — so the
+  ///   answer depends on where the camera has been;
+  /// * results are **not deduplicated**. The answer is assembled per tile, so a
+  ///   feature in the overlap of several cached tiles comes back once per tile.
+  ///   Dedupe on [QueriedFeature.id] if you need unique features.
+  ///
+  /// [sourceLayers] is required in practice for a vector source and ignored by
+  /// a GeoJSON one.
+  List<QueriedFeature> querySourceFeatures(
+    String sourceId, {
+    List<String>? sourceLayers,
+    Expression? filter,
+  }) {
+    final json = _layers?.querySourceFeaturesJson(
+      sourceId,
+      sourceLayers: sourceLayers,
+      filterJson: _filterJson(filter),
+    );
+    if (json == null || json.isEmpty) return const [];
+    return _parseFeatures(json);
+  }
+
+  static String? _filterJson(Expression? filter) =>
+      filter == null ? null : jsonEncode(encodeStyleJson(filter));
+
+  /// The screen-space box through a geographic bounds' corners.
+  ///
+  /// All FOUR corners, not just the two the bounds names: under a bearing the
+  /// south-west corner is not the left-most point on screen, so projecting two
+  /// corners produces a box that clips the other two out of the query.
+  Rect? _projectBounds(LatLngBounds bounds) {
+    final projector = _projector;
+    if (projector == null) return null;
+    final corners = <LatLng>[
+      LatLng(bounds.south, bounds.west),
+      LatLng(bounds.south, bounds.east),
+      LatLng(bounds.north, bounds.west),
+      LatLng(bounds.north, bounds.east),
+    ];
+    final out = List<Offset>.filled(corners.length, Offset.zero);
+    final visible = List<bool>.filled(corners.length, false);
+    // Generation 0 means no frame has been presented, so `out` is untouched and
+    // the box would be a point at the origin — which would query the wrong
+    // place rather than nothing, so refuse instead.
+    if (projector.project(corners, out, visible: visible) == 0) return null;
+
+    // A corner BEHIND the camera on a pitched view projects to a meaningless
+    // point, and including it would blow the box up to cover the screen. Drop
+    // it; the remaining corners still bound everything that is actually
+    // visible, which is all a rendered query can return anyway.
+    final points = <Offset>[
+      for (var i = 0; i < corners.length; i++)
+        if (visible[i]) out[i],
+    ];
+    if (points.isEmpty) return null;
+    var rect = Rect.fromPoints(points.first, points.first);
+    for (final p in points.skip(1)) {
+      rect = rect.expandToInclude(Rect.fromPoints(p, p));
+    }
+    return rect;
+  }
+
+  /// Parses a FeatureCollection into features, dropping only what it cannot
+  /// read.
+  static List<QueriedFeature> _parseFeatures(String json) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(json);
+    } on FormatException {
+      return const [];
+    }
+    if (decoded is! Map<String, Object?>) return const [];
+    final features = decoded['features'];
+    if (features is! List<Object?>) return const [];
+    final out = <QueriedFeature>[];
+    for (final f in features) {
+      if (f is! Map<String, Object?>) continue;
+      try {
+        out.add(QueriedFeature.fromJson(f));
+      } on FormatException {
         continue;
       }
     }
@@ -984,4 +1168,21 @@ class MapLibreSource {
 
   @override
   String toString() => 'MapLibreSource($id, type: $type)';
+}
+
+/// Thrown when a query could not be ANSWERED, as opposed to answering
+/// "nothing".
+///
+/// Only the asynchronous queries throw. The synchronous ones return `const []`
+/// for both cases on purpose: they run on camera ticks and must not throw into
+/// a paint callback, so they trade the distinction for safety. An async caller
+/// can afford to handle it, and a Future is where a failure belongs in Dart.
+class MapQueryException implements Exception {
+  const MapQueryException(this.message);
+
+  /// Why the query could not be answered.
+  final String message;
+
+  @override
+  String toString() => 'MapQueryException: $message';
 }

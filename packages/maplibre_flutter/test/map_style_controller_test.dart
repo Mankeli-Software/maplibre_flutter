@@ -143,9 +143,56 @@ class _RecordingLayers implements MapLibreStyleLayers {
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
   }) {
     queriedRect = Rect.fromLTRB(minX, minY, maxX, maxY);
+    queriedFilter = filterJson;
     return queryJson;
+  }
+
+  /// The filter the controller passed down, so a test can assert it reached the
+  /// engine rather than being applied in Dart.
+  String? queriedFilter;
+
+  @override
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async => queryRenderedFeaturesJson(
+    minX,
+    minY,
+    maxX,
+    maxY,
+    layerIds: layerIds,
+    filterJson: filterJson,
+  );
+
+  /// Recorded source queries.
+  final List<
+    ({String sourceId, List<String>? sourceLayers, String? filterJson})
+  >
+  sourceQueries =
+      <({String sourceId, List<String>? sourceLayers, String? filterJson})>[];
+
+  /// What [querySourceFeaturesJson] returns.
+  String? sourceQueryResult;
+
+  @override
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+  }) {
+    sourceQueries.add((
+      sourceId: sourceId,
+      sourceLayers: sourceLayers,
+      filterJson: filterJson,
+    ));
+    return sourceQueryResult;
   }
 }
 
@@ -1014,5 +1061,115 @@ void main() {
       style.removePoints('bulk');
       expect(platform.layersById, isEmpty);
     });
+  });
+
+  // 6.1-6.3.
+  group('queries', () {
+    const collection =
+        '{"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":7,"properties":{"kind":"city"},'
+        '"geometry":{"type":"Point","coordinates":[22.27,60.45]}}]}';
+
+    test('a point query pads into a box rather than asking for zero area', () {
+      final platform = _RecordingLayers()..queryJson = collection;
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      style.queryRenderedFeaturesAt(const Offset(100, 50), tolerance: 8);
+      // A literal point misses a circle the user was plainly aiming at, which
+      // is why gl-js and both SDKs pad a tap too.
+      expect(platform.queriedRect, const Rect.fromLTRB(92, 42, 108, 58));
+    });
+
+    test('a filter is handed to the ENGINE, not applied in Dart', () {
+      final platform = _RecordingLayers()..queryJson = collection;
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      style.queryRenderedFeatures(
+        const Rect.fromLTRB(0, 0, 10, 10),
+        filter: Expr.equals(Expr.get('kind'), const StyleValue('city')),
+      );
+      // The EXACT document, not `contains`: a filter built with the wrong
+      // arity still contains both words, and the engine silently ignores it —
+      // which is how the first version of this test passed over a filter mbgl
+      // rejected as unparseable.
+      expect(platform.queriedFilter, equals('["==",["get","kind"],"city"]'));
+    });
+
+    test(
+      'the sync query stays silent on failure — it runs on camera ticks',
+      () {
+        final platform = _RecordingLayers()..queryJson = null;
+        final style = MapLibreStyleController()..attachTo(platform);
+        expect(
+          style.queryRenderedFeatures(const Rect.fromLTRB(0, 0, 10, 10)),
+          isEmpty,
+          reason:
+              'throwing into a paint callback is worse than a lost frame of '
+              'query results',
+        );
+      },
+    );
+
+    test('the async query THROWS on failure, which is the whole point', () {
+      final platform = _RecordingLayers()..queryJson = null;
+      final style = MapLibreStyleController()..attachTo(platform);
+      expect(
+        style.queryRenderedFeaturesAsync(const Rect.fromLTRB(0, 0, 10, 10)),
+        throwsA(isA<MapQueryException>()),
+      );
+    });
+
+    test('an unattached controller reports it rather than answering empty', () {
+      final style = MapLibreStyleController();
+      expect(
+        style.queryRenderedFeaturesAsync(const Rect.fromLTRB(0, 0, 10, 10)),
+        throwsA(isA<MapQueryException>()),
+      );
+    });
+
+    test('querySourceFeatures forwards the source layers and the filter', () {
+      final platform = _RecordingLayers()..sourceQueryResult = collection;
+      final style = MapLibreStyleController()..attachTo(platform);
+
+      final features = style.querySourceFeatures(
+        'roads',
+        sourceLayers: const ['transportation'],
+        filter: Expr.equals(Expr.get('kind'), const StyleValue('city')),
+      );
+      expect(features, hasLength(1));
+      expect(features.single.id, 7);
+      expect(platform.sourceQueries.single.sourceId, 'roads');
+      expect(
+        platform.sourceQueries.single.sourceLayers,
+        equals(['transportation']),
+      );
+      expect(
+        platform.sourceQueries.single.filterJson,
+        equals('["==",["get","kind"],"city"]'),
+      );
+    });
+
+    test(
+      'a geographic query needs a projector, and says so by returning empty',
+      () {
+        // _RecordingLayers is not a projector, so the bounds cannot be projected.
+        final platform = _RecordingLayers()..queryJson = collection;
+        final style = MapLibreStyleController()..attachTo(platform);
+        expect(
+          style.queryRenderedFeaturesIn(
+            const LatLngBounds(
+              southwest: LatLng(59, 18),
+              northeast: LatLng(61, 23),
+            ),
+          ),
+          isEmpty,
+        );
+        expect(
+          platform.queriedRect,
+          isNull,
+          reason: 'and it must not fall through to a wrong box',
+        );
+      },
+    );
   });
 }

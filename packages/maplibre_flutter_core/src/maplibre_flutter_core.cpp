@@ -37,6 +37,7 @@
 // conversion headers live under mbgl's private src/, which is already on this
 // shim's include path (see CMakeLists) — convertJSON gives us the whole style
 // spec, including cluster options and data-driven expressions, for free.
+#include <mbgl/style/conversion/filter.hpp>
 #include <mbgl/style/conversion/geojson.hpp>
 #include <mbgl/style/conversion/json.hpp>
 #include <mbgl/style/conversion/layer.hpp>
@@ -2698,26 +2699,72 @@ void mbl_map_remove_image(MblMap *m, const char *id) {
 
 void mbl_string_free(char *s) { std::free(s); }
 
+namespace {
+
+// Splits a comma-separated list into a vector, or nullopt when there is nothing
+// to restrict by. Shared by every query entry point.
+std::optional<std::vector<std::string>> splitCsv(const char *csv_in) {
+  if (csv_in == nullptr || *csv_in == '\0') return std::nullopt;
+  std::vector<std::string> ids;
+  std::string csv(csv_in);
+  size_t start = 0;
+  while (start <= csv.size()) {
+    const size_t comma = csv.find(',', start);
+    const size_t end = comma == std::string::npos ? csv.size() : comma;
+    if (end > start) ids.emplace_back(csv.substr(start, end - start));
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  if (ids.empty()) return std::nullopt;
+  return ids;
+}
+
+// Parses a style-spec filter expression. Returns nullopt when there is no
+// filter; a filter that does not PARSE is reported and then ignored, because
+// silently matching everything is the one outcome a caller cannot detect.
+std::optional<mbgl::style::Filter> parseFilter(MblMap *m,
+                                               const char *filter_json) {
+  if (filter_json == nullptr || *filter_json == '\0') return std::nullopt;
+  mbgl::style::conversion::Error error;
+  auto filter = mbgl::style::conversion::convertJSON<mbgl::style::Filter>(
+      std::string(filter_json), error);
+  if (!filter) {
+    dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                       "query filter is not a valid style-spec expression: " +
+                           error.message);
+    return std::nullopt;
+  }
+  return *filter;
+}
+
+// One FeatureCollection string from a feature list. An empty result is still
+// valid GeoJSON rather than a null, so the caller parses one shape.
+std::string featuresToJson(const std::vector<mbgl::Feature> &features) {
+  const mapbox::feature::feature_collection<double> collection(features.begin(),
+                                                               features.end());
+  return mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+}
+
+char *dupJson(const std::string &json) {
+  if (json.empty()) return nullptr;
+  char *out = static_cast<char *>(std::malloc(json.size() + 1));
+  if (out == nullptr) return nullptr;
+  std::memcpy(out, json.data(), json.size());
+  out[json.size()] = '\0';
+  return out;
+}
+
+} // namespace
+
 char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
                                       double max_x, double max_y,
                                       const char *layer_ids,
+                                      const char *filter_json,
                                       uint32_t timeout_ms) {
   if (m == nullptr) return nullptr;
 
-  std::optional<std::vector<std::string>> layers;
-  if (layer_ids != nullptr && *layer_ids != '\0') {
-    std::vector<std::string> ids;
-    std::string csv(layer_ids);
-    size_t start = 0;
-    while (start <= csv.size()) {
-      const size_t comma = csv.find(',', start);
-      const size_t end = comma == std::string::npos ? csv.size() : comma;
-      if (end > start) ids.emplace_back(csv.substr(start, end - start));
-      if (comma == std::string::npos) break;
-      start = comma + 1;
-    }
-    if (!ids.empty()) layers = std::move(ids);
-  }
+  auto layers = splitCsv(layer_ids);
+  auto filter = parseFilter(m, filter_json);
 
   // The renderer is owned by the render thread, so the query has to run there.
   // Hand the result back through a shared promise and wait with a deadline: a
@@ -2731,7 +2778,7 @@ char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
   auto result = std::make_shared<QueryResult>();
 
   const double height = static_cast<double>(m->renderHeight);
-  m->post([m, result, min_x, min_y, max_x, max_y, layers, height] {
+  m->post([m, result, min_x, min_y, max_x, max_y, layers, filter, height] {
     std::string json;
     try {
       auto *renderer = m->frontend != nullptr ? m->frontend->getRenderer()
@@ -2744,13 +2791,8 @@ char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
         // made every query miss.
         (void)height;
         mbgl::ScreenBox box{{min_x, min_y}, {max_x, max_y}};
-        const auto features = renderer->queryRenderedFeatures(
-            box, mbgl::RenderedQueryOptions(layers));
-        // Hand back one FeatureCollection so the Dart side parses a single
-        // shape (and an empty result is still valid GeoJSON, not a null).
-        const mapbox::feature::feature_collection<double> collection(
-            features.begin(), features.end());
-        json = mapbox::geojson::stringify(mbgl::GeoJSON{collection});
+        json = featuresToJson(renderer->queryRenderedFeatures(
+            box, mbgl::RenderedQueryOptions(layers, filter)));
       }
     } catch (const std::exception &e) {
       fprintf(stderr, "maplibre_flutter_core: query failed: %s\n", e.what());
@@ -2770,12 +2812,63 @@ char *mbl_map_query_rendered_features(MblMap *m, double min_x, double min_y,
                            [&] { return result->done; })) {
     return nullptr; // timed out; the lambda still owns `result` safely
   }
-  if (result->json.empty()) return nullptr;
-  char *out = static_cast<char *>(std::malloc(result->json.size() + 1));
-  if (out == nullptr) return nullptr;
-  std::memcpy(out, result->json.data(), result->json.size());
-  out[result->json.size()] = '\0';
-  return out;
+  return dupJson(result->json);
+}
+
+void mbl_map_query_rendered_features_async(MblMap *m, double min_x,
+                                           double min_y, double max_x,
+                                           double max_y, const char *layer_ids,
+                                           const char *filter_json,
+                                           MblQueryCallback callback,
+                                           void *user) {
+  if (callback == nullptr) return;
+  if (m == nullptr) {
+    // Still call back: a caller awaiting a Future must not wait forever on a
+    // handle that was already dead.
+    callback(user, nullptr);
+    return;
+  }
+  auto layers = splitCsv(layer_ids);
+  auto filter = parseFilter(m, filter_json);
+  m->post([m, min_x, min_y, max_x, max_y, layers, filter, callback, user] {
+    std::string json;
+    try {
+      auto *renderer =
+          m->frontend != nullptr ? m->frontend->getRenderer() : nullptr;
+      if (renderer != nullptr) {
+        mbgl::ScreenBox box{{min_x, min_y}, {max_x, max_y}};
+        json = featuresToJson(renderer->queryRenderedFeatures(
+            box, mbgl::RenderedQueryOptions(layers, filter)));
+      }
+    } catch (const std::exception &e) {
+      fprintf(stderr, "maplibre_flutter_core: query failed: %s\n", e.what());
+    } catch (...) {
+      fprintf(stderr, "maplibre_flutter_core: query failed (unknown)\n");
+    }
+    callback(user, dupJson(json));
+  });
+}
+
+char *mbl_map_query_source_features(MblMap *m, const char *source_id,
+                                    const char *source_layers,
+                                    const char *filter_json,
+                                    uint32_t timeout_ms) {
+  if (m == nullptr || source_id == nullptr) return nullptr;
+  const std::string sourceId(source_id);
+  auto sourceLayers = splitCsv(source_layers);
+  auto filter = parseFilter(m, filter_json);
+
+  auto result = std::make_shared<std::string>();
+  const bool ok = runOnRenderThread(
+      m, timeout_ms, [m, sourceId, sourceLayers, filter, result] {
+        auto *renderer =
+            m->frontend != nullptr ? m->frontend->getRenderer() : nullptr;
+        if (renderer == nullptr) return;
+        *result = featuresToJson(renderer->querySourceFeatures(
+            sourceId, mbgl::SourceQueryOptions(sourceLayers, filter)));
+      });
+  if (!ok) return nullptr;
+  return dupJson(*result);
 }
 
 uint64_t mbl_map_presented_generation(MblMap *m) {

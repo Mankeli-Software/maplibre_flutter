@@ -126,11 +126,44 @@ abstract interface class MapLibreStyleLayers {
   /// state that lives inside the engine and cannot be recomputed from the
   /// original points. That is what makes it possible to draw clusters as
   /// Flutter widgets without reimplementing clustering.
+  ///
+  /// [filterJson] is a style-spec filter expression as JSON, evaluated inside
+  /// the engine — cheaper than fetching everything and filtering in Dart, and
+  /// able to reach properties Dart never sees.
   String? queryRenderedFeaturesJson(
     double minX,
     double minY,
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
+  });
+
+  /// The same query, off the calling thread.
+  ///
+  /// The synchronous form blocks on a render-thread round trip, which on the UI
+  /// isolate stalls frame production — fine for a one-off hit test, wrong for a
+  /// query driven by the camera at frame rate, which is the usual reason to run
+  /// one. Completes with null if the query failed.
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  });
+
+  /// Features in a source's LOADED TILES, drawn or not — gl-js
+  /// `querySourceFeatures`. Returns a GeoJSON `FeatureCollection` string, or
+  /// null if the query failed.
+  ///
+  /// Ignores styling and visibility, so it answers "what data is loaded here",
+  /// not "what is on screen". Results are **not deduplicated** and only cover
+  /// tiles already fetched — see the implementations for why.
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
   });
 }

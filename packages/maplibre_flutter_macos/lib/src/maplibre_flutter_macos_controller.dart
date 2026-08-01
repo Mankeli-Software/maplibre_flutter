@@ -505,6 +505,7 @@ class MapLibreFlutterMacosController
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
   }) {
     if (_disposed) return null;
     return _coreMap.queryRenderedFeatures(
@@ -513,6 +514,41 @@ class MapLibreFlutterMacosController
       maxX,
       maxY,
       layerIds: layerIds,
+      filterJson: filterJson,
+    );
+  }
+
+  @override
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async {
+    if (_disposed) return null;
+    return _coreMap.queryRenderedFeaturesAsync(
+      minX,
+      minY,
+      maxX,
+      maxY,
+      layerIds: layerIds,
+      filterJson: filterJson,
+    );
+  }
+
+  @override
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+  }) {
+    if (_disposed) return null;
+    return _coreMap.querySourceFeatures(
+      sourceId,
+      sourceLayers: sourceLayers,
+      filterJson: filterJson,
     );
   }
 

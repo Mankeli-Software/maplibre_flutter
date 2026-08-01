@@ -604,9 +604,56 @@ FFI_PLUGIN_EXPORT void mbl_map_set_transition_options(
 // render thread (mbgl's renderer is thread-affine) and waits up to
 // `timeout_ms`, returning NULL if that elapses — so a busy render thread costs
 // a dropped query, never a deadlock.
+// `filter_json` is a style-spec filter EXPRESSION as JSON (e.g.
+// `["==", ["get", "kind"], "city"]`), or NULL for none — mbgl
+// `RenderedQueryOptions::filter` (renderer/query.hpp). It is evaluated inside
+// the engine, so a filtered query costs less than fetching everything and
+// filtering in Dart, and it can reach properties Dart never sees.
 FFI_PLUGIN_EXPORT char *mbl_map_query_rendered_features(
     MblMap *map, double min_x, double min_y, double max_x, double max_y,
-    const char *layer_ids, uint32_t timeout_ms);
+    const char *layer_ids, const char *filter_json, uint32_t timeout_ms);
+
+// Delivers a query result. `json` is a heap string TRANSFERRED to the callee —
+// release it with mbl_string_free — or NULL if the query failed. Fires on the
+// RENDER thread, so a Dart handler must be a NativeCallable.listener.
+typedef void (*MblQueryCallback)(void *user, char *json);
+
+// Same query, without blocking the caller.
+//
+// The synchronous form waits on a condition variable with a deadline, which on
+// the UI isolate means stalling frame production for however long the render
+// thread takes to reach the request. That is tolerable for a one-off hit test
+// and wrong for a query driven by the camera at 60-120 Hz, which is the usual
+// reason to run one.
+//
+// There is no timeout: the callback fires when the render thread gets to it.
+// A caller that needs a deadline can impose one on its own Future.
+FFI_PLUGIN_EXPORT void mbl_map_query_rendered_features_async(
+    MblMap *map, double min_x, double min_y, double max_x, double max_y,
+    const char *layer_ids, const char *filter_json, MblQueryCallback callback,
+    void *user);
+
+// Query features in a SOURCE's loaded tiles, drawn or not — gl-js
+// `querySourceFeatures`, mbgl `Renderer::querySourceFeatures`
+// (renderer/query.hpp). Unlike the rendered query this ignores styling and
+// visibility, so it answers "what data is loaded here", not "what is on
+// screen": a feature hidden by a layer filter, or under another feature, or in
+// a layer whose zoom range excludes the current zoom, still comes back.
+//
+// `source_layers` is a comma-separated list of source-layer names (required in
+// practice for a vector source, ignored by a geojson one), or NULL for all.
+// `filter_json` is as above.
+//
+// Two behaviours that surprise every caller once, both mbgl's and gl-js's:
+//
+//   * it only ever sees tiles ALREADY LOADED — there is no fetch — so the
+//     result depends on where the camera has been;
+//   * results are NOT deduplicated. The answer is assembled per tile, so one
+//     feature in the overlap of several cached tiles comes back once per tile.
+//     Dedupe by feature id if you need unique features.
+FFI_PLUGIN_EXPORT char *mbl_map_query_source_features(
+    MblMap *map, const char *source_id, const char *source_layers,
+    const char *filter_json, uint32_t timeout_ms);
 
 // Frees a string returned by this library (e.g. from
 // mbl_map_query_rendered_features).

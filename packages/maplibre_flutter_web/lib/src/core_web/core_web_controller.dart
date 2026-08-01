@@ -375,14 +375,49 @@ class MapLibreCoreWebController
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
   }) {
     final map = _map;
     if (map == null || _disposed) return null;
+    // NOT SUPPORTED HERE: filterJson. The embind module's query takes no filter,
+    // and adding one means new C++ in src/web/ that nothing currently compiles
+    // (CLAUDE.md §2 — the web WASM tier is the standing gap). Ignoring it would
+    // silently return MORE features than asked for, which is the one failure a
+    // caller cannot see, so refuse the query instead.
+    if (filterJson != null && filterJson.isNotEmpty) return null;
     final ids = layerIds == null
         ? null
         : <JSString>[for (final id in layerIds) id.toJS].toJS;
     final json = map.queryRenderedFeatures(minX, minY, maxX, maxY, ids).toDart;
     return json.isEmpty ? null : json;
+  }
+
+  @override
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async => queryRenderedFeaturesJson(
+    minX,
+    minY,
+    maxX,
+    maxY,
+    layerIds: layerIds,
+    filterJson: filterJson,
+  );
+
+  @override
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+  }) {
+    // Not exposed by the embind module — see queryRenderedFeaturesJson. Null
+    // means "could not ask", which is exactly right here.
+    return null;
   }
 
   @override

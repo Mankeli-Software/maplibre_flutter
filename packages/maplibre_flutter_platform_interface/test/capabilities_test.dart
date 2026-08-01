@@ -97,7 +97,49 @@ class _FullController extends _BareController
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
   }) => null;
+
+  @override
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async => queryRenderedFeaturesJson(
+    minX,
+    minY,
+    maxX,
+    maxY,
+    layerIds: layerIds,
+    filterJson: filterJson,
+  );
+
+  /// Recorded source queries.
+  final List<
+    ({String sourceId, List<String>? sourceLayers, String? filterJson})
+  >
+  sourceQueries =
+      <({String sourceId, List<String>? sourceLayers, String? filterJson})>[];
+
+  /// What [querySourceFeaturesJson] returns.
+  String? sourceQueryResult;
+
+  @override
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+  }) {
+    sourceQueries.add((
+      sourceId: sourceId,
+      sourceLayers: sourceLayers,
+      filterJson: filterJson,
+    ));
+    return sourceQueryResult;
+  }
 
   @override
   void addModel(MapLibreModel model) {}

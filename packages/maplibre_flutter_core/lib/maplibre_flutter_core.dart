@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
@@ -5,6 +6,11 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'src/maplibre_flutter_core_bindings_generated.dart' as bindings;
+
+/// The `MblQueryCallback` signature. Spelled here rather than taken from the
+/// generated bindings because ffigen emits the typedef as an opaque alias.
+typedef _QueryCallbackNative =
+    ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Char>);
 
 /// A camera read back from the native core.
 ///
@@ -991,30 +997,121 @@ class MapLibreCoreMap {
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
     Duration timeout = const Duration(milliseconds: 200),
   }) {
     _checkAlive();
     return using((arena) {
-      final layers = layerIds == null || layerIds.isEmpty
-          ? ffi.nullptr
-          : layerIds.join(',').toNativeUtf8(allocator: arena).cast<ffi.Char>();
       final out = bindings.mbl_map_query_rendered_features(
         _handle,
         minX,
         minY,
         maxX,
         maxY,
-        layers,
+        _csv(arena, layerIds),
+        _str(arena, filterJson),
         timeout.inMilliseconds,
       );
-      if (out == ffi.nullptr) return null;
-      try {
-        return out.cast<Utf8>().toDartString();
-      } finally {
-        // Native-allocated; must go back through the library's own free.
-        bindings.mbl_string_free(out);
-      }
+      return _takeString(out);
     });
+  }
+
+  /// The same query, off the calling thread — see
+  /// `mbl_map_query_rendered_features_async`.
+  ///
+  /// The synchronous form waits on a condition variable, which on the UI
+  /// isolate stalls frame production. That is fine for a one-off hit test and
+  /// wrong for a query driven by the camera, which is the usual reason to run
+  /// one.
+  ///
+  /// Completes with null if the query failed. It has no timeout of its own —
+  /// impose one with [Future.timeout] if you need a deadline.
+  Future<String?> queryRenderedFeaturesAsync(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) {
+    _checkAlive();
+    final completer = Completer<String?>();
+    // The callback fires on the RENDER thread, so it has to be a listener
+    // (NativeCallable.isolateLocal would run it there, off the Dart isolate).
+    // Kept in a field-scoped local closed over by the callable itself, then
+    // closed on first use — one query, one callable, no registry to leak.
+    late final ffi.NativeCallable<_QueryCallbackNative> callable;
+    callable = ffi.NativeCallable<_QueryCallbackNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      ffi.Pointer<ffi.Char> json,
+    ) {
+      callable.close();
+      if (!completer.isCompleted) completer.complete(_takeString(json));
+    });
+    using((arena) {
+      bindings.mbl_map_query_rendered_features_async(
+        _handle,
+        minX,
+        minY,
+        maxX,
+        maxY,
+        _csv(arena, layerIds),
+        _str(arena, filterJson),
+        callable.nativeFunction,
+        ffi.nullptr,
+      );
+    });
+    return completer.future;
+  }
+
+  /// Features in a source's LOADED TILES, drawn or not — gl-js
+  /// `querySourceFeatures`. Null if the query failed or timed out.
+  ///
+  /// This ignores styling and visibility, so it answers "what data is loaded
+  /// here", not "what is on screen".
+  ///
+  /// Two behaviours that surprise every caller once, both mbgl's and gl-js's:
+  /// it only sees tiles already fetched, so the answer depends on where the
+  /// camera has been; and results are **not deduplicated** — the answer is
+  /// assembled per tile, so a feature in the overlap of several cached tiles
+  /// comes back once per tile. Dedupe by feature id if you need unique ones.
+  String? querySourceFeatures(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = bindings.mbl_map_query_source_features(
+        _handle,
+        sourceId.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        _csv(arena, sourceLayers),
+        _str(arena, filterJson),
+        timeout.inMilliseconds,
+      );
+      return _takeString(out);
+    });
+  }
+
+  static ffi.Pointer<ffi.Char> _csv(Arena arena, List<String>? values) =>
+      values == null || values.isEmpty
+      ? ffi.nullptr
+      : values.join(',').toNativeUtf8(allocator: arena).cast<ffi.Char>();
+
+  static ffi.Pointer<ffi.Char> _str(Arena arena, String? value) =>
+      value == null || value.isEmpty
+      ? ffi.nullptr
+      : value.toNativeUtf8(allocator: arena).cast<ffi.Char>();
+
+  /// Reads a native string and hands it back to the library's own free.
+  static String? _takeString(ffi.Pointer<ffi.Char> out) {
+    if (out == ffi.nullptr) return null;
+    try {
+      return out.cast<Utf8>().toDartString();
+    } finally {
+      bindings.mbl_string_free(out);
+    }
   }
 
   /// The projection generation of the frame currently ON SCREEN.

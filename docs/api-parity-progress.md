@@ -174,11 +174,14 @@ Highest row count in the backlog, correctly last among the core stages.
 
 ### Stage 6 — Queries and feature state (over stage-1's GeoJSON types)
 
-- [ ] 6.1 `queryRenderedFeatures` overloads: point, `Rect`, `LatLngBounds`, plus a `filter`
-      (mbgl `RenderedQueryOptions{layerIDs, filter}`, `renderer/query.hpp:14-24`). Add a
-      `Future`-returning form; the current call blocks the UI isolate on a condvar deadline.
-- [ ] 6.2 Distinguish "timed out" from "nothing found" — both return `const []` today.
-- [ ] 6.3 `querySourceFeatures(sourceId, {sourceLayers, filter})` (`query.hpp:30-38`).
+- [x] 6.1 `queryRenderedFeatures` overloads: `Rect`, `queryRenderedFeaturesAt(Offset)`,
+      `queryRenderedFeaturesIn(LatLngBounds)`, all taking a typed `Expression` filter evaluated
+      inside the engine, plus `queryRenderedFeaturesAsync` over a new non-blocking C entry point.
+- [x] 6.2 Distinguished, but only on the ASYNC path: `queryRenderedFeaturesAsync` throws
+      `MapQueryException`; the sync forms still return `const []` for both cases, deliberately —
+      they run on camera ticks and must not throw into a paint callback.
+- [x] 6.3 `querySourceFeatures(sourceId, {sourceLayers, filter})`, with mbgl's two surprises
+      (loaded tiles only, results NOT deduplicated) documented at all three layers.
 - [ ] 6.4 `setFeatureState` / `getFeatureState` / `removeFeatureState` (`renderer.hpp:74-86`).
       **Constraint:** mbgl never parses `promoteId` or `generateId`, so feature state only works on
       features whose own GeoJSON/MVT `id` is set. Document this loudly.
@@ -937,4 +940,45 @@ never existed.
   exists because the other two would both pass if the replay were simply broken.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (54) / `format` clean /
   ffigen regenerated, no unexplained diff.
+
+### 2026-08-01 — Stage 6 (6.1-6.3) — the query surface
+
+- **The async form is a real C entry point, not a Future wrapped round a blocking call.**
+  `mbl_map_query_rendered_features_async` posts the query and fires `MblQueryCallback` on the render
+  thread; Dart binds it with `NativeCallable.listener` and one callable per query, closed inside its
+  own handler. The synchronous form waits on a condvar with a deadline, which on the UI isolate
+  stalls frame production — tolerable for a one-off hit test, wrong for a query driven by the camera
+  at 60-120 Hz, which is the usual reason to run one. It calls back even when the handle is null,
+  because a Future that never completes is worse than one that completes empty.
+- **6.2 is answered on the async path only, and that is a decision.** The sync queries run on camera
+  ticks; throwing there would throw into a paint callback. They keep the best-effort `const []`
+  contract and say so in the dartdoc. An async caller can afford to handle failure, and a Future is
+  where a failure belongs in Dart, so that is where `MapQueryException` lives.
+- **A filter that does not PARSE is reported through `onError`, not ignored.** Matching everything is
+  the one outcome a caller cannot detect from the result.
+  **That check immediately caught a bug in this run's own test:** `Expr.equals` takes positional
+  arguments, and `Expr.equals([a, b])` builds `["==", [["get","kind"],"city"]]`, which mbgl rejects.
+  The unit test had asserted the filter JSON `contains('kind')` and `contains('city')` — both true of
+  the malformed document — so only the hardware test caught it. Both assertions are now on the exact
+  JSON.
+- **`querySourceFeatures` returns 12 features for 3 points**, because mbgl answers per LOADED TILE
+  and a point in the overlap of several cached tiles comes back once per tile. gl-js behaves the
+  same. Documented in the header, the core wrapper and the app-facing dartdoc; the tests compare id
+  SETS rather than counts.
+- **Two test premises had to be corrected, both by the engine.** Hiding a layer to prove
+  `querySourceFeatures` sees more than `queryRenderedFeatures` proves the opposite: with no visible
+  layer, mbgl has no reason to hold tiles for the source, so both return nothing. The honest fixture
+  is a layer FILTER — the layer stays visible, the tiles stay loaded, and the two queries genuinely
+  disagree. Separately, a point query aimed at "roughly the middle" was measuring the fixture rather
+  than the query; the camera now puts a known feature exactly at the screen centre.
+- **`queryRenderedFeaturesIn` projects all FOUR corners and drops the ones behind the camera.**
+  Under a bearing the south-west corner is not the left-most point on screen, so projecting two
+  corners yields a box that clips the other two out. It refuses (rather than querying the origin)
+  when no frame has been presented.
+- **Web tier refuses a filtered query instead of ignoring the filter.** The embind module takes no
+  filter and adding one means C++ in `src/web/` that nothing currently compiles. Returning more
+  features than asked for is invisible to the caller; returning null is not. `querySourceFeatures`
+  is likewise null there. → 7.1.
+- **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (59) / `format` clean /
+  4 macOS integration tests (`macos_queries_test.dart`) green on hardware / ffigen regenerated.
 

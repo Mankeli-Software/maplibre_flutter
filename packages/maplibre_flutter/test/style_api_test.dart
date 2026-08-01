@@ -107,6 +107,24 @@ class _RecordingLayers implements MapLibreStyleLayers {
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
+  }) => null;
+
+  @override
+  Future<String?> queryRenderedFeaturesAsyncJson(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async => null;
+
+  @override
+  String? querySourceFeaturesJson(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
   }) => null;
 }
 

@@ -559,6 +559,7 @@ external void mbl_map_set_transition_options(
     ffi.Double,
     ffi.Double,
     ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
     ffi.Uint32,
   )
 >()
@@ -569,6 +570,61 @@ external ffi.Pointer<ffi.Char> mbl_map_query_rendered_features(
   double max_x,
   double max_y,
   ffi.Pointer<ffi.Char> layer_ids,
+  ffi.Pointer<ffi.Char> filter_json,
+  int timeout_ms,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Pointer<ffi.Char> json,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_map_query_rendered_features_async(
+  ffi.Pointer<MblMap> map,
+  double min_x,
+  double min_y,
+  double max_x,
+  double max_y,
+  ffi.Pointer<ffi.Char> layer_ids,
+  ffi.Pointer<ffi.Char> filter_json,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(ffi.Pointer<ffi.Void> user, ffi.Pointer<ffi.Char> json)
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Uint32,
+  )
+>()
+external ffi.Pointer<ffi.Char> mbl_map_query_source_features(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<ffi.Char> source_id,
+  ffi.Pointer<ffi.Char> source_layers,
+  ffi.Pointer<ffi.Char> filter_json,
   int timeout_ms,
 );
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io' show sleep;
 import 'dart:typed_data';
 
@@ -1252,6 +1253,161 @@ void main() {
         reason:
             'the retention still has to work — this is the control for the '
             'test above, which would otherwise pass if replay were broken',
+      );
+    });
+  });
+
+  // 6.1-6.3. One style with three labelled points, so a filter has something
+  // asymmetric to select and the counts are checkable.
+  group('queries', () {
+    const style =
+        '{'
+        '"version":8,'
+        '"sources":{"pts":{"type":"geojson","data":{'
+        '"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":1,"properties":{"kind":"city"},'
+        '"geometry":{"type":"Point","coordinates":[0,0]}},'
+        '{"type":"Feature","id":2,"properties":{"kind":"town"},'
+        '"geometry":{"type":"Point","coordinates":[0.0005,0]}},'
+        '{"type":"Feature","id":3,"properties":{"kind":"city"},'
+        '"geometry":{"type":"Point","coordinates":[0,0.0005]}}'
+        ']}}},'
+        '"layers":[{"id":"dots","type":"circle","source":"pts",'
+        '"paint":{"circle-radius":20,"circle-color":"#ff0000"}}]'
+        '}';
+
+    Future<MapLibreCoreMap> boot() async {
+      final map = MapLibreCoreMap.create(
+        width: 256,
+        height: 256,
+        pixelRatio: 1,
+        styleUri: style,
+      );
+      addTearDown(map.dispose);
+      map.setCamera(latitude: 0.00025, longitude: 0.00025, zoom: 17);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      await settle(map);
+      return map;
+    }
+
+    int countFeatures(String? json) {
+      if (json == null) return -1;
+      final decoded = jsonDecode(json) as Map<String, Object?>;
+      return (decoded['features']! as List<Object?>).length;
+    }
+
+    test('a filter runs INSIDE the engine, not after the fact', () async {
+      final map = await boot();
+      final all = map.queryRenderedFeatures(0, 0, 256, 256);
+      expect(countFeatures(all), 3, reason: 'precondition: all three drawn');
+
+      final cities = map.queryRenderedFeatures(
+        0,
+        0,
+        256,
+        256,
+        filterJson: '["==", ["get", "kind"], "city"]',
+      );
+      expect(countFeatures(cities), 2);
+    });
+
+    test(
+      'a filter that does not parse is reported, not silently ignored',
+      () async {
+        final map = await boot();
+        final events = <String>[];
+        map.setDiagnosticCallback((d) {
+          if (d.kind == CoreDiagnosticKind.commandFailed) events.add(d.message);
+        });
+        addTearDown(() => map.setDiagnosticCallback(null));
+
+        // Matching everything is the one outcome a caller cannot detect, so a
+        // broken filter has to say so.
+        map.queryRenderedFeatures(
+          0,
+          0,
+          256,
+          256,
+          filterJson: '["this-is-not-an-operator"]',
+        );
+        await settle(map);
+        expect(events.join('\n'), contains('filter'));
+      },
+    );
+
+    test('the async form returns the same answer without blocking', () async {
+      final map = await boot();
+      final sync = map.queryRenderedFeatures(0, 0, 256, 256);
+      final async = await map
+          .queryRenderedFeaturesAsync(0, 0, 256, 256)
+          .timeout(const Duration(seconds: 10));
+      expect(countFeatures(async), countFeatures(sync));
+      expect(countFeatures(async), 3);
+    });
+
+    test('the async form completes even on a dead handle', () async {
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: style,
+      );
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      final pending = map.queryRenderedFeaturesAsync(0, 0, 64, 64);
+      // A Future that never completes is worse than one that completes empty:
+      // the caller has no way to notice.
+      expect(await pending.timeout(const Duration(seconds: 10)), isNotNull);
+      map.dispose();
+    });
+
+    test('querySourceFeatures sees data the RENDERED query cannot', () async {
+      final map = await boot();
+      // A LAYER FILTER, not visibility: hiding the layer would remove the only
+      // reason mbgl has to hold tiles for the source, so the source query would
+      // correctly find nothing and the test would prove the opposite of what it
+      // claims. With the layer visible but filtered, the tiles stay loaded and
+      // the two queries genuinely disagree — which is the whole distinction.
+      map.setLayerProperty('dots', 'filter', '["==", ["get", "kind"], "town"]');
+      await settle(map);
+
+      expect(
+        countFeatures(map.queryRenderedFeatures(0, 0, 256, 256)),
+        1,
+        reason: 'the rendered query reports what was DRAWN',
+      );
+      // NOT deduplicated, and deliberately not asserted as 3: mbgl answers this
+      // per LOADED TILE, so a point in the overlap of several cached tiles comes
+      // back once per tile. gl-js documents the same. A caller that wants unique
+      // features has to dedupe by id itself.
+      final all = map.querySourceFeatures('pts');
+      expect(
+        countFeatures(all),
+        greaterThanOrEqualTo(3),
+        reason: 'the source query ignores styling: all three are still loaded',
+      );
+      final ids =
+          (jsonDecode(all!) as Map<String, Object?>)['features']!
+              as List<Object?>;
+      expect(
+        {for (final f in ids) (f! as Map<String, Object?>)['id']},
+        equals({1, 2, 3}),
+        reason: 'every feature is reachable, however many times each appears',
+      );
+
+      final towns = map.querySourceFeatures(
+        'pts',
+        filterJson: '["==", ["get", "kind"], "town"]',
+      );
+      expect(countFeatures(towns), lessThan(countFeatures(all)));
+      expect(
+        {
+          for (final f
+              in (jsonDecode(towns!) as Map<String, Object?>)['features']!
+                  as List<Object?>)
+            (f! as Map<String, Object?>)['id'],
+        },
+        equals({2}),
+        reason: 'the filter applies to the source query too',
       );
     });
   });

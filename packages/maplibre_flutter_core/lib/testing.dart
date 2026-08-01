@@ -122,6 +122,7 @@ class RecordingCoreMap implements MapLibreCoreMap {
       double maxX,
       double maxY,
       List<String>? layerIds,
+      String? filterJson,
     })
   >
   queries =
@@ -132,6 +133,7 @@ class RecordingCoreMap implements MapLibreCoreMap {
           double maxX,
           double maxY,
           List<String>? layerIds,
+          String? filterJson,
         })
       >[];
   final List<
@@ -319,6 +321,7 @@ class RecordingCoreMap implements MapLibreCoreMap {
     double maxX,
     double maxY, {
     List<String>? layerIds,
+    String? filterJson,
     Duration timeout = const Duration(milliseconds: 200),
   }) {
     queries.add((
@@ -327,8 +330,51 @@ class RecordingCoreMap implements MapLibreCoreMap {
       maxX: maxX,
       maxY: maxY,
       layerIds: layerIds,
+      filterJson: filterJson,
     ));
     return queryResult;
+  }
+
+  @override
+  Future<String?> queryRenderedFeaturesAsync(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY, {
+    List<String>? layerIds,
+    String? filterJson,
+  }) async => queryRenderedFeatures(
+    minX,
+    minY,
+    maxX,
+    maxY,
+    layerIds: layerIds,
+    filterJson: filterJson,
+  );
+
+  /// Recorded source queries.
+  final List<
+    ({String sourceId, List<String>? sourceLayers, String? filterJson})
+  >
+  sourceQueries =
+      <({String sourceId, List<String>? sourceLayers, String? filterJson})>[];
+
+  /// What [querySourceFeatures] returns; null simulates a failure.
+  String? sourceQueryResult;
+
+  @override
+  String? querySourceFeatures(
+    String sourceId, {
+    List<String>? sourceLayers,
+    String? filterJson,
+    Duration timeout = const Duration(milliseconds: 200),
+  }) {
+    sourceQueries.add((
+      sourceId: sourceId,
+      sourceLayers: sourceLayers,
+      filterJson: filterJson,
+    ));
+    return sourceQueryResult;
   }
 
   @override
