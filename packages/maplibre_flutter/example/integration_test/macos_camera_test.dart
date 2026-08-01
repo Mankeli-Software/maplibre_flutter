@@ -314,4 +314,57 @@ void main() {
       reason: 'the camera must stay where stop() left it',
     );
   });
+
+  // 8.8: the constraints apply from MapOptions, before app code gets control.
+  testWidgets('MapOptions constraints are in force by onReady', (tester) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MapLibreMap(
+          controller: controller,
+          style: _demotiles,
+          options: const MapOptions(
+            initialCamera: MapCamera(center: _turku, zoom: 6),
+            minZoom: 4,
+            maxZoom: 9,
+            maxBounds: LatLngBounds(
+              southwest: LatLng(55, 4),
+              northeast: LatLng(71, 32),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await controller.onReady.timeout(const Duration(seconds: 30));
+
+    // The point of putting these on MapOptions rather than only on the
+    // controller: an app that awaits onReady and immediately moves must already
+    // be working against them.
+    final limits = await controller.camera.getConstraints();
+    expect(limits, isNotNull);
+    expect(limits!.minZoom, closeTo(4, 0.01));
+    expect(limits.maxZoom, closeTo(9, 0.01));
+
+    await controller.camera.jumpTo(const CameraOptions(zoom: 20));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect((await controller.camera.getCamera()).zoom, closeTo(9, 0.01));
+
+    // And the bounds hold: a jump far outside the box must land inside it.
+    await controller.camera.jumpTo(
+      CameraOptions.fromCamera(
+        const MapCamera(center: LatLng(-33.9, 151.2), zoom: 5),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    final after = await controller.camera.getCamera();
+    expect(
+      after.center.latitude,
+      greaterThan(40),
+      reason:
+          'Sydney is nowhere near the Nordics; maxBounds must have clamped '
+          'the camera rather than being accepted and ignored',
+    );
+  });
 }

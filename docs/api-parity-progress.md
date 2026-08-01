@@ -230,7 +230,8 @@ Highest row count in the backlog, correctly last among the core stages.
 - [ ] 8.6 Attribution — rendered on the map. **Legal obligation** for many tile providers, and we
       render none; `getSource` cannot read the strings back either.
 - [ ] 8.7 Marker `offset` and `zIndex` (gl-js `Marker` has both; ours has only `alignment`).
-- [ ] 8.8 `MapOptions` growth: min/max zoom, min/max pitch, `maxBounds`, `constrainMode`.
+- [x] 8.8 `MapOptions` carries `minZoom` / `maxZoom` / `minPitch` / `maxPitch` / `maxBounds`, applied
+      before `onReady` completes. `constrainMode` deliberately NOT exposed — see the run log.
 
 ### Stage 9 — Retire the hand-maintained matrix
 
@@ -1138,4 +1139,27 @@ never existed.
   not the same place.
 - **Gates:** `analyze` clean / `test --no-select` green / `test:native` green (75) / `format` clean /
   ffigen regenerated.
+
+### 2026-08-01 — Stage 8 (8.8) — MapOptions grows the camera constraints
+
+- **Why they belong on `MapOptions` when `controller.camera` already has them.** They answer
+  different questions. Setting a constraint after `onReady` means the map has already shown at least
+  one frame at an unconstrained camera — so a map that must never display the whole world does,
+  briefly. gl-js draws the same distinction: `minZoom` and friends are both constructor options and
+  setters.
+- **Honest about the guarantee.** The commands are queued immediately after the native map exists,
+  not passed into its construction, so the engine may still render at most one unconstrained frame.
+  Closing that would mean widening `mbl_map_create`'s signature, which is more ABI churn than the
+  frame is worth. The dartdoc says so rather than implying "before the first frame".
+- **`constrainMode` is deliberately NOT exposed.** mbgl's `BoundOptions` constrains the camera
+  CENTRE; gl-js's `maxBounds` keeps the whole VIEWPORT inside the region. Those are different
+  promises, and we ship gl-js's under gl-js's name (the controller already sets the constrain mode
+  to match). Exposing the mode would let an app select Android semantics under a gl-js name, which
+  is exactly the "three vocabularies in one class" failure CLAUDE.md §9 exists to prevent.
+- **`hasConstraints`** lets a tier skip the apply step — a render-thread round trip — on the common
+  case of no constraints at all.
+- **The bounds test jumps to Sydney** and asserts the camera stayed in the Nordics. A constraint
+  that is accepted and ignored looks identical to one that works if you only ever move a little.
+- **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 11 macOS integration tests
+  green on hardware.
 

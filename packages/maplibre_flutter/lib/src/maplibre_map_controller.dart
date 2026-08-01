@@ -370,9 +370,28 @@ class MapLibreMapController {
     _platform = platform;
     style.attachTo(platform);
     _pipeEvents(platform);
+    // Constraints BEFORE onReady completes, so app code that awaits onReady and
+    // then moves the camera is already working against them.
+    //
+    // Honest about what this guarantees: the commands are queued immediately
+    // after the native map exists, not passed into its construction, so the
+    // engine may render at most one unconstrained frame. Passing them through
+    // mbl_map_create would close that gap and is a wider ABI change than the
+    // frame is worth.
+    await _applyInitialConstraints(options);
     platform.onReady.then((_) {
       if (!_ready.isCompleted) _ready.complete();
     });
+  }
+
+  /// Pushes [MapOptions]'s camera constraints to the engine.
+  Future<void> _applyInitialConstraints(MapOptions options) async {
+    if (!options.hasConstraints) return;
+    if (options.minZoom case final v?) await camera.setMinZoom(v);
+    if (options.maxZoom case final v?) await camera.setMaxZoom(v);
+    if (options.minPitch case final v?) await camera.setMinPitch(v);
+    if (options.maxPitch case final v?) await camera.setMaxPitch(v);
+    if (options.maxBounds case final v?) await camera.setMaxBounds(v);
   }
 
   /// Tears down the native map but leaves the controller reusable (re-[attach]
