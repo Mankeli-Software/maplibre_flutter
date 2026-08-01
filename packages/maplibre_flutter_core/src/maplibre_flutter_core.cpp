@@ -50,9 +50,11 @@
 #include <mbgl/util/client_options.hpp>
 #include <mbgl/util/geo.hpp>
 #include <mbgl/util/image.hpp>
+#include <mbgl/util/logging.hpp>
 #include <mbgl/util/run_loop.hpp>
 #include <mbgl/util/size.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -66,6 +68,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 // Metal zero-copy present (macOS only). On other platforms the present path is
 // the backend-agnostic CPU readback (mbl_map_copy_frame); the Metal symbols below
@@ -180,6 +183,11 @@ struct MblMap {
   std::mutex cbMutex;
   MblFrameCallback frameCb = nullptr;
   void *frameCbUser = nullptr;
+
+  // Diagnostic callback, guarded by the same mutex. Called on the render thread
+  // for observer events, and on whichever thread logged for MBL_DIAG_LOG.
+  MblDiagnosticCallback diagCb = nullptr;
+  void *diagCbUser = nullptr;
 
   // Zero-copy present. macOS blits mbgl's Metal texture into an IOSurface; the
   // non-Apple (GL) arm blits mbgl's color FBO into an EGLImage-backed texture ring.
@@ -300,6 +308,155 @@ struct MblMap {
 };
 
 namespace {
+
+// --- Diagnostics -------------------------------------------------------------
+
+// Every map that currently has a diagnostic callback installed. Needed because
+// mbgl's log observer is PROCESS-wide (Log::setObserver) and so cannot know
+// which map a record belongs to; records fan out to all of them. Usually one.
+std::mutex gDiagMapsMutex;
+std::vector<MblMap *> gDiagMaps;
+std::once_flag gLogObserverOnce;
+
+// Hands one event to `m`'s callback, transferring an owned copy of `message`.
+// Safe to call with no callback installed (does nothing, allocates nothing).
+void dispatchDiagnostic(MblMap *m, MblDiagnosticKind kind,
+                        MblDiagnosticSeverity severity,
+                        const std::string &message) {
+  MblDiagnosticCallback cb = nullptr;
+  void *user = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(m->cbMutex);
+    cb = m->diagCb;
+    user = m->diagCbUser;
+  }
+  if (cb == nullptr) return;
+  // The receiver is necessarily asynchronous (a Dart NativeCallable.listener
+  // hops to the isolate), so the string has to outlive this call. Ownership
+  // goes with it; the receiver releases it with mbl_string_free.
+  char *owned = static_cast<char *>(std::malloc(message.size() + 1));
+  if (owned == nullptr) return;
+  std::memcpy(owned, message.data(), message.size());
+  owned[message.size()] = '\0';
+  cb(user, static_cast<int32_t>(kind), static_cast<int32_t>(severity), owned);
+}
+
+// mbgl's own log stream, which is the ONLY place several failures surface.
+// A glyph range that 404s is the motivating case: mbgl logs it and never calls
+// MapObserver::onGlyphsError, so without this a style naming a font the tile
+// server does not serve just renders no text, silently.
+class DiagnosticLogObserver final : public mbgl::Log::Observer {
+public:
+  bool onRecord(mbgl::EventSeverity severity, mbgl::Event, int64_t,
+                const std::string &msg) override {
+    std::vector<MblMap *> maps;
+    {
+      std::lock_guard<std::mutex> lk(gDiagMapsMutex);
+      maps = gDiagMaps;
+    }
+    for (MblMap *m : maps) {
+      dispatchDiagnostic(m, MBL_DIAG_LOG,
+                         static_cast<MblDiagnosticSeverity>(severity), msg);
+    }
+    // FALSE = not consumed, so mbgl still writes it to stderr. Returning true
+    // here would silence the platform logging every existing debugging session
+    // relies on.
+    return false;
+  }
+};
+
+// Renders an exception_ptr as a message, since that is all the ABI can carry.
+std::string describeException(std::exception_ptr error) {
+  if (!error) return "unknown error";
+  try {
+    std::rethrow_exception(error);
+  } catch (const std::exception &e) {
+    return e.what();
+  } catch (...) {
+    return "unknown error";
+  }
+}
+
+// Turns mbgl's asynchronous events into diagnostic callbacks. Every override
+// below reports something that otherwise reaches nobody: mbgl surfaces these
+// here and, apart from its log stream, nowhere else — so a 404ing style or a
+// missing sprite is a blank map and total silence.
+//
+// Used as-is in Static mode; the Continuous map uses the FrameObserver subclass.
+class DiagnosticObserver : public mbgl::MapObserver {
+public:
+  explicit DiagnosticObserver(MblMap *map) : m(map) {}
+
+  void onDidFinishLoadingStyle() override {
+    dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
+  }
+
+  void onDidFinishLoadingMap() override {
+    dispatchDiagnostic(m, MBL_DIAG_MAP_LOADED, MBL_SEVERITY_INFO, "");
+  }
+
+  void onDidFailLoadingMap(mbgl::MapLoadError error,
+                           const std::string &what) override {
+    const char *kind = "unknown error";
+    switch (error) {
+      case mbgl::MapLoadError::StyleParseError:
+        kind = "style parse error";
+        break;
+      case mbgl::MapLoadError::StyleLoadError:
+        kind = "style load error";
+        break;
+      case mbgl::MapLoadError::NotFoundError:
+        kind = "not found";
+        break;
+      case mbgl::MapLoadError::UnknownError:
+        break;
+    }
+    dispatchDiagnostic(m, MBL_DIAG_MAP_LOAD_FAILED, MBL_SEVERITY_ERROR,
+                       std::string(kind) + ": " + what);
+  }
+
+  void onDidBecomeIdle() override {
+    dispatchDiagnostic(m, MBL_DIAG_IDLE, MBL_SEVERITY_INFO, "");
+  }
+
+  void onStyleImageMissing(const std::string &id) override {
+    dispatchDiagnostic(m, MBL_DIAG_STYLE_IMAGE_MISSING, MBL_SEVERITY_WARNING,
+                       id);
+  }
+
+  // NOTE this one is effectively dead in our configuration — mbgl reports a
+  // glyph 404 through Log, not here. Bound anyway because it costs nothing and
+  // the day it starts firing is the day someone needs it.
+  void onGlyphsError(const mbgl::FontStack &fontStack,
+                     const mbgl::GlyphRange &range,
+                     std::exception_ptr error) override {
+    std::string fonts;
+    for (const auto &font : fontStack) {
+      if (!fonts.empty()) fonts += ",";
+      fonts += font;
+    }
+    dispatchDiagnostic(m, MBL_DIAG_GLYPHS_ERROR, MBL_SEVERITY_ERROR,
+                       fonts + " " + std::to_string(range.first) + "-" +
+                           std::to_string(range.second) + ": " +
+                           describeException(error));
+  }
+
+  void onSpriteError(const std::optional<mbgl::style::Sprite> &sprite,
+                     std::exception_ptr error) override {
+    const std::string id = sprite ? sprite->id : std::string("default");
+    dispatchDiagnostic(m, MBL_DIAG_SPRITE_ERROR, MBL_SEVERITY_ERROR,
+                       id + ": " + describeException(error));
+  }
+
+  void onRenderError(std::exception_ptr error) override {
+    dispatchDiagnostic(m, MBL_DIAG_RENDER_ERROR, MBL_SEVERITY_ERROR,
+                       describeException(error));
+  }
+
+protected:
+  MblMap *m;
+};
+
 
 // Render thread. Notifies waiters and invokes the frame-ready callback after a
 // new frame (CPU image or zero-copy IOSurface) has been published.
@@ -634,7 +791,10 @@ void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                       float pixelRatio, std::string styleUri) {
   mbgl::util::RunLoop loop;
   mbgl::HeadlessFrontend frontend(mbgl::Size{width, height}, pixelRatio);
-  mbgl::Map map(frontend, mbgl::MapObserver::nullObserver(),
+  // Diagnostics only — Static mode publishes frames on demand, not on the
+  // observer, and mbgl ignores transition options here anyway.
+  DiagnosticObserver observer(m);
+  mbgl::Map map(frontend, observer,
                 mbgl::MapOptions()
                     .withMapMode(mbgl::MapMode::Static)
                     .withSize(mbgl::Size{width, height})
@@ -869,9 +1029,9 @@ void requestModelRender(MblMap *m);
 
 // Observes the Continuous-mode map; each rendered frame (partial or full) is
 // published, so the texture refines progressively as tiles stream in.
-class FrameObserver final : public mbgl::MapObserver {
+class FrameObserver final : public DiagnosticObserver {
 public:
-  explicit FrameObserver(MblMap *map) : m(map) {}
+  explicit FrameObserver(MblMap *map) : DiagnosticObserver(map) {}
   void onDidFinishRenderingFrame(const RenderFrameStatus &) override {
     publishCurrentFrame(m);
   }
@@ -896,10 +1056,10 @@ public:
     if (!m->models.empty()) {
       requestModelRender(m);
     }
+    // AFTER the re-adds, so a listener that re-applies its own layers runs on a
+    // style that already has ours back.
+    dispatchDiagnostic(m, MBL_DIAG_STYLE_LOADED, MBL_SEVERITY_INFO, "");
   }
-
-private:
-  MblMap *m;
 };
 
 void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
@@ -1805,6 +1965,36 @@ void mbl_map_set_frame_callback(MblMap *m, MblFrameCallback callback,
   m->frameCbUser = user;
 }
 
+void mbl_map_set_diagnostic_callback(MblMap *m, MblDiagnosticCallback callback,
+                                     void *user) {
+  if (m == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(m->cbMutex);
+    m->diagCb = callback;
+    m->diagCbUser = user;
+  }
+  {
+    // Keep the log-observer fan-out list in step. Registering twice would
+    // deliver every record twice.
+    std::lock_guard<std::mutex> lk(gDiagMapsMutex);
+    auto it = std::find(gDiagMaps.begin(), gDiagMaps.end(), m);
+    if (callback == nullptr) {
+      if (it != gDiagMaps.end()) gDiagMaps.erase(it);
+    } else if (it == gDiagMaps.end()) {
+      gDiagMaps.push_back(m);
+    }
+  }
+  if (callback != nullptr) {
+    // Process-wide and irreversible-ish, so install exactly once and only when
+    // somebody is actually listening.
+    std::call_once(gLogObserverOnce, [] {
+      mbgl::Log::setObserver(std::make_unique<DiagnosticLogObserver>());
+    });
+  }
+}
+
 int mbl_map_await_frame(MblMap *m, uint32_t timeout_ms) {
   if (m == nullptr) {
     return 0;
@@ -2039,6 +2229,10 @@ void mbl_map_destroy(MblMap *m) {
   if (m == nullptr) {
     return;
   }
+  // Before anything is torn down: stop the log observer's fan-out from reaching
+  // this map, and clear the callback so an event already inside the render
+  // thread finds nothing to call.
+  mbl_map_set_diagnostic_callback(m, nullptr, nullptr);
   if (m->continuous) {
     // Stop the render thread's RunLoop (thread-safe — schedules onto it), which
     // ends loop.run() and lets the thread tear down the map/frontend.

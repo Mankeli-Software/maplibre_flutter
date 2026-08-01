@@ -1068,4 +1068,192 @@ void main() {
           'mbgl clamps to DEFAULT_PITCH_MAX (60), and we do not duplicate it',
     );
   });
+
+  // --- Diagnostics -----------------------------------------------------------
+  // Everything here used to be a blank map and total silence: mbgl reports
+  // asynchronous failures through MapObserver and its own log, and neither had
+  // a route out of the shim.
+
+  test('diagnosticKindMatchesTheHeader', () {
+    // ffigen is configured with `enums: Enums.excludeAll`, so these codes are
+    // hand-mirrored from MblDiagnosticKind/MblDiagnosticSeverity in
+    // src/maplibre_flutter_core.h and nothing generated pins them. This does.
+    expect(CoreDiagnosticKind.styleLoaded.code, 0);
+    expect(CoreDiagnosticKind.mapLoaded.code, 1);
+    expect(CoreDiagnosticKind.mapLoadFailed.code, 2);
+    expect(CoreDiagnosticKind.idle.code, 3);
+    expect(CoreDiagnosticKind.styleImageMissing.code, 4);
+    expect(CoreDiagnosticKind.glyphsError.code, 5);
+    expect(CoreDiagnosticKind.spriteError.code, 6);
+    expect(CoreDiagnosticKind.renderError.code, 7);
+    expect(CoreDiagnosticKind.log.code, 8);
+
+    expect(CoreDiagnosticSeverity.debug.code, 0);
+    expect(CoreDiagnosticSeverity.info.code, 1);
+    expect(CoreDiagnosticSeverity.warning.code, 2);
+    expect(CoreDiagnosticSeverity.error.code, 3);
+
+    // An unknown code from a newer core must degrade, never throw.
+    expect(CoreDiagnosticKind.fromCode(9999), CoreDiagnosticKind.log);
+    expect(CoreDiagnosticSeverity.fromCode(9999), CoreDiagnosticSeverity.error);
+  });
+
+  // NOTE what is NOT asserted here: idle, and mapLoaded.
+  //
+  // Neither fires in this configuration — measured, not assumed: a healthy
+  // demotiles map observed for 45 s reports styleLoaded once and nothing else,
+  // ever. Both are gated on `rendererFullyLoaded` in mbgl's Map::Impl, which is
+  // set from `renderMode == RenderMode::Full`, which the renderer only reports
+  // when `renderTreeParameters.loaded` is true (renderer_impl.cpp). Something
+  // in our continuous setup keeps the render tree from ever reporting loaded.
+  // Until that is understood, `onIdle` cannot be built on this event — see the
+  // stage-2 run-log entry in docs/api-parity-progress.md.
+  test('reports style-loaded from a healthy map', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    // The callback is a NativeCallable.listener, so events arrive on this
+    // isolate's event loop — yield until they do.
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      if (seen.any((d) => d.kind == CoreDiagnosticKind.styleLoaded)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    expect(
+      seen.map((d) => d.kind),
+      contains(CoreDiagnosticKind.styleLoaded),
+      reason: 'fires on every style load — the signal for re-applying layers',
+    );
+
+    // And it fires AGAIN on the next load, which is the property the whole
+    // event exists for: mbgl drops every app-added layer on a style swap, so a
+    // one-shot signal would be useless.
+    seen.clear();
+    map.setStyle('https://demotiles.maplibre.org/style.json');
+    sw.reset();
+    while (sw.elapsed < const Duration(seconds: 20)) {
+      if (seen.any((d) => d.kind == CoreDiagnosticKind.styleLoaded)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      seen.map((d) => d.kind),
+      contains(CoreDiagnosticKind.styleLoaded),
+      reason: 'repeating, not one-shot',
+    );
+  });
+
+  test('a style URL that 404s is reported instead of silently blank', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/no-such-style-at-all.json',
+    );
+    addTearDown(map.dispose);
+
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 25)) {
+      if (seen.any((d) => d.kind == CoreDiagnosticKind.mapLoadFailed)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    final failure = seen.where(
+      (d) => d.kind == CoreDiagnosticKind.mapLoadFailed,
+    );
+    expect(
+      failure,
+      isNotEmpty,
+      reason: 'this is the whole point: a 404 style used to reach nobody',
+    );
+    expect(failure.first.severity, CoreDiagnosticSeverity.error);
+    expect(failure.first.message, isNotEmpty);
+  });
+
+  // The motivating case for hooking mbgl::Log at all: a font the tile server
+  // does not serve does not reach MapObserver::onGlyphsError — mbgl logs it and
+  // moves on, and the whole source then stops rendering (see the symbol-layer
+  // test above). Without the log observer this is invisible from Dart.
+  test('a glyph 404 surfaces through the log observer', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 4);
+
+    map.addSourceJson('g', '''
+      {"type":"geojson","data":${pointsAround(60.45, 22.27, 20, 0.5)}}
+    ''');
+    map.addLayerJson('''
+      {"id":"g-count","type":"symbol","source":"g",
+       "layout":{"text-field":"x","text-font":["No Such Font Regular"]}}
+    ''');
+
+    final sw = Stopwatch()..start();
+    var glyphFailure = <CoreDiagnostic>[];
+    while (sw.elapsed < const Duration(seconds: 25)) {
+      glyphFailure = seen
+          .where(
+            (d) =>
+                d.severity == CoreDiagnosticSeverity.error &&
+                d.message.contains('No Such Font Regular'),
+          )
+          .toList();
+      if (glyphFailure.isNotEmpty) break;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    expect(
+      glyphFailure,
+      isNotEmpty,
+      reason:
+          'MapObserver::onGlyphsError is dead in this configuration, so the '
+          'log observer is the only hook that sees a missing font',
+    );
+  });
+
+  test('clearing the callback stops delivery, and dispose is safe', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    final seen = <CoreDiagnostic>[];
+    map.setDiagnosticCallback(seen.add);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.setDiagnosticCallback(null);
+    seen.clear();
+    map.setStyle('https://demotiles.maplibre.org/style.json');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    expect(seen, isEmpty, reason: 'unregistered means unregistered');
+
+    // Registering again after clearing must work, and must not double-deliver.
+    map.setDiagnosticCallback(seen.add);
+    map.dispose();
+    // A disposed map takes a null registration without throwing (dispose
+    // already did it), and never calls back afterwards.
+    map.setDiagnosticCallback(null);
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  });
 }

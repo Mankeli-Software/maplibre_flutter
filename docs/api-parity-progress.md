@@ -77,10 +77,10 @@ Second, not later: `MapLibreMap.style` is a declarative prop and mbgl drops ever
 style load, so `controller.layers` + a style swap is **broken today with no signal**. Everything
 after this stage is undebuggable without it.
 
-- [ ] 2.1 `mbl_map_set_diagnostic_callback` fanning out mbgl `MapObserver`: `onDidFailLoadingMap`,
+- [x] 2.1 `mbl_map_set_diagnostic_callback` fanning out mbgl `MapObserver`: `onDidFailLoadingMap`,
       `onDidFinishLoadingStyle`, `onDidBecomeIdle`, `onStyleImageMissing`, `onGlyphsError`,
       `onSpriteError`, `onRenderError` (`map_observer.hpp:57-94`).
-- [ ] 2.2 Install `mbgl::Log::setObserver` once behind `std::once_flag`, returning `false` so stderr
+- [x] 2.2 Install `mbgl::Log::setObserver` once behind `std::once_flag`, returning `false` so stderr
       logging survives. **This is the only hook that sees the glyph-404 failure** —
       `MapObserver::onGlyphsError` is dead code in our configuration.
 - [ ] 2.3 Check the `unique_ptr` return values that `removeSource`/`removeLayer` currently discard
@@ -90,10 +90,11 @@ after this stage is undebuggable without it.
       (`maplibre_flutter_core.cpp:285-292`).
 - [ ] 2.5 `sealed class MapLibreError` + `Stream<MapLibreError> onError`.
 - [ ] 2.6 `Stream<void> onStyleLoaded` (repeating) and `Stream<void> onIdle`; `MapLibreMap.onStyleLoaded`
-      widget callback.
+      widget callback. **`onIdle` is blocked** — `onDidBecomeIdle` never fires in our continuous
+      configuration; measured, see the run log. `onStyleLoaded` is unblocked and verified.
 - [ ] 2.7 Pin `onReady` to mean gl-js `load`, and fix the macOS tier which completes it on the first
       **frame** (`maplibre_flutter_macos_controller.dart:141`), contradicting its own dartdoc.
-- [ ] 2.8 Hold a Dart-side **field** reference to the registered callback (the GC pitfall, CLAUDE.md
+- [x] 2.8 Hold a Dart-side **field** reference to the registered callback (the GC pitfall, CLAUDE.md
       §5e) and add the test for it.
 
 ### Stage 3 — Camera commands (over stage-1 types)
@@ -408,3 +409,54 @@ Append one entry per run. Newest last.
   registered callback or the GC collects the proxy. Start with 2.1 + 2.2 (the callback and
   `mbgl::Log::setObserver`, which is the only hook that sees a glyph 404), then 2.5/2.6/2.8 on the
   Dart side. 2.3 and 2.4 are independent and small.
+
+### 2026-08-01 — Stage 2 (2.1, 2.2, 2.8) — the diagnostics channel exists
+
+First run of this effort to change the C ABI. Regenerated ffigen on macOS; the committed bindings
+are diff-clean.
+
+- **Done:** 2.1, 2.2, 2.8.
+  - **2.1 `mbl_map_set_diagnostic_callback`** — one callback carrying `(kind, severity, message)`.
+    The observer half is a new `DiagnosticObserver : mbgl::MapObserver` reporting
+    `onDidFinishLoadingStyle`, `onDidFinishLoadingMap`, `onDidFailLoadingMap`, `onDidBecomeIdle`,
+    `onStyleImageMissing`, `onGlyphsError`, `onSpriteError` and `onRenderError`. `FrameObserver`
+    now extends it, so the Continuous map keeps its frame publishing and style re-adds unchanged;
+    Static mode gets the diagnostics it previously had none of (it ran on `nullObserver()`).
+    `message` ownership transfers to the callee — the receiver is necessarily asynchronous (a Dart
+    `NativeCallable.listener`), so a borrowed `const char*` would dangle; Dart releases it with the
+    existing `mbl_string_free`.
+  - **2.2 `mbgl::Log::setObserver`** — installed once behind `std::once_flag`, the first time any
+    map registers a diagnostic callback, returning **false** so mbgl still writes to stderr.
+    Process-wide, so it fans out to every map that has a listener. **Verified to be the only hook
+    that sees a glyph 404**: the new test adds a symbol layer with a font demotiles does not serve
+    and asserts the failure arrives — `MapObserver::onGlyphsError` stays silent, exactly as 2.2
+    predicted.
+  - **2.8** — the `NativeCallable` is held in a **field** on `MapLibreCoreMap`, not a local, and
+    closed only after the native side has been unregistered. `dispose` unregisters first, and
+    `mbl_map_destroy` also clears the callback and drops the map from the log fan-out before any
+    teardown, so an event in flight on the render thread finds nothing to call.
+  - Plus the stage gate's fake: `RecordingCoreMap` gained `setDiagnosticCallback`,
+    `diagnosticListener`, `diagnosticRegistrations` and `emitDiagnostic`, so the controller work in
+    2.5–2.7 is testable on the VM with no dylib.
+- **Left half-done:** none of 2.1/2.2/2.8. Stage 2 continues with 2.3–2.7.
+- **Deferred / rejected:** nothing yet — but see the finding below, which constrains 2.6.
+- **Finding that changes a later task — `onIdle` cannot be built on `onDidBecomeIdle`.** Measured,
+  not assumed: a healthy demotiles map watched for **45 seconds** reports `styleLoaded` once at
+  169 ms and **nothing else, ever** — no `mapLoaded`, no `idle`. Both of those are gated on
+  `Map::Impl::rendererFullyLoaded`, which is set from `renderMode == RenderMode::Full`
+  (`map_impl.cpp`), which `renderer_impl.cpp` only reports when `renderTreeParameters.loaded` is
+  true. Something in our continuous configuration keeps the render tree from ever reporting loaded.
+  So ledger 2.6's `onIdle` is **blocked pending that investigation** and is marked as such; the
+  `onStyleLoaded` half of 2.6 is unblocked and its repeating behaviour is now pinned by a test
+  (load, swap style, load again). This is the same shape of finding as 2.2's: the event the design
+  assumed is dead, and only measuring showed it.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green / `test:native` green (32
+  tests, 5 of them new) / `format` clean / **stage-2 gate**: ffigen regenerated on macOS and the
+  committed bindings are diff-clean; the fake in `packages/maplibre_flutter_core/lib/testing.dart`
+  covers the new surface.
+- **Next run:** 2.5 (`sealed class MapLibreError` + `Stream<MapLibreError> onError`), 2.6's
+  `onStyleLoaded` half, and 2.7 (`onReady` == gl-js `load`, fixing the macOS tier that completes it
+  on the first **frame**). That means extending the platform interface with a `MapLibreStyleEvents`
+  capability — decided on 2026-07-31 in `docs/decision-log.md` and still unimplemented — which
+  lands atomically across all tiers plus the fakes. 2.3 and 2.4 are small, independent and can ride
+  along.

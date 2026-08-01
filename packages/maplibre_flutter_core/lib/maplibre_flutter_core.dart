@@ -18,6 +18,87 @@ typedef CoreCamera = ({
   double pitch,
 });
 
+/// What a [CoreDiagnostic] is about.
+///
+/// Mirrors `MblDiagnosticKind` in `src/maplibre_flutter_core.h`; the [code]
+/// values are part of the C ABI. ffigen is configured with
+/// `enums: Enums.excludeAll`, so the mapping is written out here rather than
+/// generated — `diagnosticKindMatchesTheHeader` in the native test pins it.
+enum CoreDiagnosticKind {
+  /// A style finished loading — **every** time, not just the first. A style
+  /// load drops every app-added source and layer, so this is when to re-apply
+  /// them.
+  styleLoaded(0),
+
+  /// The style and its initial resources are all in.
+  mapLoaded(1),
+
+  /// The style could not be loaded or parsed.
+  mapLoadFailed(2),
+
+  /// Nothing left to draw or fetch.
+  idle(3),
+
+  /// A layer asked for an image the style does not have; the message is its id.
+  styleImageMissing(4),
+
+  /// A glyph range could not be loaded.
+  glyphsError(5),
+
+  /// A sprite could not be loaded.
+  spriteError(6),
+
+  /// The renderer raised.
+  renderError(7),
+
+  /// An mbgl log record. This is the one that catches a glyph 404 — mbgl logs
+  /// that rather than routing it to the observer.
+  log(8);
+
+  const CoreDiagnosticKind(this.code);
+
+  /// The `MblDiagnosticKind` value.
+  final int code;
+
+  /// The kind for [code], or [CoreDiagnosticKind.log] for anything unknown —
+  /// a newer core must not crash an older binding.
+  static CoreDiagnosticKind fromCode(int code) {
+    for (final kind in values) {
+      if (kind.code == code) return kind;
+    }
+    return CoreDiagnosticKind.log;
+  }
+}
+
+/// How bad it is. Mirrors `MblDiagnosticSeverity`, itself `mbgl::EventSeverity`.
+enum CoreDiagnosticSeverity {
+  debug(0),
+  info(1),
+  warning(2),
+  error(3);
+
+  const CoreDiagnosticSeverity(this.code);
+
+  /// The `MblDiagnosticSeverity` value.
+  final int code;
+
+  /// The severity for [code], or [CoreDiagnosticSeverity.error] for anything
+  /// unknown — an unrecognised severity is not a reason to drop a report.
+  static CoreDiagnosticSeverity fromCode(int code) {
+    for (final severity in values) {
+      if (severity.code == code) return severity;
+    }
+    return CoreDiagnosticSeverity.error;
+  }
+}
+
+/// One thing the engine reported.
+typedef CoreDiagnostic = ({
+  CoreDiagnosticKind kind,
+  CoreDiagnosticSeverity severity,
+  String message,
+});
+
 /// A handle to one off-screen MapLibre map rendered by mbgl-core.
 ///
 /// Shared by the desktop implementation packages (macOS now; Windows/Linux
@@ -866,10 +947,96 @@ class MapLibreCoreMap {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    setDiagnosticCallback(null);
     if (_projIn != ffi.nullptr) malloc.free(_projIn);
     if (_projOut != ffi.nullptr) malloc.free(_projOut);
     if (_projVis != ffi.nullptr) malloc.free(_projVis);
     bindings.mbl_map_destroy(_handle);
+  }
+
+  // --- Diagnostics ------------------------------------------------------------
+
+  /// The registered native callback, held as a FIELD and not a local.
+  ///
+  /// CLAUDE.md §5e: a `NativeCallable` that only a local refers to can be
+  /// collected while the native side still holds its function pointer, and the
+  /// callbacks then stop arriving with no error anywhere. Cleared in [dispose],
+  /// which also unregisters it natively first.
+  ffi.NativeCallable<
+    ffi.Void Function(
+      ffi.Pointer<ffi.Void>,
+      ffi.Int32,
+      ffi.Int32,
+      ffi.Pointer<ffi.Char>,
+    )
+  >?
+  _diagnosticCallable;
+
+  /// Reports what the engine could not do: a style that 404s, a glyph range the
+  /// tile server does not serve, a bad sprite — plus the lifecycle events
+  /// ([CoreDiagnosticKind.styleLoaded], [CoreDiagnosticKind.idle]).
+  ///
+  /// Pass null to stop listening. Replacing an existing listener disposes the
+  /// old one.
+  ///
+  /// [onDiagnostic] runs on the **Dart isolate that called this**, not on the
+  /// render thread: the native side fires from wherever the event happened, and
+  /// this is a `NativeCallable.listener`, so delivery hops back here. That also
+  /// means the native message string has to outlive the native call — it does,
+  /// because the shim transfers ownership of a heap copy, which is released
+  /// here after decoding.
+  void setDiagnosticCallback(void Function(CoreDiagnostic)? onDiagnostic) {
+    // Unregister BEFORE closing the old callable, so nothing native is holding
+    // a pointer into it.
+    if (onDiagnostic == null) {
+      if (!_disposed) {
+        bindings.mbl_map_set_diagnostic_callback(
+          _handle,
+          ffi.nullptr,
+          ffi.nullptr,
+        );
+      }
+      _diagnosticCallable?.close();
+      _diagnosticCallable = null;
+      return;
+    }
+    _checkAlive();
+    final previous = _diagnosticCallable;
+    final callable =
+        ffi.NativeCallable<
+          ffi.Void Function(
+            ffi.Pointer<ffi.Void>,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Char>,
+          )
+        >.listener((
+          ffi.Pointer<ffi.Void> user,
+          int kind,
+          int severity,
+          ffi.Pointer<ffi.Char> message,
+        ) {
+          // Ownership of `message` came with the call; release it whatever the
+          // handler does, including throw.
+          try {
+            onDiagnostic((
+              kind: CoreDiagnosticKind.fromCode(kind),
+              severity: CoreDiagnosticSeverity.fromCode(severity),
+              message: message == ffi.nullptr
+                  ? ''
+                  : message.cast<Utf8>().toDartString(),
+            ));
+          } finally {
+            if (message != ffi.nullptr) bindings.mbl_string_free(message);
+          }
+        });
+    _diagnosticCallable = callable;
+    bindings.mbl_map_set_diagnostic_callback(
+      _handle,
+      callable.nativeFunction,
+      ffi.nullptr,
+    );
+    previous?.close();
   }
 
   void _checkAlive() {

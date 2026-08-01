@@ -454,6 +454,37 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 
+  // --- diagnostics -----------------------------------------------------------
+
+  /// The listener the controller registered, or null if it has none. A test
+  /// drives it with [emitDiagnostic] to simulate the engine reporting.
+  void Function(CoreDiagnostic)? diagnosticListener;
+
+  /// How many times [setDiagnosticCallback] has been called, so a test can
+  /// assert a controller registers exactly once and unregisters on dispose.
+  int diagnosticRegistrations = 0;
+
   @override
-  void dispose() => disposed = true;
+  void setDiagnosticCallback(void Function(CoreDiagnostic)? onDiagnostic) {
+    diagnosticRegistrations++;
+    diagnosticListener = onDiagnostic;
+  }
+
+  /// Delivers one event as the engine would.
+  void emitDiagnostic(
+    CoreDiagnosticKind kind, {
+    CoreDiagnosticSeverity severity = CoreDiagnosticSeverity.error,
+    String message = '',
+  }) => diagnosticListener?.call((
+    kind: kind,
+    severity: severity,
+    message: message,
+  ));
+
+  @override
+  void dispose() {
+    disposed = true;
+    // Mirrors the real handle, which unregisters natively before tearing down.
+    setDiagnosticCallback(null);
+  }
 }

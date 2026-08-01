@@ -5,6 +5,38 @@
 import 'dart:ffi' as ffi;
 
 @ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int32 kind,
+          ffi.Int32 severity,
+          ffi.Pointer<ffi.Char> message,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_map_set_diagnostic_callback(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int32 kind,
+        ffi.Int32 severity,
+        ffi.Pointer<ffi.Char> message,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
   ffi.Pointer<MblMap> Function(
     ffi.Uint32,
     ffi.Uint32,

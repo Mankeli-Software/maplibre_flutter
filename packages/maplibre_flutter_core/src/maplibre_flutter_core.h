@@ -38,6 +38,69 @@ typedef struct MblMap MblMap;
 // into the map from here.
 typedef void (*MblFrameCallback)(void *user);
 
+// --- Diagnostics -------------------------------------------------------------
+//
+// Everything mbgl does asynchronously can fail silently: a style URL that 404s,
+// a glyph range the tile server does not serve, a bad sprite. Each of those
+// produces a blank or half-drawn map and NOTHING else — the only synchronous
+// error paths in this ABI are the two JSON parses. This is the channel out.
+
+// What a diagnostic event is about. Values are part of the ABI: Dart switches
+// on them.
+typedef enum {
+  // mbgl MapObserver::onDidFinishLoadingStyle. Fires on EVERY style load, not
+  // just the first — and a style load drops every app-added source and layer,
+  // so this is the signal to re-apply them.
+  MBL_DIAG_STYLE_LOADED = 0,
+  // onDidFinishLoadingMap: the style and all of its initial resources are in.
+  MBL_DIAG_MAP_LOADED = 1,
+  // onDidFailLoadingMap. The message is mbgl's, prefixed with which of
+  // MapLoadError it was.
+  MBL_DIAG_MAP_LOAD_FAILED = 2,
+  // onDidBecomeIdle: nothing left to draw or fetch.
+  MBL_DIAG_IDLE = 3,
+  // onStyleImageMissing. The message is the image id a layer asked for.
+  MBL_DIAG_STYLE_IMAGE_MISSING = 4,
+  // onGlyphsError. The message names the font stack and glyph range.
+  MBL_DIAG_GLYPHS_ERROR = 5,
+  // onSpriteError.
+  MBL_DIAG_SPRITE_ERROR = 6,
+  // onRenderError.
+  MBL_DIAG_RENDER_ERROR = 7,
+  // An mbgl::Log record. This is the one that actually catches a glyph 404 —
+  // mbgl logs it rather than routing it to MapObserver::onGlyphsError.
+  MBL_DIAG_LOG = 8,
+} MblDiagnosticKind;
+
+// Mirrors mbgl::EventSeverity. Observer events that are not log records report
+// MBL_SEVERITY_ERROR, except the informational ones, which report
+// MBL_SEVERITY_INFO.
+typedef enum {
+  MBL_SEVERITY_DEBUG = 0,
+  MBL_SEVERITY_INFO = 1,
+  MBL_SEVERITY_WARNING = 2,
+  MBL_SEVERITY_ERROR = 3,
+} MblDiagnosticSeverity;
+
+// A diagnostic event.
+//
+// `message` is a heap string **transferred to the callee**: release it with
+// mbl_string_free exactly once. Never NULL — an event with nothing to say
+// passes "". Ownership transfer is what makes this safe to marshal to another
+// thread, which is the point: the callback fires on the RENDER thread (or, for
+// MBL_DIAG_LOG, on whichever thread logged), so a Dart handler is necessarily a
+// NativeCallable.listener and will read the string after this call returns.
+//
+// Do NOT call back into the map from here.
+typedef void (*MblDiagnosticCallback)(void *user, int32_t kind,
+                                      int32_t severity, char *message);
+
+// Register (or clear, with NULL) the diagnostic callback. Installing one on any
+// map also installs the process-wide mbgl log observer, once; it forwards to
+// stderr as well, so nothing that used to be printed stops being printed.
+FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
+    MblMap *map, MblDiagnosticCallback callback, void *user);
+
 // Create an off-screen map of `width`x`height` device pixels at `pixel_ratio`,
 // loading `style_uri` (URL, file path, or inline JSON). Spawns the render thread
 // and starts loading the style. Returns NULL on failure. Does not block on the
