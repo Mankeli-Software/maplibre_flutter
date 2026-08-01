@@ -159,17 +159,19 @@ void main() {
     await tester.pump();
     await controller.onReady.timeout(const Duration(seconds: 30));
 
-    await controller.camera.move(
-      const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
+    await controller.camera.jumpTo(
+      CameraOptions.fromCamera(
+        const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
+      ),
     );
-    final cam = await controller.camera.getPosition();
+    final cam = await controller.camera.getCamera();
     expect(cam.center.latitude, closeTo(51.5, 0.5));
     expect(cam.center.longitude, closeTo(-0.13, 0.5));
     expect(cam.zoom, closeTo(6, 0.5));
 
     await pumpWithStyle(_liberty);
     await tester.pump();
-    final after = await controller.camera.getPosition();
+    final after = await controller.camera.getCamera();
     expect(after.zoom, closeTo(6, 0.5));
   });
 

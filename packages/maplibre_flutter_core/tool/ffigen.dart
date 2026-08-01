@@ -29,7 +29,19 @@ void main() {
     // opaque MblMap struct is included explicitly; referenced scalar types
     // resolve directly to ffi types (Typedefs.useSupportedTypedefs).
     functions: Functions(include: (d) => d.originalName.startsWith('mbl_')),
-    structs: Structs(include: (d) => d.originalName == 'MblMap'),
+    // MblMap is the opaque handle; the rest are the by-value parameter structs
+    // the camera API takes. Anything not listed here would come out as
+    // `ffi.Opaque` — bindable but with no fields, which fails at the call site
+    // rather than at generation.
+    structs: Structs(
+      include: (d) => const {
+        'MblMap',
+        'MblCameraOptions',
+        'MblAnimationOptions',
+        'MblLatLngBounds',
+        'MblBoundOptions',
+      }.contains(d.originalName),
+    ),
     enums: Enums.excludeAll,
     unnamedEnums: UnnamedEnums.excludeAll,
     macros: Macros.excludeAll,

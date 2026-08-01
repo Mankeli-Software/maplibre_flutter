@@ -127,6 +127,172 @@ external void mbl_map_rotate_by(
 external void mbl_map_pitch_by(ffi.Pointer<MblMap> map, double degrees);
 
 @ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(ffi.Pointer<ffi.Void> user, ffi.Uint64 token)
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_map_set_camera_finish_callback(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(ffi.Pointer<ffi.Void> user, ffi.Uint64 token)
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<MblCameraOptions>)
+>()
+external void mbl_map_jump_to(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblCameraOptions> camera,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<MblCameraOptions>,
+    ffi.Pointer<MblAnimationOptions>,
+    ffi.Uint64,
+  )
+>()
+external void mbl_map_ease_to(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblCameraOptions> camera,
+  ffi.Pointer<MblAnimationOptions> animation,
+  int token,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<MblCameraOptions>,
+    ffi.Pointer<MblAnimationOptions>,
+    ffi.Uint64,
+  )
+>()
+external void mbl_map_fly_to(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblCameraOptions> camera,
+  ffi.Pointer<MblAnimationOptions> animation,
+  int token,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>)>()
+external void mbl_map_cancel_transitions(ffi.Pointer<MblMap> map);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<MblLatLngBounds>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Pointer<MblAnimationOptions>,
+    ffi.Uint64,
+  )
+>()
+external void mbl_map_fit_bounds(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblLatLngBounds> bounds,
+  double pad_top,
+  double pad_right,
+  double pad_bottom,
+  double pad_left,
+  int has_bearing,
+  double bearing,
+  int has_pitch,
+  double pitch,
+  int mode,
+  ffi.Pointer<MblAnimationOptions> animation,
+  int token,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<MblLatLngBounds>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Double,
+    ffi.Int32,
+    ffi.Double,
+    ffi.Uint32,
+    ffi.Pointer<MblCameraOptions>,
+  )
+>()
+external int mbl_map_camera_for_lat_lng_bounds(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblLatLngBounds> bounds,
+  double pad_top,
+  double pad_right,
+  double pad_bottom,
+  double pad_left,
+  int has_bearing,
+  double bearing,
+  int has_pitch,
+  double pitch,
+  int timeout_ms,
+  ffi.Pointer<MblCameraOptions> out_camera,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Pointer<MblCameraOptions>,
+    ffi.Uint32,
+    ffi.Pointer<MblLatLngBounds>,
+  )
+>()
+external int mbl_map_lat_lng_bounds_for_camera(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblCameraOptions> camera,
+  int timeout_ms,
+  ffi.Pointer<MblLatLngBounds> out_bounds,
+);
+
+@ffi.Native<
+  ffi.Void Function(ffi.Pointer<MblMap>, ffi.Pointer<MblBoundOptions>)
+>()
+external void mbl_map_set_bounds(
+  ffi.Pointer<MblMap> map,
+  ffi.Pointer<MblBoundOptions> bounds,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<MblMap>,
+    ffi.Uint32,
+    ffi.Pointer<MblBoundOptions>,
+  )
+>()
+external int mbl_map_get_bounds(
+  ffi.Pointer<MblMap> map,
+  int timeout_ms,
+  ffi.Pointer<MblBoundOptions> out_bounds,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<MblMap>, ffi.Int32)>()
+external void mbl_map_set_constrain_mode(ffi.Pointer<MblMap> map, int mode);
+
+@ffi.Native<
   ffi.Int Function(
     ffi.Pointer<MblMap>,
     ffi.Double,
@@ -487,5 +653,144 @@ external int mbl_map_write_png(
 external void mbl_map_destroy(ffi.Pointer<MblMap> map);
 
 final class MblMap extends ffi.Opaque {}
+
+final class MblCameraOptions extends ffi.Struct {
+  @ffi.Int32()
+  external int has_center;
+
+  @ffi.Double()
+  external double center_lat;
+
+  @ffi.Double()
+  external double center_lng;
+
+  @ffi.Int32()
+  external int has_zoom;
+
+  @ffi.Double()
+  external double zoom;
+
+  @ffi.Int32()
+  external int has_bearing;
+
+  @ffi.Double()
+  external double bearing;
+
+  @ffi.Int32()
+  external int has_pitch;
+
+  @ffi.Double()
+  external double pitch;
+
+  @ffi.Int32()
+  external int has_roll;
+
+  @ffi.Double()
+  external double roll;
+
+  @ffi.Int32()
+  external int has_padding;
+
+  @ffi.Double()
+  external double padding_top;
+
+  @ffi.Double()
+  external double padding_right;
+
+  @ffi.Double()
+  external double padding_bottom;
+
+  @ffi.Double()
+  external double padding_left;
+
+  @ffi.Int32()
+  external int has_anchor;
+
+  @ffi.Double()
+  external double anchor_x;
+
+  @ffi.Double()
+  external double anchor_y;
+}
+
+final class MblAnimationOptions extends ffi.Struct {
+  @ffi.Int32()
+  external int has_duration;
+
+  @ffi.Uint32()
+  external int duration_ms;
+
+  @ffi.Int32()
+  external int has_easing;
+
+  @ffi.Double()
+  external double easing_x1;
+
+  @ffi.Double()
+  external double easing_y1;
+
+  @ffi.Double()
+  external double easing_x2;
+
+  @ffi.Double()
+  external double easing_y2;
+
+  @ffi.Int32()
+  external int has_speed;
+
+  @ffi.Double()
+  external double speed;
+
+  @ffi.Int32()
+  external int has_apex_zoom;
+
+  @ffi.Double()
+  external double apex_zoom;
+}
+
+final class MblLatLngBounds extends ffi.Struct {
+  @ffi.Double()
+  external double sw_lat;
+
+  @ffi.Double()
+  external double sw_lng;
+
+  @ffi.Double()
+  external double ne_lat;
+
+  @ffi.Double()
+  external double ne_lng;
+}
+
+final class MblBoundOptions extends ffi.Struct {
+  @ffi.Int32()
+  external int has_bounds;
+
+  external MblLatLngBounds bounds;
+
+  @ffi.Int32()
+  external int has_min_zoom;
+
+  @ffi.Double()
+  external double min_zoom;
+
+  @ffi.Int32()
+  external int has_max_zoom;
+
+  @ffi.Double()
+  external double max_zoom;
+
+  @ffi.Int32()
+  external int has_min_pitch;
+
+  @ffi.Double()
+  external double min_pitch;
+
+  @ffi.Int32()
+  external int has_max_pitch;
+
+  @ffi.Double()
+  external double max_pitch;
+}
 
 final class MblGlDmabufFrame extends ffi.Opaque {}

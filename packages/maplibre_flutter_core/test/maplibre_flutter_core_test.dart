@@ -1069,6 +1069,249 @@ void main() {
     );
   });
 
+  // --- Camera commands -------------------------------------------------------
+
+  test('jumpTo applies a PARTIAL camera, leaving the rest alone', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 4, bearing: 30);
+    await settle(map);
+
+    // Zoom only. Everything else must survive — that is the whole point of a
+    // partial camera, and what a read-modify-write cannot promise because the
+    // render thread can move the camera in between.
+    map.jumpTo(const CoreCameraOptions(zoom: 9));
+    await settle(map);
+    final after = map.getCamera();
+    expect(after.zoom, closeTo(9, 1e-6));
+    expect(after.latitude, closeTo(60.45, 1e-6), reason: 'centre untouched');
+    expect(after.longitude, closeTo(22.27, 1e-6));
+    expect(after.bearing, closeTo(30, 1e-6), reason: 'bearing untouched');
+  });
+
+  // The trap this pins: Transform::startTransition reads
+  //   anchor = camera.center ? std::nullopt : camera.anchor
+  // so an anchored move that also carries a centre silently becomes a centred
+  // one. A test anchored on the map CENTRE cannot detect that, because the
+  // centre is a fixed point either way — so this anchors on a corner.
+  test('an anchored zoom holds the anchor, not the centre', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 0, longitude: 0, zoom: 4);
+    await settle(map);
+
+    // What is under the top-left corner before the zoom?
+    const anchor = (x: 0.0, y: 0.0);
+    final before = map.unproject(anchor.x, anchor.y)!;
+
+    map.jumpTo(const CoreCameraOptions(zoom: 6, anchor: anchor));
+    await settle(map);
+
+    final after = map.unproject(anchor.x, anchor.y)!;
+    expect(map.getCamera().zoom, closeTo(6, 1e-6));
+    expect(
+      after.latitude,
+      closeTo(before.latitude, 1e-4),
+      reason: 'the anchored point must not move under the zoom',
+    );
+    expect(after.longitude, closeTo(before.longitude, 1e-4));
+    // And the CENTRE must have moved, which is what proves the anchor was
+    // honoured rather than silently dropped.
+    expect(
+      map.getCamera().longitude.abs() + map.getCamera().latitude.abs(),
+      greaterThan(1e-3),
+      reason: 'zooming about a corner has to shift the centre',
+    );
+  });
+
+  // CONTINUOUS mode deliberately: mbgl advances transitions from the render
+  // loop, so in Static mode — which every other test here uses — easeTo and
+  // flyTo create a transition that nothing ever steps. The camera simply never
+  // moves. That is a property of the engine, not of this binding, and it is
+  // recorded on mbl_map_ease_to in the header.
+  test(
+    'easeTo animates and reports completion; superseding completes it too',
+    () async {
+      final map = MapLibreCoreMap.create(
+        width: 256,
+        height: 256,
+        pixelRatio: 1,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+        continuous: true,
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      map.setCamera(latitude: 0, longitude: 0, zoom: 2);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final finished = <int>[];
+      map.setCameraFinishCallback(finished.add);
+
+      map.easeTo(
+        const CoreCameraOptions(zoom: 6),
+        const CoreAnimationOptions(duration: Duration(milliseconds: 400)),
+        token: 11,
+      );
+      var sw = Stopwatch()..start();
+      while (sw.elapsed < const Duration(seconds: 10) && finished.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(finished, [11], reason: 'a completed ease reports its token');
+      // The camera cache has to track an animation mbgl drives itself, or
+      // getCamera() reports the pre-animation camera forever after.
+      expect(map.getCamera().zoom, closeTo(6, 0.05));
+
+      // Supersede a long flight with a jump. Transform::startTransition invokes
+      // the PREVIOUS transitionFinishFn before installing the new one, so the
+      // interrupted move completes rather than hanging — which is what lets a
+      // Dart Future built on this be safe to await.
+      finished.clear();
+      map.flyTo(
+        const CoreCameraOptions(
+          zoom: 14,
+          center: (latitude: 60.45, longitude: 22.27),
+        ),
+        const CoreAnimationOptions(duration: Duration(seconds: 8)),
+        token: 22,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      map.jumpTo(const CoreCameraOptions(zoom: 3));
+      sw = Stopwatch()..start();
+      while (sw.elapsed < const Duration(seconds: 10) && finished.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(finished, [
+        22,
+      ], reason: 'a superseded animation completes, it does not hang');
+      expect(
+        map.getCamera().zoom,
+        closeTo(3, 0.05),
+        reason: 'the jump won; the flight stopped where it was interrupted',
+      );
+    },
+  );
+
+  test(
+    'fitBounds frames the box, and cameraForBounds agrees without moving',
+    () async {
+      final map = MapLibreCoreMap.create(
+        width: 512,
+        height: 512,
+        pixelRatio: 1,
+        styleUri: 'https://demotiles.maplibre.org/style.json',
+      );
+      addTearDown(map.dispose);
+      expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+      map.setCamera(latitude: 0, longitude: 0, zoom: 1);
+      await settle(map);
+
+      // Asymmetric on both axes so a swapped corner cannot pass by symmetry.
+      const bounds = (swLat: 59.33, swLng: 18.06, neLat: 60.45, neLng: 22.27);
+
+      // Compute-only first: it must NOT move the camera.
+      final computed = map.cameraForBounds(bounds);
+      expect(computed, isNotNull);
+      expect(map.getCamera().zoom, closeTo(1, 1e-6), reason: 'no move');
+      expect(computed!.zoom!, greaterThan(5), reason: 'a small box zooms in');
+      expect(computed.center!.latitude, closeTo(59.89, 0.2));
+      expect(computed.center!.longitude, closeTo(20.165, 0.2));
+
+      // Then fit for real, and check the box is actually on screen.
+      map.fitBounds(bounds);
+      await settle(map);
+      final applied = map.getCamera();
+      expect(applied.zoom, closeTo(computed.zoom!, 0.01));
+      expect(applied.latitude, closeTo(computed.center!.latitude, 1e-3));
+
+      final sw = map.project(bounds.swLat, bounds.swLng)!;
+      final ne = map.project(bounds.neLat, bounds.neLng)!;
+      // North is UP and east is RIGHT in top-left screen space — absolute
+      // directions, not a round-trip (CLAUDE.md §7).
+      expect(ne.y, lessThan(sw.y), reason: 'the north edge is higher up');
+      expect(ne.x, greaterThan(sw.x), reason: 'the east edge is further right');
+      for (final p in [sw, ne]) {
+        expect(p.x, inInclusiveRange(-1.0, 513.0));
+        expect(p.y, inInclusiveRange(-1.0, 513.0));
+      }
+    },
+  );
+
+  test('getBounds reports the visible region, oriented correctly', () async {
+    final map = MapLibreCoreMap.create(
+      width: 512,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+    map.setCamera(latitude: 60.45, longitude: 22.27, zoom: 6);
+    await settle(map);
+
+    final bounds = map.getVisibleBounds();
+    expect(bounds, isNotNull);
+    expect(bounds!.neLat, greaterThan(bounds.swLat), reason: 'north > south');
+    expect(bounds.neLng, greaterThan(bounds.swLng), reason: 'east > west');
+    // The camera centre must lie inside what the camera can see.
+    expect(bounds.swLat, lessThan(60.45));
+    expect(bounds.neLat, greaterThan(60.45));
+    expect(bounds.swLng, lessThan(22.27));
+    expect(bounds.neLng, greaterThan(22.27));
+    // A 2:1 viewport sees more longitude than latitude.
+    expect(
+      bounds.neLng - bounds.swLng,
+      greaterThan(bounds.neLat - bounds.swLat),
+      reason: 'a wide viewport spans more longitude',
+    );
+  });
+
+  test('setBounds constrains the zoom range', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.setBounds(const CoreBoundOptions(minZoom: 4, maxZoom: 8));
+    await settle(map);
+
+    map.jumpTo(const CoreCameraOptions(zoom: 12));
+    await settle(map);
+    expect(
+      map.getCamera().zoom,
+      closeTo(8, 1e-6),
+      reason: 'clamped to maxZoom',
+    );
+
+    map.jumpTo(const CoreCameraOptions(zoom: 1));
+    await settle(map);
+    expect(
+      map.getCamera().zoom,
+      closeTo(4, 1e-6),
+      reason: 'clamped to minZoom',
+    );
+
+    final read = map.getBoundOptions();
+    expect(read, isNotNull);
+    expect(read!.minZoom, closeTo(4, 1e-6));
+    expect(read.maxZoom, closeTo(8, 1e-6));
+  });
+
   // --- Diagnostics -----------------------------------------------------------
   // Everything here used to be a blank map and total silence: mbgl reports
   // asynchronous failures through MapObserver and its own log, and neither had

@@ -45,10 +45,12 @@ void main() {
 
     // Jump the camera, then read it back: exercises the Dart->JS->Dart bridge
     // and the LatLng(lat,lng) <-> [lng,lat] conversion in both directions.
-    await controller.camera.move(
-      const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
+    await controller.camera.jumpTo(
+      CameraOptions.fromCamera(
+        const MapCamera(center: LatLng(51.5, -0.13), zoom: 6),
+      ),
     );
-    final cam = await controller.camera.getPosition();
+    final cam = await controller.camera.getCamera();
     expect(cam.center.latitude, closeTo(51.5, 0.5));
     expect(cam.center.longitude, closeTo(-0.13, 0.5));
     expect(cam.zoom, closeTo(6, 0.5));
@@ -57,7 +59,7 @@ void main() {
     // native map without throwing, and the map must keep reporting a camera.
     await pumpWithStyle(liberty);
     await tester.pumpAndSettle();
-    final after = await controller.camera.getPosition();
+    final after = await controller.camera.getCamera();
     expect(after.zoom, closeTo(6, 0.5));
   });
 }

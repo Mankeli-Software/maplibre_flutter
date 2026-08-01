@@ -235,6 +235,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   // Live engine diagnostics. Kept short — this is a demo, not a log viewer.
   final List<String> _diagnostics = <String>[];
   bool _showDiagnostics = false;
+  bool _constrained = false;
   int _styleLoadCount = 0;
   final List<StreamSubscription<Object?>> _eventSubscriptions =
       <StreamSubscription<Object?>>[];
@@ -1033,11 +1034,14 @@ class _MapDemoPageState extends State<MapDemoPage> {
 
     // Use wherever the user is already looking if it is close enough to see a
     // car-sized object; otherwise go to a known street-level site.
-    final current = await _controller.camera.getPosition();
+    final current = await _controller.camera.getCamera();
     final zoomedIn = current.zoom >= 15;
     final site = zoomedIn ? current.center : _modelSite;
-    await _controller.camera.move(
-      MapCamera(
+    // easeTo, not the old move(duration:) — that one FLEW, arcing out and back
+    // in, which for an 800 ms hop to a street-level site read as a glitch. An
+    // eased straight line had no API at all before this.
+    await _controller.camera.easeTo(
+      CameraOptions(
         center: site,
         zoom: zoomedIn && current.zoom >= 19 ? current.zoom : 20,
         bearing: current.bearing,
@@ -1087,10 +1091,10 @@ class _MapDemoPageState extends State<MapDemoPage> {
     final centre = _modelAnchor;
     // Frame the whole loop, else most of it happens off-screen and the car just
     // crosses the view while yawing.
-    final camera = await _controller.camera.getPosition();
+    final camera = await _controller.camera.getCamera();
     if (camera.zoom > _driveZoom) {
-      await _controller.camera.move(
-        camera.copyWith(center: centre, zoom: _driveZoom),
+      await _controller.camera.easeTo(
+        CameraOptions(center: centre, zoom: _driveZoom),
         duration: const Duration(milliseconds: 700),
       );
     }
@@ -1161,9 +1165,11 @@ class _MapDemoPageState extends State<MapDemoPage> {
     final centre = _modelAnchor;
     // Pull back far enough that the whole field is in view, else most of the
     // models are off-screen and the number on screen means nothing.
-    final camera = await _controller.camera.getPosition();
-    await _controller.camera.move(
-      camera.copyWith(center: centre, zoom: 17, pitch: 55),
+    // No read-modify-write: a partial camera says "these three fields, leave
+    // the rest", which also cannot race the render thread the way an
+    // await-then-copyWith could.
+    await _controller.camera.easeTo(
+      CameraOptions(center: centre, zoom: 17, pitch: 55),
       duration: const Duration(milliseconds: 700),
     );
 
@@ -1350,11 +1356,13 @@ class _MapDemoPageState extends State<MapDemoPage> {
   /// Trackpad rotate gestures are not wired on the desktop tier yet, so this is
   /// the only way to get a bearing at all.
   Future<void> _rotateBy(double degrees) async {
-    final camera = await _controller.camera.getPosition();
+    final camera = await _controller.camera.getCamera();
     var bearing = (camera.bearing - degrees) % 360;
     if (bearing < 0) bearing += 360;
-    await _controller.camera.move(
-      camera.copyWith(bearing: bearing),
+    // gl-js `rotateTo`. Pass `around:` to turn about a screen point instead of
+    // the centre — but never alongside a centre, which mbgl would let win.
+    await _controller.camera.rotateTo(
+      bearing,
       duration: const Duration(milliseconds: 400),
     );
   }
@@ -1366,7 +1374,7 @@ class _MapDemoPageState extends State<MapDemoPage> {
   static const List<double> _pitchSteps = [0, 30, 60];
 
   Future<void> _cyclePitch() async {
-    final camera = await _controller.camera.getPosition();
+    final camera = await _controller.camera.getCamera();
     var next = _pitchSteps.first;
     for (var i = 0; i < _pitchSteps.length; i++) {
       if (camera.pitch < _pitchSteps[i] - 1) {
@@ -1375,25 +1383,31 @@ class _MapDemoPageState extends State<MapDemoPage> {
       }
       next = _pitchSteps[(i + 1) % _pitchSteps.length];
     }
-    await _controller.camera.move(
-      camera.copyWith(pitch: next),
+    await _controller.camera.easeTo(
+      CameraOptions(pitch: next),
       duration: const Duration(milliseconds: 400),
     );
   }
 
+  /// gl-js `zoomIn` / `zoomOut` — one level, eased, no read-modify-write.
   Future<void> _zoomBy(double delta) async {
-    final camera = await _controller.camera.getPosition();
-    await _controller.camera.move(
-      camera.copyWith(zoom: camera.zoom + delta),
-      duration: const Duration(milliseconds: 300),
-    );
+    const duration = Duration(milliseconds: 300);
+    if (delta > 0) {
+      await _controller.camera.zoomIn(duration: duration);
+    } else {
+      await _controller.camera.zoomOut(duration: duration);
+    }
   }
 
   Future<void> _flyToNextPlace() async {
     final (_, center, zoom) = _places[_placeIndex];
     _placeIndex = (_placeIndex + 1) % _places.length;
-    await _controller.camera.move(
-      MapCamera(center: center, zoom: zoom),
+    // A real engine-native flyTo — the van Wijk arc mbgl computes itself,
+    // replacing the Dart-side arc this app used to step. The Future completes
+    // when the flight ENDS, and a superseding move completes it too rather than
+    // leaving it hanging, which is what makes awaiting it safe.
+    await _controller.camera.flyTo(
+      CameraOptions(center: center, zoom: zoom),
       duration: const Duration(milliseconds: 2000),
     );
   }
@@ -1773,30 +1787,127 @@ class _MapDemoPageState extends State<MapDemoPage> {
     ),
   );
 
-  /// Frames the camera on the engine dataset, using [LatLngBounds] to work out
-  /// where that is.
+  /// Runs the gl-js camera verbs in sequence, so the difference between them is
+  /// visible rather than described.
   ///
-  /// `camera.fitBounds` does not exist yet (stage 3 of the parity ledger), so
-  /// this composes what does: the bounds' centre, and a zoom from its span.
-  /// [CameraOptions.applyTo] resolves the partial camera against the current
-  /// one, so nothing but centre and zoom changes.
+  /// Each `await` here returns when the ENGINE says the transition ended — not
+  /// after a timer — so the steps cannot overlap. That is the completion
+  /// contract: a Future resolves on transition end, and a superseded transition
+  /// resolves too rather than hanging.
+  Future<void> _runCameraTour() async {
+    if (!_controller.capabilities.cameraCommands) {
+      _logDiagnostic('this tier has no engine camera commands');
+      return;
+    }
+    final camera = _controller.camera;
+    _logDiagnostic('camera tour: jumpTo(zoom) — partial, nothing else changes');
+    // A PARTIAL camera: no centre, no bearing, no read-modify-write.
+    await camera.jumpTo(const CameraOptions(zoom: 5));
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+
+    _logDiagnostic('easeTo — a straight eased line (unreachable before)');
+    await camera.easeTo(
+      CameraOptions(center: _stockholm, zoom: 9),
+      duration: const Duration(milliseconds: 900),
+    );
+
+    _logDiagnostic('flyTo — the van Wijk arc, computed by the engine');
+    await camera.flyTo(
+      CameraOptions(center: _london, zoom: 11),
+      duration: const Duration(milliseconds: 1800),
+    );
+
+    _logDiagnostic('rotateTo + resetNorth');
+    await camera.rotateTo(45, duration: const Duration(milliseconds: 600));
+    await camera.resetNorth(duration: const Duration(milliseconds: 600));
+
+    _logDiagnostic('zoomIn / zoomOut about a CORNER, not the centre');
+    // Anchoring on a corner is the only way to see that the anchor survives:
+    // mbgl drops it whenever a centre is set, and a centre-anchored zoom looks
+    // identical either way because the centre is a fixed point.
+    await camera.zoomIn(
+      around: Offset.zero,
+      duration: const Duration(milliseconds: 600),
+    );
+    await camera.zoomOut(
+      around: Offset.zero,
+      duration: const Duration(milliseconds: 600),
+    );
+
+    final where = await camera.getBounds();
+    _logDiagnostic(
+      where == null
+          ? 'camera tour done'
+          : 'camera tour done — visible '
+                '${where.south.toStringAsFixed(1)}..'
+                '${where.north.toStringAsFixed(1)} N',
+    );
+  }
+
+  /// gl-js `setMaxBounds` — the WHOLE VIEWPORT is kept inside the box.
+  ///
+  /// mbgl's own BoundOptions.bounds constrains only the camera CENTRE under
+  /// that same word, so the controller sets the constrain mode too. Pan and
+  /// zoom out after switching this on: the map refuses to leave the Nordics.
+  Future<void> _toggleConstraints() async {
+    final on = !_constrained;
+    setState(() => _constrained = on);
+    final camera = _controller.camera;
+    if (on) {
+      await camera.setMaxBounds(
+        const LatLngBounds(
+          southwest: LatLng(54.0, 4.0),
+          northeast: LatLng(71.0, 32.0),
+        ),
+      );
+      await camera.setMinZoom(3);
+      await camera.setMaxZoom(12);
+      _logDiagnostic('constrained: viewport locked to the Nordics, zoom 3..12');
+    } else {
+      await camera.setMaxBounds(null);
+      await camera.setMinZoom(0);
+      await camera.setMaxZoom(22);
+      _logDiagnostic('unconstrained');
+    }
+    final limits = await camera.getConstraints();
+    if (limits != null) _logDiagnostic('constraints now: $limits');
+  }
+
+  /// Frames the camera on the engine dataset — gl-js `fitBounds`.
+  ///
+  /// This used to be a hand-rolled approximation: [LatLngBounds.center] plus a
+  /// zoom guessed from the span, because `fitBounds` did not exist. The engine
+  /// does it properly — it knows the viewport's aspect ratio, the padding and
+  /// the projection — so the box actually ends up on screen instead of roughly
+  /// on screen.
+  ///
+  /// The padding keeps the data clear of the scenario bar and the control
+  /// column, which is what [EdgeInsets] is for at this boundary.
   Future<void> _fitToData() async {
     final bounds = LatLngBounds.fromPoints(
       _dataset(_engineCounts[_engineCountIndex]),
     );
-    final span = math.max(
-      bounds.north - bounds.south,
-      (bounds.east - bounds.west) * 0.5,
-    );
-    final zoom = (math.log(360 / math.max(span, 0.01)) / math.ln2).clamp(
-      1.0,
-      16.0,
-    );
-    final current = await _controller.camera.getPosition();
-    await _controller.camera.move(
-      CameraOptions(center: bounds.center, zoom: zoom).applyTo(current),
+    await _controller.camera.fitBounds(
+      bounds,
+      padding: const EdgeInsets.only(
+        top: 140,
+        left: 24,
+        right: 220,
+        bottom: 80,
+      ),
+      transition: CameraTransition.fly,
       duration: const Duration(milliseconds: 900),
     );
+    // And prove it worked, with the engine's own answer rather than ours.
+    final visible = await _controller.camera.getBounds();
+    if (visible != null && mounted) {
+      _logDiagnostic(
+        'fitBounds → visible ${visible.south.toStringAsFixed(2)}..'
+        '${visible.north.toStringAsFixed(2)} N, '
+        '${visible.west.toStringAsFixed(2)}..'
+        '${visible.east.toStringAsFixed(2)} E',
+      );
+    }
   }
 
   // --- UI ---------------------------------------------------------------------
@@ -1993,6 +2104,12 @@ class _MapDemoPageState extends State<MapDemoPage> {
             _toggleStyle,
           ),
           _mini('Fit to data', Icons.crop_free, _fitToData),
+          _mini('Camera verbs', Icons.videocam_outlined, _runCameraTour),
+          _mini(
+            _constrained ? 'Unconstrain' : 'Constrain to Nordics',
+            Icons.lock_outline,
+            _toggleConstraints,
+          ),
           _mini('Capabilities', Icons.info_outline, _showCapabilities),
           _mini('Break something', Icons.bug_report, _breakSomething),
           _mini(

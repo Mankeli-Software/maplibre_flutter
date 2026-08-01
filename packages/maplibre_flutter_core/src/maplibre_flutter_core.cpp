@@ -16,10 +16,12 @@
 
 #include <mbgl/gfx/backend_scope.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
+#include <mbgl/map/bound_options.hpp>
 #include <mbgl/map/camera.hpp>
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/map/map_options.hpp>
+#include <mbgl/map/mode.hpp>
 // Private mbgl header (under maplibre-native/src, added to this shim's include
 // path in CMakeLists). TransformState is a copyable value type that does the
 // pure projection math (latLng <-> screen, exact for bearing/pitch). We snapshot
@@ -51,6 +53,7 @@
 #include <mbgl/util/geo.hpp>
 #include <mbgl/util/image.hpp>
 #include <mbgl/util/logging.hpp>
+#include <mbgl/util/unitbezier.hpp>
 #include <mbgl/util/run_loop.hpp>
 #include <mbgl/util/size.hpp>
 
@@ -195,6 +198,11 @@ struct MblMap {
   // for observer events, and on whichever thread logged for MBL_DIAG_LOG.
   MblDiagnosticCallback diagCb = nullptr;
   void *diagCbUser = nullptr;
+
+  // Camera-finished callback, guarded by cbMutex like the others. Fires on the
+  // render thread when an animated move ends or is superseded.
+  MblCameraFinishCallback cameraFinishCb = nullptr;
+  void *cameraFinishCbUser = nullptr;
 
   // How many styles have finished loading. Registration necessarily happens
   // after mbl_map_create — the caller has to have the handle first — and a
@@ -972,6 +980,12 @@ void publishCurrentFrame(MblMap *m) {
   // advances its own transitions, so re-snapshotting here — rather than reusing
   // the generation from the last camera command — is what keeps the recorded
   // transform truly equal to the one the frame was drawn with.)
+  //
+  // The CAMERA CACHE has to come along for the same reason. mbgl drives easeTo
+  // and flyTo itself, so between the command and the last frame nothing else
+  // would refresh it, and getCamera() would report the camera as it was BEFORE
+  // the animation — for the whole animation and forever after it.
+  updateCameraCache(m);
   m->pendingPresentGen = updateProjState(m);
   try {
 #if defined(__ANDROID__)
@@ -1583,6 +1597,387 @@ void mbl_map_rotate_by(MblMap *m, double degrees, double anchor_x,
     m->map->jumpTo(mbgl::CameraOptions()
                        .withBearing(cam.bearing.value_or(0.0) - degrees)
                        .withAnchor(mbgl::ScreenCoordinate{anchor_x, anchor_y}));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+// --- Camera commands ---------------------------------------------------------
+
+namespace {
+
+// Translates the C partial camera into mbgl's, field by field.
+//
+// The ONE rule that matters: never invent a centre. `Transform::startTransition`
+// reads `anchor = camera.center ? std::nullopt : camera.anchor`, so a centre
+// added here — for convenience, or by a get-then-set caller — silently destroys
+// the anchor and every anchored zoom becomes a centre zoom.
+mbgl::CameraOptions toCameraOptions(const MblCameraOptions &c) {
+  mbgl::CameraOptions out;
+  if (c.has_center != 0 && std::isfinite(c.center_lat) &&
+      std::isfinite(c.center_lng) && std::abs(c.center_lat) <= 90.0) {
+    // mbgl::LatLng throws on NaN / |lat| > 90 and a throw across this extern "C"
+    // boundary is UB, so a bad centre is dropped rather than constructed.
+    out = out.withCenter(mbgl::LatLng{c.center_lat, c.center_lng});
+  }
+  if (c.has_zoom != 0 && std::isfinite(c.zoom)) out = out.withZoom(c.zoom);
+  if (c.has_bearing != 0 && std::isfinite(c.bearing)) {
+    out = out.withBearing(c.bearing);
+  }
+  if (c.has_pitch != 0 && std::isfinite(c.pitch)) out = out.withPitch(c.pitch);
+  if (c.has_roll != 0 && std::isfinite(c.roll)) out = out.withRoll(c.roll);
+  if (c.has_padding != 0) {
+    out = out.withPadding(mbgl::EdgeInsets{c.padding_top, c.padding_left,
+                                           c.padding_bottom, c.padding_right});
+  }
+  if (c.has_anchor != 0 && std::isfinite(c.anchor_x) &&
+      std::isfinite(c.anchor_y)) {
+    out = out.withAnchor(mbgl::ScreenCoordinate{c.anchor_x, c.anchor_y});
+  }
+  return out;
+}
+
+void fromCameraOptions(const mbgl::CameraOptions &in, MblCameraOptions *out) {
+  if (out == nullptr) return;
+  *out = MblCameraOptions{};
+  if (in.center) {
+    out->has_center = 1;
+    out->center_lat = in.center->latitude();
+    out->center_lng = in.center->longitude();
+  }
+  if (in.zoom) {
+    out->has_zoom = 1;
+    out->zoom = *in.zoom;
+  }
+  if (in.bearing) {
+    out->has_bearing = 1;
+    out->bearing = *in.bearing;
+  }
+  if (in.pitch) {
+    out->has_pitch = 1;
+    out->pitch = *in.pitch;
+  }
+  if (in.roll) {
+    out->has_roll = 1;
+    out->roll = *in.roll;
+  }
+  if (in.padding) {
+    out->has_padding = 1;
+    out->padding_top = in.padding->top();
+    out->padding_right = in.padding->right();
+    out->padding_bottom = in.padding->bottom();
+    out->padding_left = in.padding->left();
+  }
+  if (in.anchor) {
+    out->has_anchor = 1;
+    out->anchor_x = in.anchor->x;
+    out->anchor_y = in.anchor->y;
+  }
+}
+
+// Fires the caller's completion token. Attached as AnimationOptions::
+// transitionFinishFn, which mbgl invokes both on natural end AND when a new
+// transition supersedes this one (Transform::startTransition calls the previous
+// finish fn before installing its own).
+std::function<void()> makeFinishFn(MblMap *m, uint64_t token) {
+  if (token == 0) return nullptr;
+  return [m, token] {
+    MblCameraFinishCallback cb = nullptr;
+    void *user = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(m->cbMutex);
+      cb = m->cameraFinishCb;
+      user = m->cameraFinishCbUser;
+    }
+    if (cb != nullptr) cb(user, token);
+  };
+}
+
+mbgl::AnimationOptions toAnimationOptions(const MblAnimationOptions *a,
+                                          MblMap *m, uint64_t token) {
+  mbgl::AnimationOptions out;
+  if (a != nullptr) {
+    if (a->has_duration != 0) {
+      out.duration = mbgl::Duration(std::chrono::milliseconds(a->duration_ms));
+    }
+    if (a->has_easing != 0) {
+      // emplace, not assign: UnitBezier has const members, so
+      // std::optional<UnitBezier>'s copy-assignment operator is deleted.
+      out.easing.emplace(a->easing_x1, a->easing_y1, a->easing_x2,
+                         a->easing_y2);
+    }
+    if (a->has_speed != 0 && std::isfinite(a->speed)) {
+      out.velocity = a->speed;
+    }
+    if (a->has_apex_zoom != 0 && std::isfinite(a->apex_zoom)) {
+      out.minZoom = a->apex_zoom;
+    }
+  }
+  out.transitionFinishFn = makeFinishFn(m, token);
+  return out;
+}
+
+// Runs `work` on the render thread and waits for it, with a deadline. Used by
+// the three read-back calls, whose answers need the LIVE transform — a busy
+// render thread costs a failed read rather than a hung caller.
+bool runOnRenderThread(MblMap *m, uint32_t timeout_ms,
+                       std::function<void()> work) {
+  struct Sync {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+  };
+  auto sync = std::make_shared<Sync>();
+  m->post([sync, work] {
+    work();
+    {
+      std::lock_guard<std::mutex> lk(sync->mutex);
+      sync->done = true;
+    }
+    sync->cv.notify_all();
+  });
+  std::unique_lock<std::mutex> lk(sync->mutex);
+  return sync->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                           [&] { return sync->done; });
+}
+
+mbgl::LatLngBounds toLatLngBounds(const MblLatLngBounds &b) {
+  // hull() rather than the private two-corner constructor, and it also copes
+  // with an inverted pair instead of asserting.
+  return mbgl::LatLngBounds::hull(mbgl::LatLng{b.sw_lat, b.sw_lng},
+                                  mbgl::LatLng{b.ne_lat, b.ne_lng});
+}
+
+bool boundsAreSane(const MblLatLngBounds &b) {
+  return std::isfinite(b.sw_lat) && std::isfinite(b.sw_lng) &&
+         std::isfinite(b.ne_lat) && std::isfinite(b.ne_lng) &&
+         std::abs(b.sw_lat) <= 90.0 && std::abs(b.ne_lat) <= 90.0;
+}
+
+} // namespace
+
+void mbl_map_set_camera_finish_callback(MblMap *m,
+                                        MblCameraFinishCallback callback,
+                                        void *user) {
+  if (m == nullptr) return;
+  std::lock_guard<std::mutex> lk(m->cbMutex);
+  m->cameraFinishCb = callback;
+  m->cameraFinishCbUser = user;
+}
+
+void mbl_map_jump_to(MblMap *m, const MblCameraOptions *camera) {
+  if (m == nullptr || camera == nullptr) return;
+  const MblCameraOptions copy = *camera;
+  m->post([m, copy] {
+    m->map->jumpTo(toCameraOptions(copy));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_ease_to(MblMap *m, const MblCameraOptions *camera,
+                     const MblAnimationOptions *animation, uint64_t token) {
+  if (m == nullptr || camera == nullptr) return;
+  const MblCameraOptions cam = *camera;
+  const bool hasAnim = animation != nullptr;
+  const MblAnimationOptions anim = hasAnim ? *animation : MblAnimationOptions{};
+  m->post([m, cam, anim, hasAnim, token] {
+    m->map->easeTo(toCameraOptions(cam),
+                   toAnimationOptions(hasAnim ? &anim : nullptr, m, token));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_fly_to(MblMap *m, const MblCameraOptions *camera,
+                    const MblAnimationOptions *animation, uint64_t token) {
+  if (m == nullptr || camera == nullptr) return;
+  const MblCameraOptions cam = *camera;
+  const bool hasAnim = animation != nullptr;
+  const MblAnimationOptions anim = hasAnim ? *animation : MblAnimationOptions{};
+  m->post([m, cam, anim, hasAnim, token] {
+    m->map->flyTo(toCameraOptions(cam),
+                  toAnimationOptions(hasAnim ? &anim : nullptr, m, token));
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_cancel_transitions(MblMap *m) {
+  if (m == nullptr) return;
+  m->post([m] {
+    m->map->cancelTransitions();
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+void mbl_map_fit_bounds(MblMap *m, const MblLatLngBounds *bounds,
+                        double pad_top, double pad_right, double pad_bottom,
+                        double pad_left, int32_t has_bearing, double bearing,
+                        int32_t has_pitch, double pitch, int32_t mode,
+                        const MblAnimationOptions *animation, uint64_t token) {
+  if (m == nullptr || bounds == nullptr || !boundsAreSane(*bounds)) return;
+  const MblLatLngBounds b = *bounds;
+  const bool hasAnim = animation != nullptr;
+  const MblAnimationOptions anim = hasAnim ? *animation : MblAnimationOptions{};
+  m->post([m, b, pad_top, pad_right, pad_bottom, pad_left, has_bearing, bearing,
+           has_pitch, pitch, mode, anim, hasAnim, token] {
+    const mbgl::EdgeInsets padding{pad_top, pad_left, pad_bottom, pad_right};
+    const auto camera = m->map->cameraForLatLngBounds(
+        toLatLngBounds(b), padding,
+        has_bearing != 0 && std::isfinite(bearing)
+            ? std::optional<double>(bearing)
+            : std::nullopt,
+        has_pitch != 0 && std::isfinite(pitch) ? std::optional<double>(pitch)
+                                               : std::nullopt);
+    const auto options =
+        toAnimationOptions(hasAnim ? &anim : nullptr, m, token);
+    switch (mode) {
+      case 1:
+        m->map->easeTo(camera, options);
+        break;
+      case 2:
+        m->map->flyTo(camera, options);
+        break;
+      default:
+        m->map->jumpTo(camera);
+        // jumpTo takes no AnimationOptions, so nothing would report the token.
+        if (options.transitionFinishFn) options.transitionFinishFn();
+        break;
+    }
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+int mbl_map_camera_for_lat_lng_bounds(MblMap *m, const MblLatLngBounds *bounds,
+                                      double pad_top, double pad_right,
+                                      double pad_bottom, double pad_left,
+                                      int32_t has_bearing, double bearing,
+                                      int32_t has_pitch, double pitch,
+                                      uint32_t timeout_ms,
+                                      MblCameraOptions *out_camera) {
+  if (m == nullptr || bounds == nullptr || out_camera == nullptr ||
+      !boundsAreSane(*bounds)) {
+    return 0;
+  }
+  const MblLatLngBounds b = *bounds;
+  auto result = std::make_shared<mbgl::CameraOptions>();
+  const bool ok = runOnRenderThread(m, timeout_ms, [=] {
+    *result = m->map->cameraForLatLngBounds(
+        toLatLngBounds(b), mbgl::EdgeInsets{pad_top, pad_left, pad_bottom, pad_right},
+        has_bearing != 0 && std::isfinite(bearing)
+            ? std::optional<double>(bearing)
+            : std::nullopt,
+        has_pitch != 0 && std::isfinite(pitch) ? std::optional<double>(pitch)
+                                               : std::nullopt);
+  });
+  if (!ok) return 0;
+  fromCameraOptions(*result, out_camera);
+  return 1;
+}
+
+int mbl_map_lat_lng_bounds_for_camera(MblMap *m, const MblCameraOptions *camera,
+                                      uint32_t timeout_ms,
+                                      MblLatLngBounds *out_bounds) {
+  if (m == nullptr || camera == nullptr || out_bounds == nullptr) return 0;
+  const MblCameraOptions cam = *camera;
+  auto result = std::make_shared<mbgl::LatLngBounds>();
+  const bool ok = runOnRenderThread(m, timeout_ms, [=] {
+    // An empty partial camera means "the one on screen now", which is what
+    // gl-js getBounds() asks for.
+    const auto options = toCameraOptions(cam);
+    *result = m->map->latLngBoundsForCamera(
+        options == mbgl::CameraOptions{} ? m->map->getCameraOptions() : options);
+  });
+  if (!ok) return 0;
+  out_bounds->sw_lat = result->south();
+  out_bounds->sw_lng = result->west();
+  out_bounds->ne_lat = result->north();
+  out_bounds->ne_lng = result->east();
+  return 1;
+}
+
+void mbl_map_set_bounds(MblMap *m, const MblBoundOptions *bounds) {
+  if (m == nullptr || bounds == nullptr) return;
+  const MblBoundOptions b = *bounds;
+  m->post([m, b] {
+    mbgl::BoundOptions options;
+    if (b.has_bounds != 0 && boundsAreSane(b.bounds)) {
+      options = options.withLatLngBounds(toLatLngBounds(b.bounds));
+    }
+    if (b.has_min_zoom != 0 && std::isfinite(b.min_zoom)) {
+      options = options.withMinZoom(b.min_zoom);
+    }
+    if (b.has_max_zoom != 0 && std::isfinite(b.max_zoom)) {
+      options = options.withMaxZoom(b.max_zoom);
+    }
+    if (b.has_min_pitch != 0 && std::isfinite(b.min_pitch)) {
+      options = options.withMinPitch(b.min_pitch);
+    }
+    if (b.has_max_pitch != 0 && std::isfinite(b.max_pitch)) {
+      options = options.withMaxPitch(b.max_pitch);
+    }
+    m->map->setBounds(options);
+    updateCameraCache(m);
+    updateProjState(m);
+    m->renderRequested = true;
+  });
+}
+
+int mbl_map_get_bounds(MblMap *m, uint32_t timeout_ms,
+                       MblBoundOptions *out_bounds) {
+  if (m == nullptr || out_bounds == nullptr) return 0;
+  auto result = std::make_shared<mbgl::BoundOptions>();
+  const bool ok = runOnRenderThread(
+      m, timeout_ms, [m, result] { *result = m->map->getBounds(); });
+  if (!ok) return 0;
+  *out_bounds = MblBoundOptions{};
+  if (result->bounds) {
+    out_bounds->has_bounds = 1;
+    out_bounds->bounds.sw_lat = result->bounds->south();
+    out_bounds->bounds.sw_lng = result->bounds->west();
+    out_bounds->bounds.ne_lat = result->bounds->north();
+    out_bounds->bounds.ne_lng = result->bounds->east();
+  }
+  if (result->minZoom) {
+    out_bounds->has_min_zoom = 1;
+    out_bounds->min_zoom = *result->minZoom;
+  }
+  if (result->maxZoom) {
+    out_bounds->has_max_zoom = 1;
+    out_bounds->max_zoom = *result->maxZoom;
+  }
+  if (result->minPitch) {
+    out_bounds->has_min_pitch = 1;
+    out_bounds->min_pitch = *result->minPitch;
+  }
+  if (result->maxPitch) {
+    out_bounds->has_max_pitch = 1;
+    out_bounds->max_pitch = *result->maxPitch;
+  }
+  return 1;
+}
+
+void mbl_map_set_constrain_mode(MblMap *m, int32_t mode) {
+  if (m == nullptr) return;
+  m->post([m, mode] {
+    mbgl::ConstrainMode value = mbgl::ConstrainMode::HeightOnly;
+    switch (mode) {
+      case 0: value = mbgl::ConstrainMode::None; break;
+      case 1: value = mbgl::ConstrainMode::HeightOnly; break;
+      case 2: value = mbgl::ConstrainMode::WidthAndHeight; break;
+      case 3: value = mbgl::ConstrainMode::Screen; break;
+      default: return;
+    }
+    m->map->setConstrainMode(value);
     updateCameraCache(m);
     updateProjState(m);
     m->renderRequested = true;

@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/painting.dart' show EdgeInsets;
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart' as core;
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
@@ -35,7 +36,8 @@ class MapLibreFlutterMacosController
         MapLibreMapProjector,
         MapLibreStyleLayers,
         MapLibreModelHost,
-        MapLibreMapEvents {
+        MapLibreMapEvents,
+        MapLibreCameraCommands {
   MapLibreFlutterMacosController._(this._coreMap, this._textureId) {
     _startUp();
   }
@@ -592,6 +594,263 @@ class MapLibreFlutterMacosController
         ..dispose();
       _modelTicker = null;
     }
+  }
+
+  // --- Camera commands (MapLibreCameraCommands) -------------------------------
+  //
+  // Straight through to the engine, which has jumpTo / easeTo / flyTo natively.
+  // The Dart-side flight arc in fly_animation.dart is retired for these paths.
+
+  /// Pending animated moves, keyed by the token handed to the engine.
+  ///
+  /// The engine reports a token when its transition ends OR is superseded, so
+  /// every entry here resolves — an interrupted flight completes rather than
+  /// leaking a Future that never finishes.
+  final Map<int, Completer<void>> _cameraWaiters = <int, Completer<void>>{};
+  int _nextCameraToken = 1;
+  bool _cameraFinishInstalled = false;
+
+  void _installCameraFinish() {
+    if (_cameraFinishInstalled || _disposed) return;
+    _cameraFinishInstalled = true;
+    _coreMap.setCameraFinishCallback((token) {
+      final waiter = _cameraWaiters.remove(token);
+      if (waiter != null && !waiter.isCompleted) waiter.complete();
+    });
+  }
+
+  /// Issues an animated move and returns a Future that completes on transition
+  /// end (or supersession).
+  Future<void> _awaitCameraMove(void Function(int token) issue) {
+    if (_disposed) return Future<void>.value();
+    _installCameraFinish();
+    final token = _nextCameraToken++;
+    final completer = Completer<void>();
+    _cameraWaiters[token] = completer;
+    issue(token);
+    return completer.future;
+  }
+
+  core.CoreCameraOptions _toCoreCamera(CameraOptions camera) =>
+      core.CoreCameraOptions(
+        center: camera.center == null
+            ? null
+            : (
+                latitude: camera.center!.latitude,
+                longitude: camera.center!.longitude,
+              ),
+        zoom: camera.zoom,
+        bearing: camera.bearing,
+        pitch: camera.pitch,
+        roll: camera.roll,
+        padding: camera.padding == null
+            ? null
+            : (
+                top: camera.padding!.top,
+                right: camera.padding!.right,
+                bottom: camera.padding!.bottom,
+                left: camera.padding!.left,
+              ),
+        anchor: camera.anchor == null
+            ? null
+            : (x: camera.anchor!.dx, y: camera.anchor!.dy),
+      );
+
+  CameraOptions _fromCoreCamera(core.CoreCameraOptions camera) => CameraOptions(
+    center: camera.center == null
+        ? null
+        : LatLng.sanitized(camera.center!.latitude, camera.center!.longitude),
+    zoom: camera.zoom,
+    bearing: camera.bearing,
+    pitch: camera.pitch,
+    roll: camera.roll,
+    padding: camera.padding == null
+        ? null
+        : EdgeInsets.fromLTRB(
+            camera.padding!.left,
+            camera.padding!.top,
+            camera.padding!.right,
+            camera.padding!.bottom,
+          ),
+    anchor: camera.anchor == null
+        ? null
+        : ui.Offset(camera.anchor!.x, camera.anchor!.y),
+  );
+
+  core.CoreAnimationOptions? _toCoreAnimation(CameraAnimation? animation) {
+    if (animation == null) return null;
+    final easing = animation.easing;
+    return core.CoreAnimationOptions(
+      duration: animation.duration,
+      easing: easing == null
+          ? null
+          : (x1: easing.a, y1: easing.b, x2: easing.c, y2: easing.d),
+      speed: animation.speed,
+      apexZoom: animation.apexZoom,
+    );
+  }
+
+  core.CoreLatLngBounds _toCoreBounds(LatLngBounds bounds) => (
+    swLat: bounds.south,
+    swLng: bounds.west,
+    neLat: bounds.north,
+    neLng: bounds.east,
+  );
+
+  @override
+  Future<void> jumpTo(CameraOptions camera) async {
+    if (_disposed) return;
+    // A jump supersedes any running animation, so its own Future is not the
+    // interesting one — but callers still expect it to be awaitable.
+    _animToken++;
+    _coreMap.jumpTo(_toCoreCamera(camera));
+    notifyCameraChanged();
+  }
+
+  @override
+  Future<void> easeTo(CameraOptions camera, {CameraAnimation? animation}) {
+    _animToken++;
+    return _awaitCameraMove(
+      (token) => _coreMap.easeTo(
+        _toCoreCamera(camera),
+        _toCoreAnimation(animation),
+        token: token,
+      ),
+    );
+  }
+
+  @override
+  Future<void> flyTo(CameraOptions camera, {CameraAnimation? animation}) {
+    _animToken++;
+    return _awaitCameraMove(
+      (token) => _coreMap.flyTo(
+        _toCoreCamera(camera),
+        _toCoreAnimation(animation),
+        token: token,
+      ),
+    );
+  }
+
+  @override
+  Future<void> fitBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+    CameraTransition transition = CameraTransition.ease,
+    CameraAnimation? animation,
+  }) {
+    _animToken++;
+    final how = switch (transition) {
+      CameraTransition.jump => core.CoreCameraTransition.jump,
+      CameraTransition.ease => core.CoreCameraTransition.ease,
+      CameraTransition.fly => core.CoreCameraTransition.fly,
+    };
+    return _awaitCameraMove(
+      (token) => _coreMap.fitBounds(
+        _toCoreBounds(bounds),
+        padding: (
+          top: padding.top,
+          right: padding.right,
+          bottom: padding.bottom,
+          left: padding.left,
+        ),
+        bearing: bearing,
+        pitch: pitch,
+        transition: how,
+        animation: _toCoreAnimation(animation),
+        token: token,
+      ),
+    );
+  }
+
+  @override
+  Future<CameraOptions?> cameraForBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+  }) async {
+    if (_disposed) return null;
+    final result = _coreMap.cameraForBounds(
+      _toCoreBounds(bounds),
+      padding: (
+        top: padding.top,
+        right: padding.right,
+        bottom: padding.bottom,
+        left: padding.left,
+      ),
+      bearing: bearing,
+      pitch: pitch,
+    );
+    return result == null ? null : _fromCoreCamera(result);
+  }
+
+  @override
+  Future<LatLngBounds?> getBounds() async {
+    if (_disposed) return null;
+    final b = _coreMap.getVisibleBounds();
+    if (b == null) return null;
+    return LatLngBounds(
+      southwest: LatLng.sanitized(b.swLat, b.swLng),
+      northeast: LatLng.sanitized(b.neLat, b.neLng),
+    );
+  }
+
+  @override
+  Future<void> setCameraConstraints(MapCameraConstraints constraints) async {
+    if (_disposed) return;
+    _coreMap.setBounds(
+      core.CoreBoundOptions(
+        bounds: constraints.bounds == null
+            ? null
+            : _toCoreBounds(constraints.bounds!),
+        minZoom: constraints.minZoom,
+        maxZoom: constraints.maxZoom,
+        minPitch: constraints.minPitch,
+        maxPitch: constraints.maxPitch,
+      ),
+    );
+  }
+
+  @override
+  Future<MapCameraConstraints?> getCameraConstraints() async {
+    if (_disposed) return null;
+    final b = _coreMap.getBoundOptions();
+    if (b == null) return null;
+    return MapCameraConstraints(
+      bounds: b.bounds == null
+          ? null
+          : LatLngBounds(
+              southwest: LatLng.sanitized(b.bounds!.swLat, b.bounds!.swLng),
+              northeast: LatLng.sanitized(b.bounds!.neLat, b.bounds!.neLng),
+            ),
+      minZoom: b.minZoom,
+      maxZoom: b.maxZoom,
+      minPitch: b.minPitch,
+      maxPitch: b.maxPitch,
+    );
+  }
+
+  @override
+  Future<void> setConstrainToBounds({required bool wholeViewport}) async {
+    if (_disposed) return;
+    // Screen = the whole viewport must stay inside the bounds, which is what
+    // gl-js `maxBounds` means. HeightOnly is mbgl's default and constrains the
+    // centre only.
+    _coreMap.setConstrainMode(
+      wholeViewport
+          ? core.CoreConstrainMode.screen
+          : core.CoreConstrainMode.heightOnly,
+    );
+  }
+
+  @override
+  Future<void> stopCamera() async {
+    if (_disposed) return;
+    _animToken++; // also stops any Dart-side arc still stepping
+    _coreMap.cancelTransitions();
+    notifyCameraChanged();
   }
 
   @override

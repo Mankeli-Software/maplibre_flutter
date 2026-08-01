@@ -8,6 +8,8 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
     show
         CameraAnimation,
         CameraOptions,
+        CameraTransition,
+        MapCameraConstraints,
         LatLng,
         LatLngBounds,
         MapCamera,
@@ -19,6 +21,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         // The capability interfaces, so an app can feature-detect with `is`.
         // They are implemented by platform packages, never by apps — see
         // MapLibreCapabilities.
+        MapLibreCameraCommands,
         MapLibreGestureHandler,
         MapLibreMapProjector,
         MapLibreModelHost,

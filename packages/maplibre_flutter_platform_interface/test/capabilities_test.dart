@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 import 'dart:ui' show Offset, Size;
 
+import 'package:flutter/painting.dart' show EdgeInsets;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
@@ -32,7 +34,8 @@ class _FullController extends _BareController
         MapLibreModelHost,
         MapLibreRotateHandler,
         MapLibreGestureHandler,
-        MapLibreMapEvents {
+        MapLibreMapEvents,
+        MapLibreCameraCommands {
   @override
   int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) =>
       1;
@@ -102,6 +105,45 @@ class _FullController extends _BareController
   Stream<void> get onStyleLoaded => const Stream<void>.empty();
   @override
   Stream<String> get onStyleImageMissing => const Stream<String>.empty();
+
+  @override
+  Future<void> jumpTo(CameraOptions camera) async {}
+  @override
+  Future<void> easeTo(
+    CameraOptions camera, {
+    CameraAnimation? animation,
+  }) async {}
+  @override
+  Future<void> flyTo(
+    CameraOptions camera, {
+    CameraAnimation? animation,
+  }) async {}
+  @override
+  Future<void> fitBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+    CameraTransition transition = CameraTransition.ease,
+    CameraAnimation? animation,
+  }) async {}
+  @override
+  Future<CameraOptions?> cameraForBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+  }) async => null;
+  @override
+  Future<LatLngBounds?> getBounds() async => null;
+  @override
+  Future<void> setCameraConstraints(MapCameraConstraints constraints) async {}
+  @override
+  Future<MapCameraConstraints?> getCameraConstraints() async => null;
+  @override
+  Future<void> setConstrainToBounds({required bool wholeViewport}) async {}
+  @override
+  Future<void> stopCamera() async {}
 }
 
 void main() {
@@ -113,6 +155,7 @@ void main() {
     expect(none.rotateAndTilt, isFalse);
     expect(none.gestures, isFalse);
     expect(none.events, isFalse);
+    expect(none.cameraCommands, isFalse);
     expect(MapLibreCapabilities.of(null), none);
     expect(MapLibreCapabilities.of('not a controller'), none);
   });
@@ -132,6 +175,7 @@ void main() {
     expect(full.rotateAndTilt, isTrue);
     expect(full.gestures, isTrue);
     expect(full.events, isTrue);
+    expect(full.cameraCommands, isTrue);
     expect(
       full,
       const MapLibreCapabilities(
@@ -141,6 +185,7 @@ void main() {
         rotateAndTilt: true,
         gestures: true,
         events: true,
+        cameraCommands: true,
       ),
     );
   });
@@ -157,6 +202,7 @@ void main() {
     expect(capabilities.rotateAndTilt, platform is MapLibreRotateHandler);
     expect(capabilities.gestures, platform is MapLibreGestureHandler);
     expect(capabilities.events, platform is MapLibreMapEvents);
+    expect(capabilities.cameraCommands, platform is MapLibreCameraCommands);
   });
 
   group('MapCameraChangeReason', () {

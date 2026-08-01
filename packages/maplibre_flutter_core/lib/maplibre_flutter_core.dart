@@ -105,6 +105,142 @@ typedef CoreDiagnostic = ({
   String message,
 });
 
+/// A geographic point, as a record — this package has no Flutter dependency, so
+/// it cannot use the platform interface's `LatLng`.
+typedef CoreLatLng = ({double latitude, double longitude});
+
+/// A geographic box: south-west and north-east corners, latitude first, per
+/// `mbgl::LatLngBounds`.
+typedef CoreLatLngBounds = ({
+  double swLat,
+  double swLng,
+  double neLat,
+  double neLng,
+});
+
+/// A **partial** camera: an unset field is left alone by the engine.
+///
+/// Mirrors `mbgl::CameraOptions`, whose fields are all `std::optional`. The
+/// partiality is the point — "zoom to 12 and leave the rest" must not require
+/// reading the camera first, which races the render thread.
+class CoreCameraOptions {
+  const CoreCameraOptions({
+    this.center,
+    this.zoom,
+    this.bearing,
+    this.pitch,
+    this.roll,
+    this.padding,
+    this.anchor,
+  });
+
+  final CoreLatLng? center;
+  final double? zoom;
+  final double? bearing;
+  final double? pitch;
+  final double? roll;
+  final ({double top, double right, double bottom, double left})? padding;
+
+  /// The screen point that stays fixed while zoom/bearing change, in logical
+  /// points from the TOP-LEFT.
+  ///
+  /// **mbgl discards this whenever [center] is set** — so never set both. A
+  /// test anchored on the map centre cannot detect the difference, because the
+  /// centre is a fixed point either way.
+  final ({double x, double y})? anchor;
+
+  /// Whether this would change nothing.
+  bool get isEmpty =>
+      center == null &&
+      zoom == null &&
+      bearing == null &&
+      pitch == null &&
+      roll == null &&
+      padding == null &&
+      anchor == null;
+
+  @override
+  String toString() =>
+      'CoreCameraOptions(center: $center, zoom: $zoom, bearing: $bearing, '
+      'pitch: $pitch, roll: $roll, padding: $padding, anchor: $anchor)';
+}
+
+/// How to animate a camera transition. Mirrors `mbgl::AnimationOptions`.
+class CoreAnimationOptions {
+  const CoreAnimationOptions({
+    this.duration,
+    this.easing,
+    this.speed,
+    this.apexZoom,
+  });
+
+  final Duration? duration;
+
+  /// Cubic bezier control points — mbgl's `UnitBezier`.
+  final ({double x1, double y1, double x2, double y2})? easing;
+
+  /// flyTo only: average velocity in screenfuls per second (engine default 1.2).
+  final double? speed;
+
+  /// flyTo only: the zoom at the apex of the flight arc.
+  final double? apexZoom;
+}
+
+/// How a camera transition is applied.
+enum CoreCameraTransition {
+  /// Instant.
+  jump(0),
+
+  /// Straight, eased.
+  ease(1),
+
+  /// The van Wijk flight path — zoom out, pan, zoom back in.
+  fly(2);
+
+  const CoreCameraTransition(this.code);
+  final int code;
+}
+
+/// Camera constraints. Mirrors `mbgl::BoundOptions`.
+class CoreBoundOptions {
+  const CoreBoundOptions({
+    this.bounds,
+    this.minZoom,
+    this.maxZoom,
+    this.minPitch,
+    this.maxPitch,
+  });
+
+  /// Constrains the camera CENTRE unless the constrain mode is
+  /// [CoreConstrainMode.screen] — Android's semantics, not gl-js's.
+  final CoreLatLngBounds? bounds;
+  final double? minZoom;
+  final double? maxZoom;
+  final double? minPitch;
+
+  /// mbgl clamps pitch to 60 degrees regardless of this.
+  final double? maxPitch;
+
+  @override
+  String toString() =>
+      'CoreBoundOptions(bounds: $bounds, minZoom: $minZoom, maxZoom: $maxZoom, '
+      'minPitch: $minPitch, maxPitch: $maxPitch)';
+}
+
+/// What a camera bound constrains. Mirrors `mbgl::ConstrainMode`.
+enum CoreConstrainMode {
+  none(0),
+  heightOnly(1),
+  widthAndHeight(2),
+
+  /// The whole viewport must stay inside the bounds — what gl-js `maxBounds`
+  /// means, and what Apple calls `maximumScreenBounds`.
+  screen(3);
+
+  const CoreConstrainMode(this.code);
+  final int code;
+}
+
 /// A handle to one off-screen MapLibre map rendered by mbgl-core.
 ///
 /// Shared by the desktop implementation packages (macOS now; Windows/Linux
@@ -954,6 +1090,7 @@ class MapLibreCoreMap {
     if (_disposed) return;
     _disposed = true;
     setDiagnosticCallback(null);
+    setCameraFinishCallback(null);
     if (_projIn != ffi.nullptr) malloc.free(_projIn);
     if (_projOut != ffi.nullptr) malloc.free(_projOut);
     if (_projVis != ffi.nullptr) malloc.free(_projVis);
@@ -1038,6 +1175,383 @@ class MapLibreCoreMap {
         });
     _diagnosticCallable = callable;
     bindings.mbl_map_set_diagnostic_callback(
+      _handle,
+      callable.nativeFunction,
+      ffi.nullptr,
+    );
+    previous?.close();
+  }
+
+  // --- Camera commands --------------------------------------------------------
+
+  /// Fills a native MblCameraOptions from [camera] in arena memory.
+  ffi.Pointer<bindings.MblCameraOptions> _toNativeCamera(
+    Arena arena,
+    CoreCameraOptions camera,
+  ) {
+    final out = arena<bindings.MblCameraOptions>();
+    final c = out.ref;
+    final center = camera.center;
+    if (center != null) {
+      c.has_center = 1;
+      c.center_lat = center.latitude;
+      c.center_lng = center.longitude;
+    }
+    if (camera.zoom != null) {
+      c.has_zoom = 1;
+      c.zoom = camera.zoom!;
+    }
+    if (camera.bearing != null) {
+      c.has_bearing = 1;
+      c.bearing = camera.bearing!;
+    }
+    if (camera.pitch != null) {
+      c.has_pitch = 1;
+      c.pitch = camera.pitch!;
+    }
+    if (camera.roll != null) {
+      c.has_roll = 1;
+      c.roll = camera.roll!;
+    }
+    final padding = camera.padding;
+    if (padding != null) {
+      c.has_padding = 1;
+      c.padding_top = padding.top;
+      c.padding_right = padding.right;
+      c.padding_bottom = padding.bottom;
+      c.padding_left = padding.left;
+    }
+    final anchor = camera.anchor;
+    if (anchor != null) {
+      c.has_anchor = 1;
+      c.anchor_x = anchor.x;
+      c.anchor_y = anchor.y;
+    }
+    return out;
+  }
+
+  CoreCameraOptions _fromNativeCamera(bindings.MblCameraOptions c) =>
+      CoreCameraOptions(
+        center: c.has_center != 0
+            ? (latitude: c.center_lat, longitude: c.center_lng)
+            : null,
+        zoom: c.has_zoom != 0 ? c.zoom : null,
+        bearing: c.has_bearing != 0 ? c.bearing : null,
+        pitch: c.has_pitch != 0 ? c.pitch : null,
+        roll: c.has_roll != 0 ? c.roll : null,
+        padding: c.has_padding != 0
+            ? (
+                top: c.padding_top,
+                right: c.padding_right,
+                bottom: c.padding_bottom,
+                left: c.padding_left,
+              )
+            : null,
+        anchor: c.has_anchor != 0 ? (x: c.anchor_x, y: c.anchor_y) : null,
+      );
+
+  ffi.Pointer<bindings.MblAnimationOptions> _toNativeAnimation(
+    Arena arena,
+    CoreAnimationOptions? animation,
+  ) {
+    final out = arena<bindings.MblAnimationOptions>();
+    if (animation == null) return out;
+    final a = out.ref;
+    final duration = animation.duration;
+    if (duration != null) {
+      a.has_duration = 1;
+      a.duration_ms = duration.inMilliseconds;
+    }
+    final easing = animation.easing;
+    if (easing != null) {
+      a.has_easing = 1;
+      a.easing_x1 = easing.x1;
+      a.easing_y1 = easing.y1;
+      a.easing_x2 = easing.x2;
+      a.easing_y2 = easing.y2;
+    }
+    if (animation.speed != null) {
+      a.has_speed = 1;
+      a.speed = animation.speed!;
+    }
+    if (animation.apexZoom != null) {
+      a.has_apex_zoom = 1;
+      a.apex_zoom = animation.apexZoom!;
+    }
+    return out;
+  }
+
+  ffi.Pointer<bindings.MblLatLngBounds> _toNativeBounds(
+    Arena arena,
+    CoreLatLngBounds bounds,
+  ) {
+    final out = arena<bindings.MblLatLngBounds>();
+    out.ref
+      ..sw_lat = bounds.swLat
+      ..sw_lng = bounds.swLng
+      ..ne_lat = bounds.neLat
+      ..ne_lng = bounds.neLng;
+    return out;
+  }
+
+  /// Applies [camera] instantly. Unset fields are left alone.
+  void jumpTo(CoreCameraOptions camera) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_jump_to(_handle, _toNativeCamera(arena, camera));
+    });
+  }
+
+  /// Transitions to [camera] along a straight, eased path.
+  ///
+  /// [token], when non-zero, is reported to the callback registered with
+  /// [setCameraFinishCallback] once the transition ends — INCLUDING when it is
+  /// superseded, which is mbgl's own behaviour.
+  void easeTo(
+    CoreCameraOptions camera,
+    CoreAnimationOptions? animation, {
+    int token = 0,
+  }) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_ease_to(
+        _handle,
+        _toNativeCamera(arena, camera),
+        _toNativeAnimation(arena, animation),
+        token,
+      );
+    });
+  }
+
+  /// Transitions to [camera] along a van Wijk flight path.
+  void flyTo(
+    CoreCameraOptions camera,
+    CoreAnimationOptions? animation, {
+    int token = 0,
+  }) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_fly_to(
+        _handle,
+        _toNativeCamera(arena, camera),
+        _toNativeAnimation(arena, animation),
+        token,
+      );
+    });
+  }
+
+  /// Stops any transition in flight, leaving the camera where it got to.
+  void cancelTransitions() {
+    _checkAlive();
+    bindings.mbl_map_cancel_transitions(_handle);
+  }
+
+  /// Frames [bounds] under [padding] and applies the result.
+  ///
+  /// Computed AND applied on the render thread, in one command: the
+  /// computation needs the live transform, so splitting it would mean a
+  /// blocking round trip with the camera free to move in between.
+  void fitBounds(
+    CoreLatLngBounds bounds, {
+    ({double top, double right, double bottom, double left}) padding = (
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+    ),
+    double? bearing,
+    double? pitch,
+    CoreCameraTransition transition = CoreCameraTransition.jump,
+    CoreAnimationOptions? animation,
+    int token = 0,
+  }) {
+    _checkAlive();
+    using((arena) {
+      bindings.mbl_map_fit_bounds(
+        _handle,
+        _toNativeBounds(arena, bounds),
+        padding.top,
+        padding.right,
+        padding.bottom,
+        padding.left,
+        bearing == null ? 0 : 1,
+        bearing ?? 0,
+        pitch == null ? 0 : 1,
+        pitch ?? 0,
+        transition.code,
+        _toNativeAnimation(arena, animation),
+        token,
+      );
+    });
+  }
+
+  /// The camera that would frame [bounds], WITHOUT moving — gl-js
+  /// `cameraForBounds`. Null on timeout.
+  ///
+  /// Blocks the caller: the computation needs the live transform, which only
+  /// the render thread may touch.
+  CoreCameraOptions? cameraForBounds(
+    CoreLatLngBounds bounds, {
+    ({double top, double right, double bottom, double left}) padding = (
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+    ),
+    double? bearing,
+    double? pitch,
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = arena<bindings.MblCameraOptions>();
+      final ok = bindings.mbl_map_camera_for_lat_lng_bounds(
+        _handle,
+        _toNativeBounds(arena, bounds),
+        padding.top,
+        padding.right,
+        padding.bottom,
+        padding.left,
+        bearing == null ? 0 : 1,
+        bearing ?? 0,
+        pitch == null ? 0 : 1,
+        pitch ?? 0,
+        timeout.inMilliseconds,
+        out,
+      );
+      return ok == 0 ? null : _fromNativeCamera(out.ref);
+    });
+  }
+
+  /// The geographic area currently on screen — gl-js `getBounds`. Null on
+  /// timeout. Pass [camera] to ask about a hypothetical camera instead.
+  CoreLatLngBounds? getVisibleBounds({
+    CoreCameraOptions camera = const CoreCameraOptions(),
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = arena<bindings.MblLatLngBounds>();
+      final ok = bindings.mbl_map_lat_lng_bounds_for_camera(
+        _handle,
+        _toNativeCamera(arena, camera),
+        timeout.inMilliseconds,
+        out,
+      );
+      if (ok == 0) return null;
+      return (
+        swLat: out.ref.sw_lat,
+        swLng: out.ref.sw_lng,
+        neLat: out.ref.ne_lat,
+        neLng: out.ref.ne_lng,
+      );
+    });
+  }
+
+  /// Applies camera constraints. Unset fields are left alone.
+  void setBounds(CoreBoundOptions options) {
+    _checkAlive();
+    using((arena) {
+      final out = arena<bindings.MblBoundOptions>();
+      final b = out.ref;
+      final bounds = options.bounds;
+      if (bounds != null) {
+        b.has_bounds = 1;
+        b.bounds
+          ..sw_lat = bounds.swLat
+          ..sw_lng = bounds.swLng
+          ..ne_lat = bounds.neLat
+          ..ne_lng = bounds.neLng;
+      }
+      if (options.minZoom != null) {
+        b.has_min_zoom = 1;
+        b.min_zoom = options.minZoom!;
+      }
+      if (options.maxZoom != null) {
+        b.has_max_zoom = 1;
+        b.max_zoom = options.maxZoom!;
+      }
+      if (options.minPitch != null) {
+        b.has_min_pitch = 1;
+        b.min_pitch = options.minPitch!;
+      }
+      if (options.maxPitch != null) {
+        b.has_max_pitch = 1;
+        b.max_pitch = options.maxPitch!;
+      }
+      bindings.mbl_map_set_bounds(_handle, out);
+    });
+  }
+
+  /// The current camera constraints. Null on timeout; blocks, as above.
+  CoreBoundOptions? getBoundOptions({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) {
+    _checkAlive();
+    return using((arena) {
+      final out = arena<bindings.MblBoundOptions>();
+      final ok = bindings.mbl_map_get_bounds(
+        _handle,
+        timeout.inMilliseconds,
+        out,
+      );
+      if (ok == 0) return null;
+      final b = out.ref;
+      return CoreBoundOptions(
+        bounds: b.has_bounds != 0
+            ? (
+                swLat: b.bounds.sw_lat,
+                swLng: b.bounds.sw_lng,
+                neLat: b.bounds.ne_lat,
+                neLng: b.bounds.ne_lng,
+              )
+            : null,
+        minZoom: b.has_min_zoom != 0 ? b.min_zoom : null,
+        maxZoom: b.has_max_zoom != 0 ? b.max_zoom : null,
+        minPitch: b.has_min_pitch != 0 ? b.min_pitch : null,
+        maxPitch: b.has_max_pitch != 0 ? b.max_pitch : null,
+      );
+    });
+  }
+
+  /// What a camera bound constrains — the centre, or the whole viewport.
+  void setConstrainMode(CoreConstrainMode mode) {
+    _checkAlive();
+    bindings.mbl_map_set_constrain_mode(_handle, mode.code);
+  }
+
+  /// The registered camera-finish callback, held as a FIELD (CLAUDE.md §5e).
+  ffi.NativeCallable<ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint64)>?
+  _cameraFinishCallable;
+
+  /// Reports the token of each animated move as it ends OR is superseded.
+  ///
+  /// Superseding fires it too — that is mbgl's own behaviour, and it is what
+  /// lets a Dart Future built on this complete rather than hang when a gesture
+  /// interrupts a flight.
+  void setCameraFinishCallback(void Function(int token)? onFinish) {
+    if (onFinish == null) {
+      if (!_disposed) {
+        bindings.mbl_map_set_camera_finish_callback(
+          _handle,
+          ffi.nullptr,
+          ffi.nullptr,
+        );
+      }
+      _cameraFinishCallable?.close();
+      _cameraFinishCallable = null;
+      return;
+    }
+    _checkAlive();
+    final previous = _cameraFinishCallable;
+    final callable =
+        ffi.NativeCallable<
+          ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint64)
+        >.listener((ffi.Pointer<ffi.Void> user, int token) {
+          onFinish(token);
+        });
+    _cameraFinishCallable = callable;
+    bindings.mbl_map_set_camera_finish_callback(
       _handle,
       callable.nativeFunction,
       ffi.nullptr,

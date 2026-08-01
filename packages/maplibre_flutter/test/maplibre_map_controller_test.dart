@@ -1,5 +1,7 @@
 import 'dart:async';
-import 'dart:ui' show Size;
+import 'dart:ui' show Offset, Size;
+
+import 'package:flutter/painting.dart' show EdgeInsets;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
@@ -50,6 +52,85 @@ class _EventfulPlatform extends MapLibreFlutterPlatform {
   }) async => last = _EventfulController();
 }
 
+/// A tier that can project and run engine camera commands, for panBy.
+class _CameraController extends _FakePlatformController
+    with MapLibreCameraTickNotifier
+    implements MapLibreMapProjector, MapLibreCameraCommands {
+  /// Where the projector claims the camera centre is on screen.
+  Offset centreOnScreen = const Offset(100, 100);
+
+  /// The screen point the controller asked to unproject — the whole point of
+  /// this fake, since panBy's sign lives in that arithmetic.
+  Offset? unprojectedFrom;
+
+  final List<CameraOptions> eased = <CameraOptions>[];
+
+  @override
+  int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) {
+    for (var i = 0; i < points.length; i++) {
+      out[i] = centreOnScreen;
+    }
+    return 1;
+  }
+
+  @override
+  LatLng? unproject(Offset point) {
+    unprojectedFrom = point;
+    return const LatLng(11, 22);
+  }
+
+  @override
+  Future<void> jumpTo(CameraOptions camera) async {}
+  @override
+  Future<void> easeTo(
+    CameraOptions camera, {
+    CameraAnimation? animation,
+  }) async {
+    eased.add(camera);
+  }
+
+  @override
+  Future<void> flyTo(
+    CameraOptions camera, {
+    CameraAnimation? animation,
+  }) async {}
+  @override
+  Future<void> fitBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+    CameraTransition transition = CameraTransition.ease,
+    CameraAnimation? animation,
+  }) async {}
+  @override
+  Future<CameraOptions?> cameraForBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+  }) async => null;
+  @override
+  Future<LatLngBounds?> getBounds() async => null;
+  @override
+  Future<void> setCameraConstraints(MapCameraConstraints constraints) async {}
+  @override
+  Future<MapCameraConstraints?> getCameraConstraints() async => null;
+  @override
+  Future<void> setConstrainToBounds({required bool wholeViewport}) async {}
+  @override
+  Future<void> stopCamera() async {}
+}
+
+class _CameraPlatform extends MapLibreFlutterPlatform {
+  _CameraController? last;
+  @override
+  Future<MapLibreMapPlatformController> createMap({
+    required String style,
+    required MapOptions options,
+  }) async => last = _CameraController();
+}
+
 class _FakePlatform extends MapLibreFlutterPlatform {
   _FakePlatformController? last;
   @override
@@ -70,7 +151,7 @@ void main() {
   test('camera.getPosition before attach reports the default camera', () async {
     final c = MapLibreMapController();
     expect(c.isAttached, isFalse);
-    final cam = await c.camera.getPosition();
+    final cam = await c.camera.getCamera();
     expect(cam.center, const LatLng(0, 0));
   });
 
@@ -80,7 +161,7 @@ void main() {
       final c = MapLibreMapController();
       await c.attach(style: 's', options: _attachOptions);
       expect(c.isAttached, isTrue);
-      final cam = await c.camera.getPosition();
+      final cam = await c.camera.getCamera();
       expect(cam.center, const LatLng(10, 20)); // forwarded from the platform
       await c.dispose();
     },
@@ -203,4 +284,47 @@ void main() {
       await c.dispose();
     });
   });
+
+  // panBy has a sign convention, and the one that matters is that it agrees
+  // with a DRAG: dragging right moves the content right, so panBy(+x) must too.
+  // MapLibreGestureHandler.moveBy takes the finger delta unchanged, and that
+  // path is verified on hardware — this pins the new verb to it.
+  test('panBy moves the content the way a drag would', () async {
+    final platform = _CameraPlatform();
+    MapLibreFlutterPlatform.instance = platform;
+    final c = MapLibreMapController();
+    await c.attach(style: 's', options: _attachOptions);
+
+    await c.camera.panBy(const Offset(40, 0), duration: Duration.zero);
+
+    // The controller must unproject the point 40 px to the LEFT of the centre:
+    // moving THAT point to the centre shifts the content right, which is what
+    // dragging right does.
+    final asked = platform.last!.unprojectedFrom;
+    expect(asked, isNotNull, reason: 'panBy has to ask where it is going');
+    expect(asked!.dx, 60, reason: '100 - 40');
+    expect(asked.dy, 100, reason: 'no vertical component');
+    expect(platform.last!.eased.single.center, const LatLng(11, 22));
+    await c.dispose();
+  });
+
+  test(
+    'a tier without camera commands falls back rather than throwing',
+    () async {
+      // The web tiers have no MapLibreCameraCommands; jumpTo must still work, by
+      // resolving the partial camera against the current one.
+      MapLibreFlutterPlatform.instance = _FakePlatform();
+      final c = MapLibreMapController();
+      await c.attach(style: 's', options: _attachOptions);
+      expect(c.capabilities.cameraCommands, isFalse);
+      await c.camera.jumpTo(const CameraOptions(zoom: 12));
+      // fitBounds has no fallback — there is nothing sensible to compute without
+      // the engine — so it must no-op rather than throw.
+      await c.camera.fitBounds(
+        const LatLngBounds(southwest: LatLng(1, 2), northeast: LatLng(3, 4)),
+      );
+      expect(await c.camera.getBounds(), isNull);
+      await c.dispose();
+    },
+  );
 }

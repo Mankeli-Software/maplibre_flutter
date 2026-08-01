@@ -178,6 +178,194 @@ FFI_PLUGIN_EXPORT void mbl_map_rotate_by(MblMap *map, double degrees,
 // need no clamp of their own.
 FFI_PLUGIN_EXPORT void mbl_map_pitch_by(MblMap *map, double degrees);
 
+// --- Camera commands ---------------------------------------------------------
+//
+// mbgl has jumpTo / easeTo / flyTo natively (map.hpp:73-75). Binding them here
+// retires the Dart-side flight arc, which no upstream shares.
+
+// A PARTIAL camera: each field applies only when its `has_` flag is non-zero,
+// mirroring `mbgl::CameraOptions`, whose fields are all std::optional. That
+// partiality is the point — "zoom to 12 and leave everything else" must not
+// require reading the camera first, which races the render thread.
+typedef struct {
+  int32_t has_center;
+  double center_lat;
+  double center_lng;
+  int32_t has_zoom;
+  double zoom;
+  int32_t has_bearing;
+  double bearing;
+  int32_t has_pitch;
+  double pitch;
+  int32_t has_roll;
+  double roll;
+  int32_t has_padding;
+  double padding_top;
+  double padding_right;
+  double padding_bottom;
+  double padding_left;
+  // The screen point that stays fixed while zoom/bearing change, in LOGICAL
+  // POINTS from the TOP-LEFT — the same space as the gesture anchors.
+  //
+  // **mbgl discards this whenever a centre is set**: `Transform::startTransition`
+  // reads `anchor = camera.center ? std::nullopt : camera.anchor`. So an
+  // anchored move must NOT carry a centre, and a test that anchors on the map
+  // centre cannot detect the difference, because the centre is a fixed point
+  // either way.
+  int32_t has_anchor;
+  double anchor_x;
+  double anchor_y;
+} MblCameraOptions;
+
+// How to animate, mirroring `mbgl::AnimationOptions`.
+//
+// Two gl-js flyTo options are deliberately absent because the engine cannot
+// honour them: `curve` (the van Wijk rho) is hardcoded to 1.42 in
+// Transform::flyTo and only varies indirectly from apex_zoom, and there is no
+// maxDuration field at all.
+typedef struct {
+  int32_t has_duration;
+  uint32_t duration_ms;
+  // Cubic bezier control points, mbgl's UnitBezier. Only a cubic maps onto it,
+  // which is why the Dart side types this as `Cubic` and not `Curve`.
+  int32_t has_easing;
+  double easing_x1;
+  double easing_y1;
+  double easing_x2;
+  double easing_y2;
+  // flyTo only. Average velocity in screenfuls per second; gl-js calls it
+  // `speed`, mbgl calls it `velocity`. Engine default 1.2.
+  int32_t has_speed;
+  double speed;
+  // flyTo only. The zoom at the apex of the flight arc — mbgl's
+  // AnimationOptions::minZoom, renamed because `minZoom` already means a hard
+  // constraint in the same Dart namespace.
+  int32_t has_apex_zoom;
+  double apex_zoom;
+} MblAnimationOptions;
+
+// Called on the render thread when an animated move finishes OR is superseded.
+//
+// `token` is whatever the caller passed to mbl_map_ease_to / mbl_map_fly_to.
+// Superseding fires it too, and that is mbgl's own behaviour rather than a
+// choice made here: `Transform::startTransition` invokes the PREVIOUS
+// transitionFinishFn before installing the new one. So a Dart Future built on
+// this completes rather than hanging when a gesture interrupts a flight.
+typedef void (*MblCameraFinishCallback)(void *user, uint64_t token);
+
+// Register (or clear, with NULL) the camera-finished callback.
+FFI_PLUGIN_EXPORT void mbl_map_set_camera_finish_callback(
+    MblMap *map, MblCameraFinishCallback callback, void *user);
+
+// Apply `camera` instantly.
+FFI_PLUGIN_EXPORT void mbl_map_jump_to(MblMap *map,
+                                       const MblCameraOptions *camera);
+
+// Transition to `camera` along a straight, eased path. `token` is reported to
+// the finish callback; pass 0 for "do not report".
+//
+// **CONTINUOUS MODE ONLY.** mbgl advances transitions from its render loop, so
+// in Static mode this creates a transition nothing ever steps and the camera
+// never moves. Every real tier is continuous; the headless harness is not.
+FFI_PLUGIN_EXPORT void mbl_map_ease_to(MblMap *map,
+                                       const MblCameraOptions *camera,
+                                       const MblAnimationOptions *animation,
+                                       uint64_t token);
+
+// Transition to `camera` along a van Wijk flight path (zoom out, pan, zoom in).
+FFI_PLUGIN_EXPORT void mbl_map_fly_to(MblMap *map,
+                                      const MblCameraOptions *camera,
+                                      const MblAnimationOptions *animation,
+                                      uint64_t token);
+
+// Stop any transition in flight, leaving the camera where it got to.
+// `Map::cancelTransitions` — the finish callback still fires.
+FFI_PLUGIN_EXPORT void mbl_map_cancel_transitions(MblMap *map);
+
+// --- Bounds ------------------------------------------------------------------
+
+// A geographic box, south-west and north-east corners. Field order follows
+// `mbgl::LatLngBounds`, which is latitude-first — never gl-js's LngLatBounds.
+typedef struct {
+  double sw_lat;
+  double sw_lng;
+  double ne_lat;
+  double ne_lng;
+} MblLatLngBounds;
+
+// Compute the camera that frames `bounds` under `padding`, then apply it with
+// the given animation, ALL ON THE RENDER THREAD.
+//
+// Fused deliberately rather than exposed as compute-then-move: the computation
+// needs the live transform, so splitting it would mean a blocking round trip
+// followed by a second command, with the camera free to change in between.
+// `mode`: 0 = jump, 1 = ease, 2 = fly.
+FFI_PLUGIN_EXPORT void mbl_map_fit_bounds(MblMap *map,
+                                          const MblLatLngBounds *bounds,
+                                          double pad_top, double pad_right,
+                                          double pad_bottom, double pad_left,
+                                          int32_t has_bearing, double bearing,
+                                          int32_t has_pitch, double pitch,
+                                          int32_t mode,
+                                          const MblAnimationOptions *animation,
+                                          uint64_t token);
+
+// Compute the camera that would frame `bounds`, WITHOUT moving — gl-js
+// `cameraForBounds`. Returns 1 on success, 0 on timeout.
+//
+// BLOCKS the caller for up to `timeout_ms`: the computation needs the live
+// transform, which only the render thread may touch. One-shot by nature, so
+// unlike the projection functions it is not worth a snapshot.
+FFI_PLUGIN_EXPORT int mbl_map_camera_for_lat_lng_bounds(
+    MblMap *map, const MblLatLngBounds *bounds, double pad_top,
+    double pad_right, double pad_bottom, double pad_left, int32_t has_bearing,
+    double bearing, int32_t has_pitch, double pitch, uint32_t timeout_ms,
+    MblCameraOptions *out_camera);
+
+// The geographic area a camera covers — gl-js `getBounds` when passed the
+// current camera. Returns 1 on success, 0 on timeout. Blocks, as above.
+FFI_PLUGIN_EXPORT int mbl_map_lat_lng_bounds_for_camera(
+    MblMap *map, const MblCameraOptions *camera, uint32_t timeout_ms,
+    MblLatLngBounds *out_bounds);
+
+// The camera CONSTRAINTS, mirroring `mbgl::BoundOptions`.
+//
+// Note `bounds` here constrains the camera CENTRE unless the constrain mode is
+// Screen — which is Android's `setLatLngBoundsForCameraTarget` semantics, NOT
+// gl-js's `maxBounds`. See mbl_map_set_constrain_mode.
+typedef struct {
+  int32_t has_bounds;
+  MblLatLngBounds bounds;
+  int32_t has_min_zoom;
+  double min_zoom;
+  int32_t has_max_zoom;
+  double max_zoom;
+  int32_t has_min_pitch;
+  double min_pitch;
+  int32_t has_max_pitch;
+  double max_pitch;
+} MblBoundOptions;
+
+// Apply camera constraints. Unset fields are left alone.
+//
+// mbgl clamps pitch to DEFAULT_PITCH_MAX = 60 degrees regardless of max_pitch.
+FFI_PLUGIN_EXPORT void mbl_map_set_bounds(MblMap *map,
+                                          const MblBoundOptions *bounds);
+
+// Read the current constraints. Every field comes back set — mbgl's getBounds
+// fills all of them. Returns 1 on success, 0 on timeout; blocks, as above.
+FFI_PLUGIN_EXPORT int mbl_map_get_bounds(MblMap *map, uint32_t timeout_ms,
+                                         MblBoundOptions *out_bounds);
+
+// 0 = None, 1 = HeightOnly, 2 = WidthAndHeight, 3 = Screen (mbgl ConstrainMode,
+// mode.hpp:24-29).
+//
+// Needed to give `maxBounds` gl-js's meaning: gl-js constrains what is VISIBLE,
+// while mbgl's BoundOptions::bounds constrains the camera CENTRE until the mode
+// is Screen. Same word, different semantics — Apple exposes the screen flavour
+// separately as `maximumScreenBounds`.
+FFI_PLUGIN_EXPORT void mbl_map_set_constrain_mode(MblMap *map, int32_t mode);
+
 // --- Projection -------------------------------------------------------------
 //
 // Convert between geographic coordinates and screen positions, for anchoring

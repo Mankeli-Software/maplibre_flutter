@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'camera_commands.dart';
 import 'gesture_handler.dart';
 import 'map_events.dart';
 import 'maplibre_map_controller.dart';
@@ -36,6 +37,7 @@ class MapLibreCapabilities {
     required this.rotateAndTilt,
     required this.gestures,
     required this.events,
+    required this.cameraCommands,
   });
 
   /// Everything off, for when no map is bound yet.
@@ -45,7 +47,8 @@ class MapLibreCapabilities {
       models = false,
       rotateAndTilt = false,
       gestures = false,
-      events = false;
+      events = false,
+      cameraCommands = false;
 
   /// Derives the capabilities of [platform], which may be null before attach.
   factory MapLibreCapabilities.of(Object? platform) {
@@ -59,6 +62,7 @@ class MapLibreCapabilities {
       rotateAndTilt: platform is MapLibreRotateHandler,
       gestures: platform is MapLibreGestureHandler,
       events: platform is MapLibreMapEvents,
+      cameraCommands: platform is MapLibreCameraCommands,
     );
   }
 
@@ -87,6 +91,10 @@ class MapLibreCapabilities {
   /// is still a blank map with no signal.
   final bool events;
 
+  /// Whether the tier can run engine-native camera transitions and bounds
+  /// queries ([MapLibreCameraCommands]).
+  final bool cameraCommands;
+
   @override
   bool operator ==(Object other) =>
       other is MapLibreCapabilities &&
@@ -95,7 +103,8 @@ class MapLibreCapabilities {
       other.models == models &&
       other.rotateAndTilt == rotateAndTilt &&
       other.gestures == gestures &&
-      other.events == events;
+      other.events == events &&
+      other.cameraCommands == cameraCommands;
 
   @override
   int get hashCode => Object.hash(
@@ -111,5 +120,6 @@ class MapLibreCapabilities {
   String toString() =>
       'MapLibreCapabilities(projection: $projection, styleLayers: '
       '$styleLayers, models: $models, rotateAndTilt: $rotateAndTilt, '
-      'gestures: $gestures, events: $events)';
+      'gestures: $gestures, events: $events, '
+      'cameraCommands: $cameraCommands)';
 }

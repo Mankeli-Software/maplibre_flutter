@@ -454,6 +454,122 @@ class RecordingCoreMap implements MapLibreCoreMap {
   @override
   void removeModel(String layerId) => removedModels.add(layerId);
 
+  // --- camera commands -------------------------------------------------------
+
+  /// Every partial camera the controller applied, in order, with how.
+  final List<({CoreCameraOptions camera, CoreCameraTransition how, int token})>
+  cameraMoves = [];
+
+  /// Every fitBounds call.
+  final List<CoreLatLngBounds> fittedBounds = [];
+
+  /// Every constraint set applied.
+  final List<CoreBoundOptions> boundsSet = [];
+
+  /// How many times cancelTransitions was called.
+  int cancelledTransitions = 0;
+
+  /// What [cameraForBounds] returns; null simulates a timeout.
+  CoreCameraOptions? cameraForBoundsResult = const CoreCameraOptions(zoom: 8);
+
+  /// What [getVisibleBounds] returns; null simulates a timeout.
+  CoreLatLngBounds? visibleBounds = (swLat: -1, swLng: -2, neLat: 3, neLng: 4);
+
+  /// What [getBoundOptions] returns; null simulates a timeout.
+  CoreBoundOptions? boundOptions = const CoreBoundOptions();
+
+  /// The registered camera-finish listener, driven by [finishCameraMove].
+  void Function(int token)? cameraFinishListener;
+
+  @override
+  void jumpTo(CoreCameraOptions camera) => cameraMoves.add((
+    camera: camera,
+    how: CoreCameraTransition.jump,
+    token: 0,
+  ));
+
+  @override
+  void easeTo(
+    CoreCameraOptions camera,
+    CoreAnimationOptions? animation, {
+    int token = 0,
+  }) => cameraMoves.add((
+    camera: camera,
+    how: CoreCameraTransition.ease,
+    token: token,
+  ));
+
+  @override
+  void flyTo(
+    CoreCameraOptions camera,
+    CoreAnimationOptions? animation, {
+    int token = 0,
+  }) => cameraMoves.add((
+    camera: camera,
+    how: CoreCameraTransition.fly,
+    token: token,
+  ));
+
+  @override
+  void cancelTransitions() => cancelledTransitions++;
+
+  @override
+  void fitBounds(
+    CoreLatLngBounds bounds, {
+    ({double top, double right, double bottom, double left}) padding = (
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+    ),
+    double? bearing,
+    double? pitch,
+    CoreCameraTransition transition = CoreCameraTransition.jump,
+    CoreAnimationOptions? animation,
+    int token = 0,
+  }) => fittedBounds.add(bounds);
+
+  @override
+  CoreCameraOptions? cameraForBounds(
+    CoreLatLngBounds bounds, {
+    ({double top, double right, double bottom, double left}) padding = (
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+    ),
+    double? bearing,
+    double? pitch,
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => cameraForBoundsResult;
+
+  @override
+  CoreLatLngBounds? getVisibleBounds({
+    CoreCameraOptions camera = const CoreCameraOptions(),
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => visibleBounds;
+
+  @override
+  void setBounds(CoreBoundOptions options) => boundsSet.add(options);
+
+  @override
+  CoreBoundOptions? getBoundOptions({
+    Duration timeout = const Duration(milliseconds: 250),
+  }) => boundOptions;
+
+  @override
+  void setConstrainMode(CoreConstrainMode mode) => constrainMode = mode;
+
+  /// The last constrain mode applied.
+  CoreConstrainMode? constrainMode;
+
+  @override
+  void setCameraFinishCallback(void Function(int token)? onFinish) =>
+      cameraFinishListener = onFinish;
+
+  /// Completes an animated move as the engine would.
+  void finishCameraMove(int token) => cameraFinishListener?.call(token);
+
   // --- diagnostics -----------------------------------------------------------
 
   /// The listener the controller registered, or null if it has none. A test

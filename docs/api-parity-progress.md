@@ -97,7 +97,7 @@ after this stage is undebuggable without it.
 - [x] 2.8 Hold a Dart-side **field** reference to the registered callback (the GC pitfall, CLAUDE.md
       §5e) and add the test for it.
 
-### Stage 3 — Camera commands (over stage-1 types)
+### Stage 3 — Camera commands — **CLOSED 2026-08-01**, verified on macOS hardware
 
 Must be verified per hardware tier — CLAUDE.md §11 forbids blind-porting camera changes.
 
@@ -112,17 +112,17 @@ Must be verified per hardware tier — CLAUDE.md §11 forbids blind-porting came
 > all three on `jumpTo(CameraOptions().withBearing(…).withAnchor(…))` / `.withPitch(…)`, as
 > `mbl_map_rotate_by` / `mbl_map_pitch_by` already do.
 
-- [ ] 3.1 Shim `mbl_map_jump_to` / `mbl_map_ease_to` / `mbl_map_fly_to` taking full `CameraOptions`
+- [x] 3.1 Shim `mbl_map_jump_to` / `mbl_map_ease_to` / `mbl_map_fly_to` taking full `CameraOptions`
       (incl. padding + anchor). mbgl has all three natively (`map.hpp:73-75`), so retire the Dart-side
       arc.
-- [ ] 3.2 Shim `mbl_map_camera_for_lat_lng_bounds` (`map.hpp:80`), `mbl_map_lat_lng_bounds_for_camera`
+- [x] 3.2 Shim `mbl_map_camera_for_lat_lng_bounds` (`map.hpp:80`), `mbl_map_lat_lng_bounds_for_camera`
       (`:92`), `mbl_map_set_bounds`/`get_bounds` (`:98-101`).
-- [ ] 3.3 Dart: `camera.jumpTo/easeTo/flyTo/fitBounds/panBy/panTo/zoomTo/zoomIn/zoomOut/rotateTo/
+- [x] 3.3 Dart: `camera.jumpTo/easeTo/flyTo/fitBounds/panBy/panTo/zoomTo/zoomIn/zoomOut/rotateTo/
       resetNorth/stop`, `camera.getBounds()`.
-- [ ] 3.4 Dart: `camera.setMaxBounds/setMinZoom/setMaxZoom/setMinPitch/setMaxPitch` (mbgl
+- [x] 3.4 Dart: `camera.setMaxBounds/setMinZoom/setMaxZoom/setMinPitch/setMaxPitch` (mbgl
       `BoundOptions`, `bound_options.hpp:43-55`).
-- [ ] 3.5 `@Deprecated` alias for `move()`; rename `getPosition()` → `getCamera()`.
-- [ ] 3.6 Define and document the completion contract: camera `Future`s complete on transition **end**;
+- [x] 3.5 `@Deprecated` alias for `move()`; rename `getPosition()` → `getCamera()`.
+- [x] 3.6 Define and document the completion contract: camera `Future`s complete on transition **end**;
       superseded animations complete rather than error.
 
 ### Stage 4 — Camera lifecycle + reason (pure Dart, no native work)
@@ -568,3 +568,54 @@ found two bugs the whole suite had missed, both in code added earlier the same d
 - **Next run:** stage 3, camera commands. Note that the two bugs above are the same shape as what
   stage 3 will face — an event or command that races creation — and that `_applyScenario` in the
   example is now a second consumer of `onStyleLoaded` worth re-reading when `fitBounds` lands.
+
+### 2026-08-01 — Stage 3 (3.1–3.6) — stage closed, verified on hardware
+
+- **Done:** all six, plus the stage gate (hardware verification).
+  - **3.1/3.2 C ABI** — `mbl_map_jump_to` / `ease_to` / `fly_to` over an `MblCameraOptions` struct
+    (every field with a `has_` flag, mirroring `mbgl::CameraOptions`' `std::optional`s), plus
+    `mbl_map_fit_bounds`, `camera_for_lat_lng_bounds`, `lat_lng_bounds_for_camera`,
+    `set_bounds` / `get_bounds`, `set_constrain_mode` and `cancel_transitions`. `fitBounds` is
+    **fused** — computed and applied in one render-thread command — because the computation needs
+    the live transform and a compute-then-move split would let the camera change in between.
+  - **3.3/3.4 Dart** — `camera.jumpTo/easeTo/flyTo/fitBounds/panBy/panTo/zoomTo/zoomIn/zoomOut/
+    rotateTo/resetNorth/resetPitch/stop`, `getBounds`, `cameraForBounds`, and the five gl-js
+    constraint setters. A new `MapLibreCameraCommands` capability carries them, implemented by all
+    five `mbgl-core` tiers; tiers without it fall back to the old whole-camera `moveCamera`, so the
+    web tiers keep working.
+  - **3.5** — `getPosition()` → `getCamera()` and `move()` → `jumpTo`/`easeTo`/`flyTo`, both as
+    `@Deprecated` aliases. Every call site in the example and the integration tests is migrated.
+  - **3.6** — the completion contract is real, not just documented: `easeTo`/`flyTo`/`fitBounds`
+    return a `Future` completed by an engine callback (`AnimationOptions::transitionFinishFn`)
+    carrying a token. A **superseded** transition completes too, because
+    `Transform::startTransition` invokes the previous finish function before installing its own —
+    so awaiting a flight a gesture interrupts resolves instead of hanging.
+- **Two engine findings, both caught by running rather than by tests:**
+  1. **The camera cache did not track engine-driven animations.** `updateCameraCache` ran only when
+     a command was ISSUED, so during and after an `easeTo` — which mbgl advances itself —
+     `getCamera()` reported the pre-animation camera, permanently. Fixed by refreshing the cache in
+     `publishCurrentFrame`, next to the projection snapshot that was already re-taken per frame for
+     exactly this reason.
+  2. **Animated moves need Continuous mode.** mbgl advances transitions from its render loop, so in
+     Static mode `easeTo`/`flyTo` create a transition nothing ever steps and the camera never moves.
+     Every shipped tier is continuous; the headless test harness defaults to Static, which is why
+     the first version of the completion test "passed" its token assertion while the camera sat
+     still. Recorded on `mbl_map_ease_to`.
+- **Spec corrections found:** one, on `panBy`'s sign. gl-js negates its argument internally, and
+  maplibre-gl-js is not vendored here, so rather than claim a parity that cannot be checked the
+  method is documented against **our own drag convention** — positive x moves the content right,
+  exactly like dragging right, which `MapLibreGestureHandler.moveBy` already does and which is
+  verified on hardware. A test pins it.
+- **Gates:** `analyze` clean / `test --no-select` green (258 in `maplibre_flutter`, 170 conformance
+  assertions across five tiers) / `test:native` green (40) / `format` clean / ffigen regenerated on
+  macOS and diff-clean / **`integration_test/macos_camera_test.dart` — 8 tests, run on macOS
+  hardware**, covering the partial camera, the completion contract, supersession, fitBounds
+  orientation, constraint clamping, and the anchored zoom (anchored on a CORNER, since a
+  centre-anchored test cannot detect a dropped anchor).
+- **Example:** a "Camera verbs" button runs jumpTo → easeTo → flyTo → rotateTo → resetNorth →
+  zoomIn/zoomOut-about-a-corner in sequence, each awaited so the steps cannot overlap; a
+  "Constrain to Nordics" button demonstrates gl-js `setMaxBounds` semantics; "Fit to data" now calls
+  the real `fitBounds` instead of the hand-rolled centre-and-guess it used before; and every
+  read-modify-write `move(camera.copyWith(...))` in the app is now a partial-camera call.
+- **Next run:** stage 4 — camera lifecycle and reason. Pure Dart, no C ABI. Note 4.2's shape is not
+  yet settled (three proposals; see that task's note).

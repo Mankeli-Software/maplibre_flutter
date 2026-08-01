@@ -20,6 +20,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/painting.dart' show EdgeInsets;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_android/maplibre_flutter_android.dart';
@@ -307,6 +308,153 @@ void main() {
           await c.dispose();
         },
       );
+
+      // --- Camera commands ---------------------------------------------------
+
+      test('every mbgl-core tier runs engine-native camera commands', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh);
+        expect(c, isA<MapLibreCameraCommands>());
+        final commands = c as MapLibreCameraCommands;
+
+        // A PARTIAL camera must reach the engine partial. Filling in a centre
+        // on the way would silently destroy any anchor, because mbgl drops the
+        // anchor whenever a centre is present.
+        await commands.jumpTo(const CameraOptions(zoom: 9));
+        expect(fresh.cameraMoves, hasLength(1));
+        expect(fresh.cameraMoves.single.camera.zoom, 9);
+        expect(
+          fresh.cameraMoves.single.camera.center,
+          isNull,
+          reason: 'no centre may be invented — it would drop the anchor',
+        );
+        expect(fresh.cameraMoves.single.how, CoreCameraTransition.jump);
+        await c.dispose();
+      });
+
+      test('an anchored zoom passes the anchor through unchanged', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+        await c.jumpTo(const CameraOptions(zoom: 6, anchor: Offset(12, 34)));
+        final sent = fresh.cameraMoves.single.camera;
+        // Top-left origin, no flip: the anchor space is the gesture space, and
+        // CLAUDE.md §11 records that flipping it mirrors every zoom.
+        expect(sent.anchor, isNotNull);
+        expect(sent.anchor!.x, 12);
+        expect(sent.anchor!.y, 34);
+        expect(sent.center, isNull);
+        await (c as MapLibreMapPlatformController).dispose();
+      });
+
+      test('easeTo and flyTo await the ENGINE, not a timer', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+
+        var eased = false;
+        unawaited(
+          c
+              .easeTo(
+                const CameraOptions(zoom: 4),
+                animation: const CameraAnimation(
+                  duration: Duration(milliseconds: 10),
+                ),
+              )
+              .then((_) => eased = true),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          eased,
+          isFalse,
+          reason: 'the Future must wait for the engine to say it finished',
+        );
+
+        // The engine reports the token it was given.
+        final token = fresh.cameraMoves.last.token;
+        expect(token, isNot(0), reason: 'an animated move needs a token');
+        fresh.finishCameraMove(token);
+        await Future<void>.delayed(Duration.zero);
+        expect(eased, isTrue);
+        await (c as MapLibreMapPlatformController).dispose();
+      });
+
+      // The contract that makes awaiting safe: mbgl fires the previous
+      // transition's finish function when a new one starts, so an interrupted
+      // flight resolves instead of hanging forever.
+      test('a superseded animation completes rather than hanging', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+
+        var flown = false;
+        unawaited(
+          c
+              .flyTo(
+                const CameraOptions(zoom: 14),
+                animation: const CameraAnimation(
+                  duration: Duration(seconds: 9),
+                ),
+              )
+              .then((_) => flown = true),
+        );
+        final token = fresh.cameraMoves.last.token;
+        await c.jumpTo(const CameraOptions(zoom: 3));
+        // The engine reports the SUPERSEDED move's token.
+        fresh.finishCameraMove(token);
+        await Future<void>.delayed(Duration.zero);
+        expect(flown, isTrue);
+        await (c as MapLibreMapPlatformController).dispose();
+      });
+
+      test('fitBounds and the bounds reads forward correctly', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+
+        // Asymmetric on both axes: a swapped corner cannot pass by symmetry.
+        const bounds = LatLngBounds(
+          southwest: LatLng(59.33, 18.06),
+          northeast: LatLng(60.45, 22.27),
+        );
+        unawaited(c.fitBounds(bounds, padding: const EdgeInsets.all(20)));
+        await Future<void>.delayed(Duration.zero);
+        expect(fresh.fittedBounds, hasLength(1));
+        expect(fresh.fittedBounds.single.swLat, 59.33);
+        expect(fresh.fittedBounds.single.neLng, 22.27);
+
+        fresh.visibleBounds = (swLat: 1, swLng: 2, neLat: 3, neLng: 4);
+        final visible = await c.getBounds();
+        expect(visible!.south, 1);
+        expect(visible.north, 3);
+        expect(visible.east, 4);
+
+        // A tier that cannot answer in time must report that, not a guess.
+        fresh.visibleBounds = null;
+        expect(await c.getBounds(), isNull);
+        await (c as MapLibreMapPlatformController).dispose();
+      });
+
+      test('camera constraints round-trip', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh) as MapLibreCameraCommands;
+
+        await c.setCameraConstraints(
+          const MapCameraConstraints(minZoom: 3, maxZoom: 15, maxPitch: 45),
+        );
+        expect(fresh.boundsSet, hasLength(1));
+        expect(fresh.boundsSet.single.minZoom, 3);
+        expect(fresh.boundsSet.single.maxZoom, 15);
+        expect(fresh.boundsSet.single.maxPitch, 45);
+
+        // gl-js maxBounds means the whole VIEWPORT stays inside the box, which
+        // mbgl only does in Screen constrain mode — its own default constrains
+        // the camera CENTRE. Same word, different semantics.
+        await c.setConstrainToBounds(wholeViewport: true);
+        expect(fresh.constrainMode, CoreConstrainMode.screen);
+        await c.setConstrainToBounds(wholeViewport: false);
+        expect(fresh.constrainMode, CoreConstrainMode.heightOnly);
+
+        await c.stopCamera();
+        expect(fresh.cancelledTransitions, 1);
+        await (c as MapLibreMapPlatformController).dispose();
+      });
 
       test('unregisters its diagnostic listener on dispose', () async {
         final fresh = RecordingCoreMap();

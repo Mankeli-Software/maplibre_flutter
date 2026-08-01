@@ -1,5 +1,8 @@
 import 'dart:async';
-import 'dart:ui' show Size;
+import 'dart:ui' show Offset, Size;
+
+import 'package:flutter/animation.dart' show Cubic;
+import 'package:flutter/painting.dart' show EdgeInsets;
 
 import 'package:flutter/foundation.dart' show Listenable;
 
@@ -396,7 +399,11 @@ class MapLibreCameraController {
   final MapLibreMapController _owner;
 
   /// The current camera. Before the map is ready, reports the initial camera.
-  Future<MapCamera> getPosition() async {
+  ///
+  /// Named for `MLNMapCamera` and for the platform interface beneath, both of
+  /// which already say "camera"; Android's word for the same thing is
+  /// `CameraPosition`, which is where the old name came from.
+  Future<MapCamera> getCamera() async {
     final platform = _owner._platform;
     if (platform == null) {
       return _owner._options?.initialCamera ??
@@ -405,12 +412,264 @@ class MapLibreCameraController {
     return platform.getCamera();
   }
 
+  /// The current camera.
+  @Deprecated(
+    'Renamed to getCamera(), matching MLNMapCamera and the platform interface. '
+    'Will be removed in a future release.',
+  )
+  Future<MapCamera> getPosition() => getCamera();
+
   /// Moves the camera to [target], animating over [duration] when non-null.
-  /// A best-effort no-op before the map is ready.
+  @Deprecated(
+    'Split into jumpTo / easeTo / flyTo, which is what upstream calls these '
+    'and what they actually are: move(duration:) was never an ease — it flew. '
+    'Will be removed in a future release.',
+  )
   Future<void> move(MapCamera target, {Duration? duration}) async =>
       _owner._platform?.moveCamera(target, duration: duration);
 
-  // Further camera operations (flyTo, fitBounds, zoomBy/zoomTo, rotateBy,
-  // pitchBy, jumpTo, easeTo, …) are added here, each forwarding to the bound
-  // [MapLibreMapPlatformController].
+  // --- gl-js verbs ------------------------------------------------------------
+  //
+  // Every one of these runs in the ENGINE (mbgl has jumpTo/easeTo/flyTo
+  // natively) on tiers that report [MapLibreCapabilities.cameraCommands], and
+  // falls back to the old whole-camera `moveCamera` elsewhere so the web tiers
+  // keep working.
+  //
+  // COMPLETION CONTRACT: the returned Future completes when the transition
+  // ENDS, and a superseded transition completes rather than erroring — so
+  // awaiting a flyTo that a gesture interrupts resolves instead of hanging.
+
+  MapLibreCameraCommands? get _commands {
+    final platform = _owner._platform;
+    return platform is MapLibreCameraCommands
+        ? platform as MapLibreCameraCommands
+        : null;
+  }
+
+  /// Resolves [options] against the current camera, for the fallback path on
+  /// tiers that cannot take a partial camera.
+  Future<MapCamera> _resolve(CameraOptions options) async =>
+      options.applyTo(await getCamera());
+
+  /// Applies [camera] instantly. Unset fields are left alone.
+  ///
+  /// ```dart
+  /// // Zoom in without touching centre, bearing or pitch:
+  /// await controller.camera.jumpTo(const CameraOptions(zoom: 12));
+  /// ```
+  Future<void> jumpTo(CameraOptions camera) async {
+    final commands = _commands;
+    if (commands != null) return commands.jumpTo(camera);
+    await _owner._platform?.moveCamera(await _resolve(camera));
+  }
+
+  /// Transitions to [camera] along a straight, eased path — gl-js `easeTo`.
+  ///
+  /// This was simply unreachable before: the old `move(duration:)` stepped a
+  /// flight arc, so an eased straight-line move had no API at all.
+  Future<void> easeTo(
+    CameraOptions camera, {
+    Duration duration = const Duration(milliseconds: 300),
+    Cubic? easing,
+  }) async {
+    final commands = _commands;
+    if (commands != null) {
+      return commands.easeTo(
+        camera,
+        animation: CameraAnimation(duration: duration, easing: easing),
+      );
+    }
+    await _owner._platform?.moveCamera(
+      await _resolve(camera),
+      duration: duration,
+    );
+  }
+
+  /// Transitions to [camera] along a van Wijk flight — gl-js `flyTo`.
+  ///
+  /// [apexZoom] is the zoom at the top of the arc (gl-js and mbgl both call it
+  /// `minZoom`; renamed because `minZoom` already means a hard constraint on
+  /// this same object). [speed] is in screenfuls per second, engine default 1.2.
+  Future<void> flyTo(
+    CameraOptions camera, {
+    Duration? duration,
+    Cubic? easing,
+    double? speed,
+    double? apexZoom,
+  }) async {
+    final commands = _commands;
+    if (commands != null) {
+      return commands.flyTo(
+        camera,
+        animation: CameraAnimation(
+          duration: duration,
+          easing: easing,
+          speed: speed,
+          apexZoom: apexZoom,
+        ),
+      );
+    }
+    await _owner._platform?.moveCamera(
+      await _resolve(camera),
+      duration: duration ?? const Duration(milliseconds: 1200),
+    );
+  }
+
+  /// Frames [bounds] under [padding] — gl-js `fitBounds`.
+  Future<void> fitBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+    CameraTransition transition = CameraTransition.ease,
+    Duration duration = const Duration(milliseconds: 500),
+  }) async {
+    final commands = _commands;
+    if (commands == null) return;
+    return commands.fitBounds(
+      bounds,
+      padding: padding,
+      bearing: bearing,
+      pitch: pitch,
+      transition: transition,
+      animation: CameraAnimation(duration: duration),
+    );
+  }
+
+  /// The camera that would frame [bounds], without moving — gl-js
+  /// `cameraForBounds`. Null on tiers without the capability.
+  Future<CameraOptions?> cameraForBounds(
+    LatLngBounds bounds, {
+    EdgeInsets padding = EdgeInsets.zero,
+    double? bearing,
+    double? pitch,
+  }) async => _commands?.cameraForBounds(
+    bounds,
+    padding: padding,
+    bearing: bearing,
+    pitch: pitch,
+  );
+
+  /// The geographic area currently on screen — gl-js `getBounds`.
+  Future<LatLngBounds?> getBounds() async => _commands?.getBounds();
+
+  /// Pans by a screen-space delta, in logical pixels — gl-js `panBy`.
+  ///
+  /// **Positive [offset] moves the CONTENT that way**, i.e. `panBy(Offset(100,
+  /// 0))` does what dragging 100 px to the right does. That is this plugin's
+  /// own drag convention, which is verified on hardware
+  /// ([MapLibreGestureHandler.moveBy] takes the finger delta unchanged).
+  ///
+  /// gl-js negates its argument internally before handing it on, so its sign
+  /// may be the opposite; maplibre-gl-js is not vendored here, so that is
+  /// recorded as unchecked rather than claimed either way. Match the drag.
+  Future<void> panBy(
+    Offset offset, {
+    Duration duration = const Duration(milliseconds: 300),
+  }) async {
+    final current = await getCamera();
+    // Composed rather than bound to Map::moveBy, because moveBy has no
+    // animation on our C ABI and the eased version is the useful one.
+    final platform = _owner._platform;
+    if (platform is! MapLibreMapProjector) return;
+    final projector = platform as MapLibreMapProjector;
+    final centre = <Offset>[Offset.zero];
+    projector.project(<LatLng>[current.center], centre);
+    final target = projector.unproject(centre.single - offset);
+    if (target == null) return;
+    await easeTo(CameraOptions(center: target), duration: duration);
+  }
+
+  /// Pans to [center] — gl-js `panTo`.
+  Future<void> panTo(
+    LatLng center, {
+    Duration duration = const Duration(milliseconds: 300),
+  }) => easeTo(CameraOptions(center: center), duration: duration);
+
+  /// Zooms to an absolute level — gl-js `zoomTo`.
+  ///
+  /// [around] holds a screen point fixed instead of the centre. **Do not pass a
+  /// centre alongside it** — mbgl discards the anchor whenever a centre is set.
+  Future<void> zoomTo(double zoom, {Offset? around, Duration? duration}) async {
+    final camera = CameraOptions(zoom: zoom, anchor: around);
+    if (duration == null) return jumpTo(camera);
+    return easeTo(camera, duration: duration);
+  }
+
+  /// Zooms in one level — gl-js `zoomIn`.
+  Future<void> zoomIn({Offset? around, Duration? duration}) async =>
+      zoomTo((await getCamera()).zoom + 1, around: around, duration: duration);
+
+  /// Zooms out one level — gl-js `zoomOut`.
+  Future<void> zoomOut({Offset? around, Duration? duration}) async =>
+      zoomTo((await getCamera()).zoom - 1, around: around, duration: duration);
+
+  /// Turns to an absolute bearing in degrees clockwise from north — gl-js
+  /// `rotateTo`. [around] holds a screen point fixed; see [zoomTo].
+  Future<void> rotateTo(
+    double bearing, {
+    Offset? around,
+    Duration? duration,
+  }) async {
+    final camera = CameraOptions(bearing: bearing, anchor: around);
+    if (duration == null) return jumpTo(camera);
+    return easeTo(camera, duration: duration);
+  }
+
+  /// Puts north back at the top — gl-js `resetNorth`.
+  Future<void> resetNorth({
+    Duration duration = const Duration(milliseconds: 300),
+  }) => easeTo(const CameraOptions(bearing: 0), duration: duration);
+
+  /// Levels the map — gl-js `resetNorthPitch` without the north half.
+  Future<void> resetPitch({
+    Duration duration = const Duration(milliseconds: 300),
+  }) => easeTo(const CameraOptions(pitch: 0), duration: duration);
+
+  /// Stops any transition in flight, leaving the camera where it reached —
+  /// gl-js `stop`.
+  Future<void> stop() async => _commands?.stopCamera();
+
+  // --- Constraints ------------------------------------------------------------
+
+  /// Constrains the area the camera may show — gl-js `setMaxBounds`.
+  ///
+  /// **gl-js semantics**, deliberately: the whole VIEWPORT is kept inside
+  /// [bounds]. mbgl's own `BoundOptions::bounds` constrains only the camera
+  /// CENTRE under the same word, so this also sets the constrain mode. Pass
+  /// null to remove the constraint.
+  Future<void> setMaxBounds(LatLngBounds? bounds) async {
+    final commands = _commands;
+    if (commands == null) return;
+    await commands.setConstrainToBounds(wholeViewport: bounds != null);
+    await commands.setCameraConstraints(
+      MapCameraConstraints(bounds: bounds ?? LatLngBounds.world()),
+    );
+  }
+
+  /// The current max-bounds constraint, if any.
+  Future<LatLngBounds?> getMaxBounds() async =>
+      (await _commands?.getCameraConstraints())?.bounds;
+
+  /// The furthest out the camera may zoom — gl-js `setMinZoom`.
+  Future<void> setMinZoom(double minZoom) async =>
+      _commands?.setCameraConstraints(MapCameraConstraints(minZoom: minZoom));
+
+  /// The closest in the camera may zoom — gl-js `setMaxZoom`.
+  Future<void> setMaxZoom(double maxZoom) async =>
+      _commands?.setCameraConstraints(MapCameraConstraints(maxZoom: maxZoom));
+
+  /// The flattest pitch, in degrees — gl-js `setMinPitch`.
+  Future<void> setMinPitch(double minPitch) async =>
+      _commands?.setCameraConstraints(MapCameraConstraints(minPitch: minPitch));
+
+  /// The steepest pitch, in degrees — gl-js `setMaxPitch`.
+  ///
+  /// **mbgl clamps to 60° regardless**, so a larger value is silently reduced.
+  Future<void> setMaxPitch(double maxPitch) async =>
+      _commands?.setCameraConstraints(MapCameraConstraints(maxPitch: maxPitch));
+
+  /// Every camera limit currently in force.
+  Future<MapCameraConstraints?> getConstraints() async =>
+      _commands?.getCameraConstraints();
 }
