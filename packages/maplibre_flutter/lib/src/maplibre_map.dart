@@ -33,6 +33,7 @@ class MapLibreMap extends StatefulWidget {
     this.markers = const <MapLibreMarker>[],
     this.models = const <MapLibreModel>[],
     this.onTap,
+    this.onStyleLoaded,
     this.rotateGesturesEnabled = true,
     this.tiltGesturesEnabled = true,
   });
@@ -69,6 +70,19 @@ class MapLibreMap extends StatefulWidget {
   /// Called when the map (not a marker) is tapped, with the geographic point
   /// under the tap. Only fires on tiers that can project coordinates.
   final ValueChanged<LatLng>? onTap;
+
+  /// Called each time a style finishes loading — **every** time, including
+  /// after [style] changes, not just the first.
+  ///
+  /// This is the moment to re-apply anything added through
+  /// `controller.layers`: mbgl replaces the entire layer list on a style load,
+  /// so every app-added source, layer and image is dropped. Since [style] is a
+  /// declarative property that can change on any rebuild, there is no other
+  /// correct moment — before this existed the workaround was a hardcoded delay.
+  ///
+  /// Mirrors gl-js `styledata`. Only fires on tiers that report engine events
+  /// ([MapLibreCapabilities.events]).
+  final VoidCallback? onStyleLoaded;
 
   /// Whether the user can turn the map — a two-finger twist, or a
   /// secondary-button / ctrl drag with a mouse.
@@ -109,6 +123,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
       widget.controller ?? _internalController!;
 
   Future<void>? _attach;
+  StreamSubscription<void>? _styleLoads;
 
   @override
   void initState() {
@@ -116,6 +131,11 @@ class _MapLibreMapState extends State<MapLibreMap> {
     if (widget.controller == null) {
       _internalController = MapLibreMapController();
     }
+    // Subscribe BEFORE attaching: the first style load is the one an app most
+    // wants to hear about, and it can complete before attach's future does.
+    _styleLoads = _controller.onStyleLoaded.listen((_) {
+      if (mounted) widget.onStyleLoaded?.call();
+    });
     _attach = _controller.attach(style: widget.style, options: widget.options);
     _applyModelsWhenAttached(const <MapLibreModel>[], widget.models);
   }
@@ -202,6 +222,8 @@ class _MapLibreMapState extends State<MapLibreMap> {
 
   @override
   void dispose() {
+    _styleLoads?.cancel();
+    _styleLoads = null;
     // Dispose the controller only if we created it; otherwise just tear down the
     // native map and leave the owner's controller object intact.
     if (widget.controller == null) {

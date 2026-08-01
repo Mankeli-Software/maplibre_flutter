@@ -31,7 +31,8 @@ class _FullController extends _BareController
         MapLibreStyleLayers,
         MapLibreModelHost,
         MapLibreRotateHandler,
-        MapLibreGestureHandler {
+        MapLibreGestureHandler,
+        MapLibreMapEvents {
   @override
   int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) =>
       1;
@@ -94,6 +95,13 @@ class _FullController extends _BareController
   void moveBy(double dx, double dy) {}
   @override
   void scaleBy(double scale, double anchorX, double anchorY) {}
+
+  @override
+  Stream<MapLibreError> get onError => const Stream<MapLibreError>.empty();
+  @override
+  Stream<void> get onStyleLoaded => const Stream<void>.empty();
+  @override
+  Stream<String> get onStyleImageMissing => const Stream<String>.empty();
 }
 
 void main() {
@@ -104,6 +112,7 @@ void main() {
     expect(none.models, isFalse);
     expect(none.rotateAndTilt, isFalse);
     expect(none.gestures, isFalse);
+    expect(none.events, isFalse);
     expect(MapLibreCapabilities.of(null), none);
     expect(MapLibreCapabilities.of('not a controller'), none);
   });
@@ -122,6 +131,7 @@ void main() {
     expect(full.models, isTrue);
     expect(full.rotateAndTilt, isTrue);
     expect(full.gestures, isTrue);
+    expect(full.events, isTrue);
     expect(
       full,
       const MapLibreCapabilities(
@@ -130,6 +140,7 @@ void main() {
         models: true,
         rotateAndTilt: true,
         gestures: true,
+        events: true,
       ),
     );
   });
@@ -145,6 +156,7 @@ void main() {
     expect(capabilities.styleLayers, platform is MapLibreStyleLayers);
     expect(capabilities.rotateAndTilt, platform is MapLibreRotateHandler);
     expect(capabilities.gestures, platform is MapLibreGestureHandler);
+    expect(capabilities.events, platform is MapLibreMapEvents);
   });
 
   group('MapCameraChangeReason', () {

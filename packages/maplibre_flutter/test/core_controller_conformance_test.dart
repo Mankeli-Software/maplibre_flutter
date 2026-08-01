@@ -18,9 +18,12 @@
 /// in every screenshot (see the comments on each).
 library;
 
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter_android/maplibre_flutter_android.dart';
+import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
 import 'package:maplibre_flutter_core/testing.dart';
 import 'package:maplibre_flutter_ios/maplibre_flutter_ios.dart';
 import 'package:maplibre_flutter_linux/maplibre_flutter_linux.dart';
@@ -176,6 +179,9 @@ void main() {
           (c as MapLibreCameraTickNotifier).addListener(() => ticks++);
 
           fresh.frameReady = true; // the first frame lands
+          // …and the style finishes. BOTH are required now: onReady means
+          // gl-js `load`, and a frame can precede the style completing.
+          fresh.emitDiagnostic(CoreDiagnosticKind.styleLoaded);
           await c.onReady;
           await Future<void>.delayed(const Duration(milliseconds: 80));
 
@@ -196,6 +202,96 @@ void main() {
           await c.dispose();
         },
       );
+
+      // The bug this replaced: onReady completed on the first FRAME alone, so
+      // an app that added a layer right after awaiting it lost the layer to the
+      // style load that came next — mbgl drops every app-added layer on a style
+      // load. onReady is documented as gl-js `load`; make it mean that.
+      test('onReady waits for the STYLE, not just a frame', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh);
+        var ready = false;
+        unawaited(c.onReady.then((_) => ready = true));
+
+        fresh.frameReady = true;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(
+          ready,
+          isFalse,
+          reason: 'a frame alone is not readiness — the style may still land',
+        );
+
+        fresh.emitDiagnostic(CoreDiagnosticKind.styleLoaded);
+        await c.onReady;
+        expect(ready, isTrue);
+        await c.dispose();
+      });
+
+      test('reports engine failures as typed errors', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh);
+        expect(
+          c,
+          isA<MapLibreMapEvents>(),
+          reason: 'every mbgl-core tier reports engine events',
+        );
+        final events = c as MapLibreMapEvents;
+        final errors = <MapLibreError>[];
+        final styleLoads = <void>[];
+        final missing = <String>[];
+        events.onError.listen(errors.add);
+        events.onStyleLoaded.listen(styleLoads.add);
+        events.onStyleImageMissing.listen(missing.add);
+
+        fresh
+          ..emitDiagnostic(
+            CoreDiagnosticKind.mapLoadFailed,
+            message: 'not found: 404',
+          )
+          ..emitDiagnostic(
+            CoreDiagnosticKind.commandFailed,
+            message: "no layer with id 'x'",
+          )
+          ..emitDiagnostic(
+            CoreDiagnosticKind.log,
+            severity: CoreDiagnosticSeverity.error,
+            message: 'Failed to load glyph range',
+          )
+          ..emitDiagnostic(
+            CoreDiagnosticKind.log,
+            severity: CoreDiagnosticSeverity.debug,
+            message: 'chatter nobody can act on',
+          )
+          ..emitDiagnostic(CoreDiagnosticKind.styleLoaded)
+          ..emitDiagnostic(
+            CoreDiagnosticKind.styleImageMissing,
+            message: 'pin',
+          );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(errors.whereType<MapStyleError>(), hasLength(1));
+        expect(errors.whereType<MapCommandError>(), hasLength(1));
+        expect(
+          errors.whereType<MapEngineError>(),
+          hasLength(1),
+          reason: 'error-level log records surface; debug chatter does not',
+        );
+        expect(styleLoads, hasLength(1));
+        expect(missing, ['pin']);
+        await c.dispose();
+      });
+
+      test('unregisters its diagnostic listener on dispose', () async {
+        final fresh = RecordingCoreMap();
+        final c = tier.build(fresh);
+        expect(fresh.diagnosticListener, isNotNull);
+        await c.dispose();
+        expect(
+          fresh.diagnosticListener,
+          isNull,
+          reason: 'a callback outliving the map is the classic FFI leak',
+        );
+      });
 
       test('camera round-trips through the core without reordering fields', () {
         core.camera = (

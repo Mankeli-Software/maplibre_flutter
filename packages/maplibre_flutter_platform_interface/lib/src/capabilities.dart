@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'gesture_handler.dart';
+import 'map_events.dart';
 import 'maplibre_map_controller.dart';
 import 'model_host.dart';
 import 'projector.dart';
@@ -34,6 +35,7 @@ class MapLibreCapabilities {
     required this.models,
     required this.rotateAndTilt,
     required this.gestures,
+    required this.events,
   });
 
   /// Everything off, for when no map is bound yet.
@@ -42,7 +44,8 @@ class MapLibreCapabilities {
       styleLayers = false,
       models = false,
       rotateAndTilt = false,
-      gestures = false;
+      gestures = false,
+      events = false;
 
   /// Derives the capabilities of [platform], which may be null before attach.
   factory MapLibreCapabilities.of(Object? platform) {
@@ -55,6 +58,7 @@ class MapLibreCapabilities {
       models: platform is MapLibreModelHost,
       rotateAndTilt: platform is MapLibreRotateHandler,
       gestures: platform is MapLibreGestureHandler,
+      events: platform is MapLibreMapEvents,
     );
   }
 
@@ -78,6 +82,11 @@ class MapLibreCapabilities {
   /// recognise their own gestures natively.
   final bool gestures;
 
+  /// Whether the tier reports what the engine could not do
+  /// ([MapLibreMapEvents]). False on the web tiers, where a failed style load
+  /// is still a blank map with no signal.
+  final bool events;
+
   @override
   bool operator ==(Object other) =>
       other is MapLibreCapabilities &&
@@ -85,15 +94,22 @@ class MapLibreCapabilities {
       other.styleLayers == styleLayers &&
       other.models == models &&
       other.rotateAndTilt == rotateAndTilt &&
-      other.gestures == gestures;
+      other.gestures == gestures &&
+      other.events == events;
 
   @override
-  int get hashCode =>
-      Object.hash(projection, styleLayers, models, rotateAndTilt, gestures);
+  int get hashCode => Object.hash(
+    projection,
+    styleLayers,
+    models,
+    rotateAndTilt,
+    gestures,
+    events,
+  );
 
   @override
   String toString() =>
       'MapLibreCapabilities(projection: $projection, styleLayers: '
       '$styleLayers, models: $models, rotateAndTilt: $rotateAndTilt, '
-      'gestures: $gestures)';
+      'gestures: $gestures, events: $events)';
 }

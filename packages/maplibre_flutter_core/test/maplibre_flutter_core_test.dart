@@ -1087,6 +1087,7 @@ void main() {
     expect(CoreDiagnosticKind.spriteError.code, 6);
     expect(CoreDiagnosticKind.renderError.code, 7);
     expect(CoreDiagnosticKind.log.code, 8);
+    expect(CoreDiagnosticKind.commandFailed.code, 9);
 
     expect(CoreDiagnosticSeverity.debug.code, 0);
     expect(CoreDiagnosticSeverity.info.code, 1);
@@ -1229,6 +1230,68 @@ void main() {
           'MapObserver::onGlyphsError is dead in this configuration, so the '
           'log observer is the only hook that sees a missing font',
     );
+  });
+
+  // Every mutating call in this ABI is posted to the render thread and returns
+  // void, so a removal that matched nothing used to be indistinguishable from
+  // one that worked. mbgl hands back a unique_ptr saying which; we used to drop
+  // it on the floor.
+  test('a removal that matched nothing is reported, not silent', () async {
+    final map = MapLibreCoreMap.create(
+      width: 256,
+      height: 256,
+      pixelRatio: 1,
+      styleUri: 'https://demotiles.maplibre.org/style.json',
+    );
+    addTearDown(map.dispose);
+    final failures = <CoreDiagnostic>[];
+    map.setDiagnosticCallback((d) {
+      if (d.kind == CoreDiagnosticKind.commandFailed) failures.add(d);
+    });
+    expect(map.awaitFrame(const Duration(seconds: 20)), isTrue);
+
+    map.removeLayer('no-such-layer');
+    map.removeSource('no-such-source');
+
+    // A source a layer still references: mbgl refuses, and that is the failure
+    // people actually hit — the removal appears to do nothing at all.
+    map.addSourceJson(
+      'held',
+      '{"type":"geojson","data":${pointsAround(0, 0, 3, 0.1)}}',
+    );
+    map.addLayerJson(
+      '{"id":"holder","type":"circle","source":"held",'
+      '"paint":{"circle-radius":3,"circle-color":"#ff00ff"}}',
+    );
+    map.removeSource('held');
+
+    final sw = Stopwatch()..start();
+    while (sw.elapsed < const Duration(seconds: 10) && failures.length < 3) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    final messages = failures.map((d) => d.message).toList();
+    expect(
+      messages.any((m) => m.contains("no layer with id 'no-such-layer'")),
+      isTrue,
+      reason: 'removeLayer must say the id was not there',
+    );
+    expect(
+      messages.any((m) => m.contains("no source with id 'no-such-source'")),
+      isTrue,
+    );
+    expect(
+      messages.any((m) => m.contains("'held' is still in use")),
+      isTrue,
+      reason: 'in-use and absent are the same null from mbgl; tell them apart',
+    );
+
+    // Removing them in the right order succeeds, and says nothing.
+    failures.clear();
+    map.removeLayer('holder');
+    map.removeSource('held');
+    await Future<void>.delayed(const Duration(seconds: 1));
+    expect(failures, isEmpty, reason: 'success must stay quiet');
   });
 
   test('clearing the callback stops delivery, and dispose is safe', () async {

@@ -43,13 +43,14 @@ class MapLibreFlutterAndroidCoreController
         MapLibreRotateHandler,
         MapLibreMapProjector,
         MapLibreStyleLayers,
-        MapLibreModelHost {
+        MapLibreModelHost,
+        MapLibreMapEvents {
   MapLibreFlutterAndroidCoreController._(
     this._coreMap,
     this._textureId,
     this._dpr,
   ) {
-    _pollReady();
+    _startUp();
   }
 
   /// Builds a controller around an already-created core map, bypassing
@@ -71,7 +72,7 @@ class MapLibreFlutterAndroidCoreController
        // ignore: prefer_initializing_formals
        _textureId = textureId,
        _dpr = devicePixelRatio {
-    _pollReady();
+    _startUp();
   }
 
   final core.MapLibreCoreMap _coreMap;
@@ -85,6 +86,74 @@ class MapLibreFlutterAndroidCoreController
   // Bumped to supersede a running fly-to animation (a new move or a gesture).
   int _animToken = 0;
   final Completer<void> _ready = Completer<void>();
+
+  // --- Diagnostics (MapLibreMapEvents) ---------------------------------------
+  //
+  // The engine reports asynchronously, so almost every failure arrives here and
+  // not as a thrown exception. Broadcast controllers: several widgets may watch
+  // one map, and none of them should be required to.
+  final StreamController<MapLibreError> _errors =
+      StreamController<MapLibreError>.broadcast();
+  final StreamController<void> _styleLoads = StreamController<void>.broadcast();
+  final StreamController<String> _missingImages =
+      StreamController<String>.broadcast();
+
+  bool _diagnosticsInstalled = false;
+  bool _styleLoaded = false;
+  bool _firstFrame = false;
+
+  @override
+  Stream<MapLibreError> get onError => _errors.stream;
+
+  @override
+  Stream<void> get onStyleLoaded => _styleLoads.stream;
+
+  @override
+  Stream<String> get onStyleImageMissing => _missingImages.stream;
+
+  /// Subscribes to the core's diagnostic channel and fans it out.
+  void _installDiagnostics() {
+    if (_diagnosticsInstalled || _disposed) return;
+    _diagnosticsInstalled = true;
+    _coreMap.setDiagnosticCallback((diagnostic) {
+      if (_disposed) return;
+      switch (diagnostic.kind) {
+        case core.CoreDiagnosticKind.styleLoaded:
+          _styleLoaded = true;
+          if (!_styleLoads.isClosed) _styleLoads.add(null);
+          _completeReadyIfLoaded();
+        case core.CoreDiagnosticKind.styleImageMissing:
+          if (!_missingImages.isClosed) _missingImages.add(diagnostic.message);
+        case core.CoreDiagnosticKind.mapLoadFailed:
+          _emitError(MapStyleError(diagnostic.message));
+        case core.CoreDiagnosticKind.glyphsError:
+          _emitError(MapGlyphsError(diagnostic.message));
+        case core.CoreDiagnosticKind.spriteError:
+          _emitError(MapSpriteError(diagnostic.message));
+        case core.CoreDiagnosticKind.renderError:
+          _emitError(MapRenderError(diagnostic.message));
+        case core.CoreDiagnosticKind.commandFailed:
+          _emitError(MapCommandError(diagnostic.message));
+        case core.CoreDiagnosticKind.log:
+          // The engine logs a great deal at info/debug; only what an app could
+          // act on is worth a stream event. This is also the ONLY route a glyph
+          // 404 takes — mbgl logs it and never calls onGlyphsError.
+          if (diagnostic.severity == core.CoreDiagnosticSeverity.warning ||
+              diagnostic.severity == core.CoreDiagnosticSeverity.error) {
+            _emitError(MapEngineError(diagnostic.message));
+          }
+        case core.CoreDiagnosticKind.mapLoaded:
+        case core.CoreDiagnosticKind.idle:
+          // Neither fires in this configuration (see the stage-2 run log in
+          // docs/api-parity-progress.md); listed so the switch stays total.
+          break;
+      }
+    });
+  }
+
+  void _emitError(MapLibreError error) {
+    if (!_errors.isClosed) _errors.add(error);
+  }
 
   // Initial off-screen size in LOGICAL points; replaced once the widget reports
   // its real size via [resize]. The texture self-sizes to whatever the core
@@ -176,21 +245,45 @@ class MapLibreFlutterAndroidCoreController
     );
   }
 
-  /// Polls until the first frame has rendered, then completes [onReady] (mirrors
-  /// the desktop controllers' readiness handshake). Stops on dispose.
-  void _pollReady() {
+  /// Starts the readiness handshake: subscribe to the engine's events, then
+  /// wait for the first frame.
+  void _startUp() {
+    _installDiagnostics();
+    _pollFirstFrame();
+  }
+
+  /// Polls until the first frame exists. Readiness needs the STYLE as well —
+  /// see [_completeReadyIfLoaded]. Stops on dispose.
+  void _pollFirstFrame() {
     if (_disposed || _ready.isCompleted) return;
     if (_coreMap.awaitFrame(Duration.zero)) {
-      _ready.complete();
-      // The first frame implies the transform snapshot exists; tick so any
-      // glued overlay reprojects from off-screen to its real position.
-      // Without this MapLibreMap(markers:) draws NOTHING until the first pan:
-      // MarkerOverlay only starts repainting on a projector notification, and
-      // its delegate skips every child while the projection generation is 0.
-      notifyCameraChanged();
+      _firstFrame = true;
+      _completeReadyIfLoaded();
       return;
     }
-    Future<void>.delayed(const Duration(milliseconds: 50), _pollReady);
+    Future<void>.delayed(const Duration(milliseconds: 50), _pollFirstFrame);
+  }
+
+  /// Completes [onReady] once the initial style has loaded AND a frame exists.
+  ///
+  /// The style half is the contract: `onReady` means gl-js `load`, and this tier
+  /// used to complete it on the first FRAME alone — which can precede the style
+  /// finishing, so an app that added a layer right after awaiting it lost the
+  /// layer to the style load that came next. The frame half is kept because
+  /// callers rely on a transform existing (projection returns null without one).
+  ///
+  /// A style that never loads therefore never completes this, exactly as gl-js
+  /// never fires `load`. Listen to [onError] to hear why.
+  void _completeReadyIfLoaded() {
+    if (_disposed || _ready.isCompleted) return;
+    if (!_styleLoaded || !_firstFrame) return;
+    _ready.complete();
+    // The first frame implies the transform snapshot exists; tick so any glued
+    // overlay reprojects from off-screen to its real position.
+    // Without this MapLibreMap(markers:) draws NOTHING until the first pan:
+    // MarkerOverlay only starts repainting on a projector notification, and
+    // its delegate skips every child while the projection generation is 0.
+    notifyCameraChanged();
   }
 
   @override
@@ -548,6 +641,11 @@ class MapLibreFlutterAndroidCoreController
     // Unregister first (clears the native frame callback and stops the engine
     // pulling frames), then destroy the core map (joins its render thread).
     await _registrar.invokeMethod<void>('unregisterTexture', _textureId);
+    // Unregisters the native diagnostic callback before the core is torn
+    // down, so nothing can arrive after the streams close.
     _coreMap.dispose();
+    unawaited(_errors.close());
+    unawaited(_styleLoads.close());
+    unawaited(_missingImages.close());
   }
 }

@@ -70,6 +70,11 @@ typedef enum {
   // An mbgl::Log record. This is the one that actually catches a glyph 404 —
   // mbgl logs it rather than routing it to MapObserver::onGlyphsError.
   MBL_DIAG_LOG = 8,
+  // A command this ABI accepted could not be applied. Every mutating call here
+  // is posted to the render thread and returns void, so without this the caller
+  // cannot tell "removed" from "there was nothing by that name". The message
+  // names the call and the reason.
+  MBL_DIAG_COMMAND_FAILED = 9,
 } MblDiagnosticKind;
 
 // Mirrors mbgl::EventSeverity. Observer events that are not log records report

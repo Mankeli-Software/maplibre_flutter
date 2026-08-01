@@ -78,6 +78,75 @@ class MapLibreMapController {
   /// object does not cover: `if (controller is MapLibreModelHost)`.
   MapLibreCapabilities get capabilities => MapLibreCapabilities.of(_platform);
 
+  // --- Engine events ----------------------------------------------------------
+  //
+  // Owned HERE rather than forwarded straight off the platform controller, on
+  // purpose: a controller is constructed before the map exists, and the failures
+  // worth hearing about — a style that 404s above all — happen during that first
+  // load. An app must be able to `controller.onError.listen(...)` immediately,
+  // so these are stable objects that the platform's streams are piped into on
+  // attach and unpiped from on detach.
+  final StreamController<MapLibreError> _errors =
+      StreamController<MapLibreError>.broadcast();
+  final StreamController<void> _styleLoads = StreamController<void>.broadcast();
+  final StreamController<String> _missingImages =
+      StreamController<String>.broadcast();
+  final List<StreamSubscription<Object?>> _eventSubscriptions =
+      <StreamSubscription<Object?>>[];
+
+  /// What the map could not do: a style that failed to load, glyphs or sprites
+  /// that could not be fetched, a command that could not be applied.
+  ///
+  /// Mirrors gl-js `map.on('error', …)`, as a `Stream` of a `sealed` type so a
+  /// handler can switch over the cases exhaustively.
+  ///
+  /// Safe to listen to before the map exists — that is the point, since the
+  /// most valuable error is a first style load that fails. Silent on tiers
+  /// without the capability ([MapLibreCapabilities.events]).
+  Stream<MapLibreError> get onError => _errors.stream;
+
+  /// Fires every time a style finishes loading, not just the first.
+  ///
+  /// **This is the moment to re-apply anything added through
+  /// [MapLibreLayersController]**: mbgl replaces the whole layer list on a style
+  /// load, so every app-added source, layer and image is dropped, and
+  /// [MapLibreMap.style] is a declarative property that can change on any
+  /// rebuild. Mirrors gl-js `styledata`.
+  Stream<void> get onStyleLoaded => _styleLoads.stream;
+
+  /// The id of an image a layer asked for that the style does not have.
+  ///
+  /// Register it with [MapLibreLayersController.addImage] or
+  /// [MapLibreLayersController.addWidgetIcon] and the engine picks it up.
+  /// Mirrors gl-js `styleimagemissing`.
+  Stream<String> get onStyleImageMissing => _missingImages.stream;
+
+  void _pipeEvents(MapLibreMapPlatformController platform) {
+    if (platform is! MapLibreMapEvents) return;
+    final events = platform as MapLibreMapEvents;
+    _eventSubscriptions.addAll([
+      events.onError.listen((e) {
+        if (!_errors.isClosed) _errors.add(e);
+      }),
+      events.onStyleLoaded.listen((_) {
+        if (!_styleLoads.isClosed) _styleLoads.add(null);
+      }),
+      events.onStyleImageMissing.listen((id) {
+        if (!_missingImages.isClosed) _missingImages.add(id);
+      }),
+    ]);
+  }
+
+  Future<void> _unpipeEvents() async {
+    final subscriptions = List<StreamSubscription<Object?>>.of(
+      _eventSubscriptions,
+    );
+    _eventSubscriptions.clear();
+    for (final subscription in subscriptions) {
+      await subscription.cancel();
+    }
+  }
+
   /// Fires on every camera change — each gesture step, animation frame and
   /// imperative move — for code that must track the view, e.g. re-running
   /// [MapLibreLayersController.queryRenderedFeatures] to keep an overlay in
@@ -115,7 +184,11 @@ class MapLibreMapController {
     _platform = null;
     _attached = false;
     layers.attachTo(null);
+    await _unpipeEvents();
     await platform?.dispose();
+    await _errors.close();
+    await _styleLoads.close();
+    await _missingImages.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -152,6 +225,7 @@ class MapLibreMapController {
     }
     _platform = platform;
     layers.attachTo(platform);
+    _pipeEvents(platform);
     platform.onReady.then((_) {
       if (!_ready.isCompleted) _ready.complete();
     });
@@ -166,6 +240,7 @@ class MapLibreMapController {
     _platform = null;
     _attached = false;
     layers.attachTo(null);
+    await _unpipeEvents();
     await platform?.dispose();
   }
 

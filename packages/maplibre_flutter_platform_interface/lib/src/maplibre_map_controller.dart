@@ -17,8 +17,24 @@ abstract class MapLibreMapPlatformController {
   /// Completes once the native map exists and has finished loading its initial
   /// style. Until then [getCamera] reports the initial camera and
   /// [moveCamera]/[setStyle] are best-effort no-ops, so callers should await
-  /// this before driving the map. Does not complete if the map is disposed
-  /// before it becomes ready.
+  /// this before driving the map.
+  ///
+  /// **This means gl-js `load`, and the style half is load-bearing.** An
+  /// implementation that completes it on the first rendered FRAME is wrong,
+  /// because a frame can precede the style finishing — and mbgl drops every
+  /// app-added source and layer when a style loads, so an app that adds a layer
+  /// straight after awaiting this loses it. The `mbgl-core` tiers require both:
+  /// the initial style loaded, and a frame published (callers rely on a
+  /// transform existing — projection returns null without one).
+  ///
+  /// A one-shot `Future` is the right Flutter idiom for "the thing is usable"
+  /// (`webview_flutter` and `video_player` both do it) but it is **not** a
+  /// substitute for the repeating signals: use [MapLibreMapEvents.onStyleLoaded]
+  /// for later style loads and [MapLibreMapEvents.onError] for failures.
+  ///
+  /// Does not complete if the map is disposed first — nor if the style never
+  /// loads at all, exactly as gl-js never fires `load` for a style that 404s.
+  /// That is what [MapLibreMapEvents.onError] is for.
   Future<void> get onReady;
 
   /// Current camera as last reported by the native side.

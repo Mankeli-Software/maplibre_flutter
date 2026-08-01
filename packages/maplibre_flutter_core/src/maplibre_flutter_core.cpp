@@ -99,6 +99,12 @@ namespace {
 struct CameraState {
   double lat = 0, lng = 0, zoom = 0, bearing = 0, pitch = 0;
 };
+
+// Defined with the other diagnostics helpers below; declared here because
+// MblMap::post reports through it.
+void dispatchDiagnostic(MblMap *m, MblDiagnosticKind kind,
+                        MblDiagnosticSeverity severity,
+                        const std::string &message);
 } // namespace
 
 struct MblMap {
@@ -296,6 +302,14 @@ struct MblMap {
       // mutates the map, which invalidates → renderFrame → frame published.
       if (renderLoop != nullptr) {
         renderLoop->invoke(std::move(fn));
+      } else {
+        // The window between mbl_map_create returning and the render thread
+        // publishing its RunLoop. Anything posted here USED TO VANISH without
+        // a trace — the classic shape is a camera set immediately after create
+        // that simply does not happen.
+        dispatchDiagnostic(
+            this, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_ERROR,
+            "command dropped: the render thread is not running yet");
       }
       return;
     }
@@ -1796,7 +1810,14 @@ void mbl_map_remove_layer(MblMap *m, const char *id) {
   if (m == nullptr || id == nullptr) return;
   std::string layerId(id);
   m->post([m, layerId] {
-    m->map->getStyle().removeLayer(layerId);
+    // The unique_ptr this returns is the whole error signal: null means there
+    // was no such layer. Discarding it, as this used to, makes a typo'd id
+    // indistinguishable from a successful removal.
+    if (m->map->getStyle().removeLayer(layerId) == nullptr) {
+      dispatchDiagnostic(m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+                         "removeLayer: no layer with id '" + layerId + "'");
+      return;
+    }
     m->renderRequested = true;
   });
 }
@@ -1805,7 +1826,20 @@ void mbl_map_remove_source(MblMap *m, const char *id) {
   if (m == nullptr || id == nullptr) return;
   std::string sourceId(id);
   m->post([m, sourceId] {
-    m->map->getStyle().removeSource(sourceId);
+    // Two different failures come back as the same null: the source does not
+    // exist, or a layer still references it (style_impl.cpp refuses and logs a
+    // warning). Distinguish them here — "still in use" is the actionable one,
+    // and it is the usual cause of a removal that appears to do nothing.
+    auto &style = m->map->getStyle();
+    const bool existed = style.getSource(sourceId) != nullptr;
+    if (style.removeSource(sourceId) == nullptr) {
+      dispatchDiagnostic(
+          m, MBL_DIAG_COMMAND_FAILED, MBL_SEVERITY_WARNING,
+          existed ? "removeSource: source '" + sourceId +
+                        "' is still in use by a layer"
+                  : "removeSource: no source with id '" + sourceId + "'");
+      return;
+    }
     m->renderRequested = true;
   });
 }

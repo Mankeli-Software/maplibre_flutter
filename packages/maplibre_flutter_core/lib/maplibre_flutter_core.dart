@@ -53,7 +53,13 @@ enum CoreDiagnosticKind {
 
   /// An mbgl log record. This is the one that catches a glyph 404 — mbgl logs
   /// that rather than routing it to the observer.
-  log(8);
+  log(8),
+
+  /// A command the core accepted could not be applied — removing a layer that
+  /// is not there, removing a source a layer still uses, or posting anything at
+  /// all before the render thread is up. Every mutating call is posted and
+  /// returns void, so this is the only way to hear about it.
+  commandFailed(9);
 
   const CoreDiagnosticKind(this.code);
 

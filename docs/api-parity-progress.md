@@ -71,7 +71,7 @@ No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
 - [x] 1.11 **P0 defect** — `map_layers_controller.dart:365` `setPoints` drops `properties`, making
       data-driven styling impossible through it. (`addPoints` had the same gap; both fixed.)
 
-### Stage 2 — Observer + diagnostics channel (one C ABI callback, one Dart fan-out)
+### Stage 2 — Observer + diagnostics channel — **CLOSED 2026-08-01** (`onIdle` blocked upstream)
 
 Second, not later: `MapLibreMap.style` is a declarative prop and mbgl drops every app-added layer on
 style load, so `controller.layers` + a style swap is **broken today with no signal**. Everything
@@ -83,16 +83,16 @@ after this stage is undebuggable without it.
 - [x] 2.2 Install `mbgl::Log::setObserver` once behind `std::once_flag`, returning `false` so stderr
       logging survives. **This is the only hook that sees the glyph-404 failure** —
       `MapObserver::onGlyphsError` is dead code in our configuration.
-- [ ] 2.3 Check the `unique_ptr` return values that `removeSource`/`removeLayer` currently discard
+- [x] 2.3 Check the `unique_ptr` return values that `removeSource`/`removeLayer` currently discard
       (`maplibre_flutter_core.cpp:1638`, `:1648`) — a precise synchronous error path needing no
       observer.
-- [ ] 2.4 Report the silent command drop in `MblMap::post` when `renderLoop == nullptr`
+- [x] 2.4 Report the silent command drop in `MblMap::post` when `renderLoop == nullptr`
       (`maplibre_flutter_core.cpp:285-292`).
-- [ ] 2.5 `sealed class MapLibreError` + `Stream<MapLibreError> onError`.
-- [ ] 2.6 `Stream<void> onStyleLoaded` (repeating) and `Stream<void> onIdle`; `MapLibreMap.onStyleLoaded`
+- [x] 2.5 `sealed class MapLibreError` + `Stream<MapLibreError> onError`.
+- [~] 2.6 `Stream<void> onStyleLoaded` (repeating) and `Stream<void> onIdle`; `MapLibreMap.onStyleLoaded`
       widget callback. **`onIdle` is blocked** — `onDidBecomeIdle` never fires in our continuous
       configuration; measured, see the run log. `onStyleLoaded` is unblocked and verified.
-- [ ] 2.7 Pin `onReady` to mean gl-js `load`, and fix the macOS tier which completes it on the first
+- [x] 2.7 Pin `onReady` to mean gl-js `load`, and fix the macOS tier which completes it on the first
       **frame** (`maplibre_flutter_macos_controller.dart:141`), contradicting its own dartdoc.
 - [x] 2.8 Hold a Dart-side **field** reference to the registered callback (the GC pitfall, CLAUDE.md
       §5e) and add the test for it.
@@ -460,3 +460,54 @@ are diff-clean.
   capability — decided on 2026-07-31 in `docs/decision-log.md` and still unimplemented — which
   lands atomically across all tiers plus the fakes. 2.3 and 2.4 are small, independent and can ride
   along.
+
+### 2026-08-01 — Stage 2 (2.3, 2.4, 2.5, 2.6, 2.7) — stage closed
+
+- **Done:** 2.3, 2.4, 2.5, 2.7, and the `onStyleLoaded` half of 2.6.
+  - **2.3** — `removeLayer`/`removeSource` now read the `unique_ptr` mbgl hands back instead of
+    discarding it, and report `MBL_DIAG_COMMAND_FAILED`. `removeSource` returns the same null for two
+    different failures (no such source, and a layer still references it — `style_impl.cpp` refuses
+    and only logs), so the shim checks `getSource` first and tells them apart. "Still in use" is the
+    one people actually hit: the removal appears to do nothing at all.
+  - **2.4** — `MblMap::post` reports the drop when `renderLoop == nullptr`. That window is between
+    `mbl_map_create` returning and the render thread publishing its RunLoop; anything posted into it
+    used to vanish without trace, the classic shape being a camera set straight after create that
+    simply does not happen.
+  - **2.5** — `sealed class MapLibreError` with `MapStyleError` / `MapGlyphsError` /
+    `MapSpriteError` / `MapRenderError` / `MapCommandError` / `MapEngineError`, and
+    `Stream<MapLibreError> onError`. Log records only become errors at **warning or above** — the
+    engine logs a great deal an app cannot act on, and that filter is also what keeps the glyph 404
+    (which arrives as an error-level log record and nothing else) visible.
+  - **2.6, `onStyleLoaded`** — `Stream<void> onStyleLoaded` (repeating, verified by a native test
+    that loads, swaps style and loads again), `Stream<String> onStyleImageMissing` (gl-js
+    `styleimagemissing`; free on the same channel and actionable, so not dropped), and the
+    `MapLibreMap.onStyleLoaded` widget callback. The widget subscribes **before** attaching, since
+    the first style load can beat attach's future.
+  - **2.7** — `onReady` now means gl-js `load` on all five core tiers: the initial style loaded
+    **and** a frame published. It used to complete on the first frame alone, which is the race the
+    2026-07-31 decision-log entry described — add a layer right after awaiting it and the style load
+    that follows silently drops the layer. A style that never loads now never completes `onReady`,
+    exactly as gl-js never fires `load`; `onError` is how you hear about it. The contract is written
+    out on `MapLibreMapPlatformController.onReady`.
+  - The capability is `MapLibreMapEvents` in the platform interface, implemented by all five
+    `mbgl-core` tiers and feature-detected with `is`; `MapLibreCapabilities` gained `events`. The
+    app-facing controller owns its own broadcast controllers and pipes the platform's streams into
+    them on attach — a controller exists before the map does, and the most valuable error is a first
+    style load that fails, so listening must work immediately.
+- **Left half-done / blocked:** `onIdle` only. `MapObserver::onDidBecomeIdle` does not fire in our
+  continuous configuration (measured last run: 45 s, one `styleLoaded` and nothing else), so there is
+  no event to build it on. 2.6 is `[~]` for that reason and the stage is otherwise closed.
+- **Spec corrections found:** one naming call. The 2026-07-31 decision log named this capability
+  `MapLibreStyleEvents`. Shipped as **`MapLibreMapEvents`**, because it carries errors as well as
+  style events and a name that says "style" would need working around the first time an app wanted
+  `onError`. Recorded here rather than silently diverging.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green (218 in `maplibre_flutter`,
+  including 135 conformance assertions across all five tiers) / `test:native` green (33) / `format`
+  clean / **stage-2 gate**: ffigen regenerated on macOS, bindings diff-clean (the new diagnostic kind
+  is an enum value, and ffigen excludes enums, so no binding changed); the `RecordingCoreMap` fake
+  drives the new surface, and the conformance suite now asserts that `onReady` waits for the style,
+  that engine failures arrive as typed errors, and that each tier unregisters its diagnostic
+  listener on dispose.
+- **Next run:** stage 3 — camera commands. Read the stage's preamble first: `CameraOptions::anchor`
+  is discarded whenever `center` is set, and `Transform::rotateBy` / `Map::pitchBy` are both broken
+  upstream. It also needs hardware verification per tier, macOS first.
