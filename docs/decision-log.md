@@ -1759,4 +1759,23 @@ bytes-based model API on the contract *plus* those sources in the WASM build; it
 gap. The example now says so at the point of failure instead of handing over a path that could
 never be opened.
 
+## 2026-08-01 — CI stays `workflow_dispatch`-only; the jobs land anyway
+
+The parity push enabled the `push` / `pull_request` triggers in `ci.yml`, on the reasoning that
+the regen-diff gates had never once fired and four platforms had no automated coverage of their
+native code at all. **Reverted at the maintainer's direction** — the cost review that disabled
+them has not concluded, and that decision was not the parity push's to make.
+
+What is kept: every job. `ios`, `android`, `linux`, `windows` (compile gates for the four tiers
+that cannot be run on hardware here), `web-wasm` (the only thing anywhere that compiles the
+Emscripten module), plus `test:harness` and `verify:podspecs` on the macOS job. They are written,
+correct as far as static checking goes, and one click away in the Actions tab.
+
+What that costs, stated so it is not forgotten: committed codegen can drift silently, and
+`dart analyze` remains the only automated check over four platforms' Swift, Kotlin, C++ and CMake.
+Run the workflow by hand after a core bump or a change to a native tier.
+
+No runs were triggered by the branch push, incidentally — the trigger was scoped to
+`push: branches: [main]` plus `pull_request`, and a feature branch with no PR matches neither.
+
 _Append new decisions here with date and rationale._

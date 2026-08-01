@@ -53,8 +53,9 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   capability macOS does — markers, engine layers, queries, the typed style API, 3D models,
   rotate/tilt. macOS and **iOS** (Apple-Silicon Simulator, 5/5 integration tests incl. pixel and
   absolute-direction assertions) have been run; **Android, Windows and Linux have not**. They are
-  covered by a 120-assertion controller conformance suite and per-platform compile gates, which is
-  not the same as working. → `docs/cross-platform-continuation.md`.
+  covered by a 120-assertion controller conformance suite, and by per-platform compile-gate CI jobs
+  that are WRITTEN BUT NOT AUTO-TRIGGERED (see the CI item below) — neither of which is the same as
+  working. → `docs/cross-platform-continuation.md`.
 - **3D models: three of four backends verified.** macOS and iOS on Metal (hardware/Simulator), GL
   under Mesa llvmpipe and Vulkan under Mesa lavapipe, both in
   `packages/maplibre_flutter_core/docker` — all passing the full model_harness including the
@@ -62,8 +63,16 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   genuinely platform-bound.
 - **Web is the real gap.** Neither web tier implements projector / camera-tick / style-layers, so
   no markers, no engine layers, no typed style API there. The WASM shim's Size/DPR bug is fixed and
-  a CI job now compiles the Emscripten module, but none of its C++ has been run.
+  a `web-wasm` CI job exists to compile the Emscripten module — but CI is dispatch-only, so it has
+  not run, and none of that C++ has been compiled anywhere.
   → `docs/experimental-web-core-wasm.md`.
+- **CI is `workflow_dispatch`-only** pending a cost review, so nothing runs automatically. The
+  consequences are real and worth restating: the ffigen and typed-style-API regen-diff checks never
+  fire, so committed codegen can drift silently; and the iOS/Android/Linux/Windows compile gates
+  and the `web-wasm` Emscripten job never run, leaving `dart analyze` as the only automated check
+  over four platforms' native code. All the jobs are written — run them by hand from the Actions
+  tab after a core bump or a native change. Uncommenting the triggers in `.github/workflows/ci.yml`
+  remains the single highest-value CI action available.
 - **Native-feel A/B** (inertia/fling, and now the rotate deadzone + shove and drag sensitivities)
   against the SDKs before tagging anything stable. Rotate INERTIA is deliberately not implemented:
   it needs `TickerProviderStateMixin`, and the single-ticker constraint in the gesture state is

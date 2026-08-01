@@ -8,10 +8,20 @@
 # code.
 name: CI
 
+# DISABLED: automatic triggers are commented out so NOTHING runs on GitHub
+# (CI cost is still being reviewed). Only manual `workflow_dispatch` is active.
+# To enable, uncomment the push + pull_request blocks below.
+#
+# NOTE what this costs while disabled: the ffigen and typed-style-API
+# regen-diff gates never fire, so committed codegen can drift silently, and the
+# native compile gates below never run, which leaves `dart analyze` as the only
+# automated check covering four platforms' Swift, Kotlin, C++ and CMake. The
+# jobs are written and ready; run them by hand from the Actions tab when it
+# matters (a core bump, or a change to a native tier).
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # push:
+  #   branches: [main]
+  # pull_request:
   workflow_dispatch:
 
 concurrency:

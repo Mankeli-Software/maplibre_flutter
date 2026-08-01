@@ -9,8 +9,8 @@ every capability macOS does (`MapLibreModelHost` was the only gap, and it is clo
 rotate and tilt gestures exist for the first time; iOS is verified end-to-end on a
 Simulator; and the device-free floor that makes the rest reviewable — a 120-assertion
 conformance suite over all five controllers, three asymmetric convention guards in the
-core suite, working native harness probes, and per-platform compile gates in CI — now
-exists where before there was none.
+core suite, working native harness probes, and per-platform compile-gate CI jobs (written,
+but CI stays dispatch-only pending a cost review) — now exists where before there was none.
 
 Read this with `docs/decision-log.md` (it carries the *why* for each piece) and
 `FEATURE_MATRIX.md` (the exhaustive per-feature parity backlog, brought up to date on 2026-07-30
@@ -60,8 +60,10 @@ What has actually been exercised:
   `renderedFrameCount` climbing. 5/5 in `example/integration_test/ios_core_map_test.dart`.
 - **Android, Windows, Linux, Web** — NOT run. Their forwards are covered by the 120-assertion
   conformance suite (`packages/maplibre_flutter/test/core_controller_conformance_test.dart`) and,
-  from this change on, by per-platform `flutter build` compile gates in CI. That is the difference
-  between "unverified" and "unknown"; it is not the same as working.
+  by per-platform `flutter build` compile-gate jobs — which are written but do NOT run
+  automatically, because CI is `workflow_dispatch`-only. Run them by hand from the Actions tab
+  when a native tier changes. Even then a compile gate is the difference between "unverified" and
+  "unknown"; it is not the same as working.
 
 ---
 
