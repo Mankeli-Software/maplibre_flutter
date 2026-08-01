@@ -17,7 +17,7 @@ class _ProjController
   final MapLibreRenderHandle renderHandle;
 
   Offset Function(LatLng) projectFn = (p) => Offset(p.longitude, p.latitude);
-  LatLng Function(Offset) unprojectFn = (o) => LatLng(o.dy, o.dx);
+  LatLng Function(Offset) unprojectFn = (o) => LatLng(o.dy / 10, o.dx / 10);
   bool Function(LatLng)? visibleFn;
   int generation = 1;
 
@@ -392,7 +392,7 @@ void main() {
     final controller = _ProjController(const TextureHandle(textureId: 4));
     controller.projectFn = (_) =>
         const Offset(-1000, -1000); // marker off-screen
-    controller.unprojectFn = (o) => LatLng(o.dy, o.dx);
+    controller.unprojectFn = (o) => LatLng(o.dy / 10, o.dx / 10);
     MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
 
     LatLng? mapTapped;
@@ -411,8 +411,10 @@ void main() {
     await tester.pump();
 
     expect(mapTapped, isNotNull);
-    expect(mapTapped!.latitude, 222);
-    expect(mapTapped!.longitude, 123);
+    // The fake unproject scales by 10 so the latitude stays inside the ±90 mbgl
+    // accepts: y -> lat, x -> lng, which is the direction being pinned here.
+    expect(mapTapped!.latitude, closeTo(22.2, 1e-9));
+    expect(mapTapped!.longitude, closeTo(12.3, 1e-9));
   });
 
   testWidgets('dragging a draggable marker reports the unprojected end point', (
@@ -420,7 +422,7 @@ void main() {
   ) async {
     final controller = _ProjController(const TextureHandle(textureId: 5));
     controller.projectFn = (_) => const Offset(100, 100);
-    controller.unprojectFn = (o) => LatLng(o.dy, o.dx);
+    controller.unprojectFn = (o) => LatLng(o.dy / 10, o.dx / 10);
     MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
 
     LatLng? ended;
@@ -446,8 +448,8 @@ void main() {
     await tester.pump();
 
     expect(ended, isNotNull);
-    expect(ended!.longitude, 130); // unproject maps x→lng
-    expect(ended!.latitude, 120); // and y→lat
+    expect(ended!.longitude, closeTo(13, 1e-9)); // unproject maps x→lng
+    expect(ended!.latitude, closeTo(12, 1e-9)); // and y→lat
   });
 
   testWidgets('a controller without a projector renders no overlay', (

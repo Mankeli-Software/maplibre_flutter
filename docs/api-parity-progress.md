@@ -46,11 +46,11 @@ Stages are dependency-ordered. **Do not start a stage until every task in the st
 
 No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
 
-- [ ] 1.1 `LatLngBounds` — shape from mbgl `include/mbgl/util/geo.hpp:82`, fields
+- [x] 1.1 `LatLngBounds` — shape from mbgl `include/mbgl/util/geo.hpp:82`, fields
       `southwest`/`northeast`. **Not** gl-js's lng-first ordering. With
       `fromPoints`/`extend`/`contains`/`intersects`/`center`/`isEmpty`/`crossesAntimeridian`.
-- [ ] 1.2 Adopt Flutter's `EdgeInsets` as the padding type — do not invent one.
-- [ ] 1.3 `CameraOptions` (partial camera, every field nullable, incl. `padding` and `anchor`) +
+- [x] 1.2 Adopt Flutter's `EdgeInsets` as the padding type — do not invent one.
+- [x] 1.3 `CameraOptions` (partial camera, every field nullable, incl. `padding` and `anchor`) +
       `CameraAnimation` (duration/curve/speed/minZoom/maxDuration), mirroring
       `include/mbgl/map/camera.hpp:55-115`.
 - [x] 1.4 Typed GeoJSON in a `geojson.dart` sub-library: sealed `GeoJsonGeometry` (all seven RFC 7946
@@ -61,7 +61,7 @@ No C ABI change, no ffigen regen, no platform-controller ripple, no hardware.
 - [ ] 1.6 `MapLibreCapabilities` + re-export the capability interfaces from
       `packages/maplibre_flutter/lib/maplibre_flutter.dart` (today an app cannot even write
       `if (controller is MapLibreModelHost)`).
-- [ ] 1.7 Harden `LatLng`: normalise/assert NaN, inf, |lat| > 90, wrap longitude. `mbgl::LatLng`
+- [x] 1.7 Harden `LatLng`: normalise/assert NaN, inf, |lat| > 90, wrap longitude. `mbgl::LatLng`
       throws on these and a throw across `extern "C"` is UB.
 - [x] 1.8 **P0 defect** — `map_layers_controller.dart:215` drops every non-Point geometry from
       `queryRenderedFeatures`. The C shim already returns the full FeatureCollection.
@@ -325,3 +325,50 @@ Append one entry per run. Newest last.
 - **Next run:** 1.1 (`LatLngBounds`, mbgl `geo.hpp:82` shape, `southwest`/`northeast`), 1.2
   (adopt `EdgeInsets`), 1.3 (`CameraOptions` + `CameraAnimation`) and 1.7 (`LatLng` hardening) —
   the value-type spine, all pure Dart. 1.5 and 1.6 close the stage after that.
+
+### 2026-08-01 — Stage 1 (1.1, 1.2, 1.3, 1.7) — the value-type spine
+
+- **Done:** 1.1, 1.2, 1.3, 1.7. All in the platform interface, all pure Dart, 26 new tests.
+  - **1.1 `LatLngBounds`** — `southwest`/`northeast` per `mbgl::LatLngBounds`, with `fromPoints`
+    (mbgl's `hull`), `world`, `empty`, `singleton`, `extend`/`extendBounds`, `contains`/
+    `containsBounds`, `intersects`, `center`, the four corners and four edges, `isValid`/`isEmpty`
+    and `crossesAntimeridian`. Not gl-js's `LngLatBounds`, per the stage-0 policy.
+  - **1.2 `EdgeInsets`** — adopted as-is for `CameraOptions.padding`; no type invented.
+  - **1.3 `CameraOptions` + `CameraAnimation`** — the partial camera (center/zoom/bearing/pitch/roll/
+    padding/anchor, all nullable) with `fromCamera`, `applyTo`, `copyWith`; and the animation options
+    as `duration` / `easing` / `speed` / `apexZoom`.
+  - **1.7 `LatLng` hardening** — the constructor now asserts exactly what `mbgl::LatLng`'s throws on
+    (NaN lat, NaN lng, `|lat| > 90` — which also catches infinity — and non-finite lng), plus
+    `LatLng.sanitized` for values from outside, `wrapped()` matching `mbgl::util::wrap`'s `[min, max)`
+    semantics, and `isValid` for release-build guards. Longitude is deliberately left unbounded
+    because mbgl's default is `WrapMode::Unwrapped`.
+- **Left half-done:** none.
+- **Deferred / rejected:** four things, each with the engine evidence:
+  - **`CameraAnimation` has no `curve`** (gl-js `flyTo({curve})`, the van Wijk ρ). `Transform::flyTo`
+    hardcodes `rho = 1.42` and only varies it indirectly from `minZoom`; there is no field to bind.
+  - **No `maxDuration`** — `mbgl::AnimationOptions` has no counterpart; a flight's duration is
+    computed inside the engine. Fixing `duration` is the available lever.
+  - **`CameraOptions` omits `centerAltitude` and `fov`**, which mbgl does have. Nothing consumes them
+    and adding a named optional field later is source-compatible, so they wait for a caller.
+  - **The platform controllers were not switched to `LatLng.sanitized`** at their unproject
+    boundaries. They do not need it — `screenCoordinateToLatLng` returns an `mbgl::LatLng`, so the
+    value has already passed mbgl's own checks — and stage 1 is meant to cause no controller ripple.
+- **Spec corrections found:** one, plus a naming call.
+  - Ledger 1.3 lists `CameraAnimation` as `duration/curve/speed/minZoom/maxDuration`. Two of those
+    are unbindable (above), and `minZoom` is shipped as **`apexZoom`** per the stage-0 policy —
+    `minZoom` already means a hard constraint in the same namespace (`camera.setMinZoom`), so the
+    collision would have been permanent.
+  - The `easing` field is typed **`Cubic`, not `Curve`**. mbgl takes a `UnitBezier`, which only a
+    cubic maps onto; accepting any `Curve` and quietly transmitting four control points would be the
+    silent-degradation trap CLAUDE.md §11 is a list of. Flutter's named easings are `Cubic`s and pass
+    straight through; `Curves.linear` is not one, and the dartdoc says so.
+- **Caught by the new asserts:** `marker_overlay_test.dart`'s fake `unproject` mapped screen pixels
+  straight to degrees (`LatLng(o.dy, o.dx)`), producing latitude 222 — impossible, and exactly what
+  1.7 exists to stop reaching the shim. The fixture now scales by 10; the direction assertions
+  (y→lat, x→lng) are unchanged, which is what the test was actually for.
+- **Gates:** `analyze` clean (13 packages) / `test --no-select` green (203 in `maplibre_flutter`, 58
+  in the platform interface) / `format` clean / stage-1 gate satisfied — no `*_generated.dart`, no
+  `maplibre_flutter_core.{h,cpp}`.
+- **Next run:** 1.5 (`MapCameraChangeReason`, Apple's bitmask as a Dart `Set`) and 1.6
+  (`MapLibreCapabilities` + re-exporting the capability interfaces) close stage 1. Then stage 2 —
+  which is the first stage needing a C ABI change and an ffigen regen on macOS.

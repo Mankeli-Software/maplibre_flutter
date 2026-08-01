@@ -5,7 +5,14 @@
 library;
 
 export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
-    show LatLng, MapCamera, MapLibreModel, MapOptions;
+    show
+        CameraAnimation,
+        CameraOptions,
+        LatLng,
+        LatLngBounds,
+        MapCamera,
+        MapLibreModel,
+        MapOptions;
 
 export 'geojson.dart';
 export 'src/map_layers_controller.dart';
