@@ -2227,25 +2227,62 @@ class _MapDemoPageState extends State<MapDemoPage> {
               ),
             ),
           ),
-          Positioned(top: 12, left: 12, right: 12, child: _scenarioBar()),
-          const Positioned(bottom: 12, left: 12, child: _FrameStats()),
+          // Every overlay is wrapped: scrolling over a panel used to zoom the
+          // map underneath, because absorbing TAPS does nothing for pointer
+          // signals — see AbsorbPointerSignal.
+          Positioned(
+            top: 12,
+            left: 12,
+            right: 12,
+            child: AbsorbPointerSignal(child: _scenarioBar()),
+          ),
+          const Positioned(
+            bottom: 12,
+            left: 12,
+            child: AbsorbPointerSignal(child: _FrameStats()),
+          ),
           if (_moveReasons.isNotEmpty)
-            Positioned(bottom: 60, left: 12, child: _reasonBadge()),
+            Positioned(
+              bottom: 60,
+              left: 12,
+              child: AbsorbPointerSignal(child: _reasonBadge()),
+            ),
           if (_scenario == Scenario.geojsonFeatures)
-            Positioned(top: 140, left: 12, child: _queryResultPanel()),
+            Positioned(
+              top: 140,
+              left: 12,
+              child: AbsorbPointerSignal(child: _queryResultPanel()),
+            ),
           if (_showDiagnostics)
-            Positioned(top: 140, right: 12, child: _diagnosticsPanel()),
+            Positioned(
+              top: 140,
+              right: 12,
+              child: AbsorbPointerSignal(child: _diagnosticsPanel()),
+            ),
           if (_showCapabilities)
-            Positioned(top: 140, left: 12, child: _capabilitiesPanel()),
-          if (_stressing) Positioned(left: 12, bottom: 96, child: _modelHud()),
+            Positioned(
+              top: 140,
+              left: 12,
+              child: AbsorbPointerSignal(child: _capabilitiesPanel()),
+            ),
+          if (_stressing)
+            Positioned(
+              left: 12,
+              bottom: 96,
+              child: AbsorbPointerSignal(child: _modelHud()),
+            ),
           if (_modelError != null)
             Positioned(
               left: 12,
               right: 12,
               bottom: 60,
-              child: _modelErrorBar(),
+              child: AbsorbPointerSignal(child: _modelErrorBar()),
             ),
-          Positioned(right: 16, bottom: 16, child: _controls()),
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: AbsorbPointerSignal(child: _controls()),
+          ),
         ],
       ),
     );

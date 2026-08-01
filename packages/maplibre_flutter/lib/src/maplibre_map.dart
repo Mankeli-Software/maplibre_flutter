@@ -1293,7 +1293,27 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
-    if (event is PointerScrollEvent) {
+    if (event is! PointerScrollEvent) return;
+    // Through the RESOLVER, not directly.
+    //
+    // A pointer signal is offered to every Listener under the pointer, and
+    // Flutter arbitrates with PointerSignalResolver: the first registrant wins,
+    // and the hit-test path runs innermost-first, so whatever is ON TOP claims
+    // it. Acting directly — as this used to — skips that entirely, so the map
+    // zoomed whenever the wheel turned anywhere over it, including over a
+    // dropdown, a panel or a button sitting above it. Scrollable does exactly
+    // this; a map is no more entitled to a scroll than a list is.
+    //
+    // NOTE this only defers to widgets that CLAIM the signal. A plain Container
+    // above the map registers nothing, so wrap overlays in [AbsorbPointerSignal]
+    // — that is what it is for.
+    GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
+      _handleScroll(resolved as PointerScrollEvent);
+    });
+  }
+
+  void _handleScroll(PointerScrollEvent event) {
+    {
       _stopInertia(); // a scroll-zoom cancels any in-flight pan glide
       // Scroll up (negative dy) zooms in, about the pointer.
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();

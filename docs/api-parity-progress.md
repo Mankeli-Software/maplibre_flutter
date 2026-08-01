@@ -1163,3 +1163,28 @@ never existed.
 - **Gates:** `analyze` clean / `test --no-select` green / `format` clean / 11 macOS integration tests
   green on hardware.
 
+### 2026-08-01 — Reported bug: scrolling over an overlay moved the map
+
+- **Two independent causes, both real.**
+  1. `_DesktopMapGestures._onPointerSignal` acted on the scroll DIRECTLY instead of registering with
+     `PointerSignalResolver`. A pointer signal is offered to every `Listener` under the cursor and
+     Flutter arbitrates through that resolver — first registrant wins, innermost first — so acting
+     directly meant the map won unconditionally and nothing above it could ever stop it.
+     `Scrollable` registers; a map is no more entitled to a scroll than a list is.
+  2. Even with (1) fixed, **an overlay that absorbs taps absorbs nothing here**. A `Container`, an
+     `IconButton`, a `Card` all take the pointer and register no signal handler. Hence
+     `AbsorbPointerSignal`, the pointer-signal counterpart of `AbsorbPointer`, applied to every
+     overlay in the example app.
+- **The trap is pinned by a test that asserts the BAD behaviour still happens without the widget**
+  (`scroll_over_overlay_test.dart`): a translucent overlay does not stop the scroll. Worth stating
+  as a test, because the first version of that test used an opaque coloured `Container`, which stops
+  the hit test and so hides the bug by accident — the shapes that actually bite are the translucent
+  ones (a modal barrier, an unpainted panel).
+- **An OPEN QUESTION, deliberately not papered over.** A widget-level test driving a real
+  `MapLibreMap` under an `AbsorbPointerSignal` recorded a zoom anchored at the surface CENTRE rather
+  than at the scrolled point — which neither "the absorber claimed" nor "the absorber failed"
+  explains, and which the equivalent stand-in test does not reproduce. Rather than tune it until it
+  went green, it was removed and a comment in `maplibre_map_test.dart` says why. The map-side change
+  is covered by the stand-in (wired identically) and by the example app; the anomaly needs a look
+  with the real widget before that gap is closed.
+
