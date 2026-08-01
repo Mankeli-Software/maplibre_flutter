@@ -1,0 +1,51 @@
+diff --git a/src/mbgl/mtl/offscreen_texture.cpp b/src/mbgl/mtl/offscreen_texture.cpp
+index 71f9fa0c9287..81106fa398b8 100644
+--- a/src/mbgl/mtl/offscreen_texture.cpp
++++ b/src/mbgl/mtl/offscreen_texture.cpp
+@@ -15,10 +15,11 @@ public:
+                              const Size size_,
+                              const gfx::TextureChannelDataType type_,
+                              bool depth,
+-                             [[maybe_unused]] bool stencil)
++                             bool stencil)
+         : context(context_),
+           size(size_),
+-          type(type_) {
++          type(type_),
++          stencilRequested(stencil) {
+         assert(!size.isEmpty());
+         colorTexture = context.createTexture2D();
+         colorTexture->setSize(size);
+@@ -80,6 +81,24 @@ public:
+             if (auto* stencilTarget = renderPassDescriptor->stencilAttachment()) {
+                 stencilTarget->setTexture(static_cast<Texture2D*>(stencilTexture.get())->getMetalTexture());
+             }
++        } else if (stencilRequested && depthTexture) {
++            // MBL_SIM_STENCIL_ATTACHMENT: on the Simulator (and x86-64) no separate
++            // stencil texture is created, because Metal requires the depth and stencil
++            // attachment formats to match — which is exactly why the depth texture is
++            // allocated as the COMBINED PixelFormatDepth32Float_Stencil8 there
++            // (Texture2D::getMetalPixelFormat). Those stencil bits then have to be
++            // attached, or the render pass has a nil stencilAttachment texture,
++            // Context::makeDepthStencilState skips the stencil descriptor entirely, and
++            // every stencil test silently passes.
++            //
++            // The visible consequence is that renderTileClippingMasks stops clipping:
++            // each tile draws its full buffered geometry over its neighbours, so any
++            // geometry lying along the tile-clip edge (a fill-outline-color, a polygon
++            // boundary) is drawn on BOTH sides of every tile boundary — a pair of grey
++            // seam lines straddling each edge, ~2x the tile buffer apart.
++            if (auto* stencilTarget = renderPassDescriptor->stencilAttachment()) {
++                stencilTarget->setTexture(static_cast<Texture2D*>(depthTexture.get())->getMetalTexture());
++            }
+         }
+     }
+ 
+@@ -128,6 +147,7 @@ private:
+     gfx::Texture2DPtr colorTexture;
+     gfx::Texture2DPtr depthTexture;
+     gfx::Texture2DPtr stencilTexture;
++    const bool stencilRequested;
+     MTLCommandBufferPtr commandBuffer;
+     MTLRenderPassDescriptorPtr renderPassDescriptor;
+ };

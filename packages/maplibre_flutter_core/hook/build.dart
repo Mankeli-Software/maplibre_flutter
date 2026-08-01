@@ -273,6 +273,39 @@ const _submodulePatches = [
     marker: 'MBL_CUSTOM_GEOMETRY_REPEAT',
     patch: 'patches/metal-custom-geometry-sampler-repeat.patch',
   ),
+  // Metal: attach the stencil buffer on the iOS Simulator, so tile clipping
+  // masks actually clip there.
+  //
+  // mtl::HeadlessBackend asks for an offscreen texture with depth AND stencil,
+  // but mtl::OffscreenTextureResource creates the stencil texture inside
+  // `#if !TARGET_OS_SIMULATOR` — because Metal requires a pipeline's depth and
+  // stencil attachment formats to match, which is exactly why the DEPTH texture
+  // is allocated as the combined PixelFormatDepth32Float_Stencil8 on the
+  // Simulator (Texture2D::getMetalPixelFormat). Upstream then never attaches
+  // those stencil bits, so the render pass has a nil stencilAttachment texture,
+  // Context::makeDepthStencilState's `if (stencilTarget->texture())` is false,
+  // and NO stencil descriptor is ever applied — every stencil test passes.
+  //
+  // renderTileClippingMasks therefore stops clipping: each tile draws its full
+  // BUFFERED geometry over its neighbours. Same-colour fills hide it, but any
+  // geometry along the tile-clip edge (a fill-outline-color, a polygon
+  // boundary) gets drawn on both sides of every boundary — a pair of grey seam
+  // lines straddling each tile edge, ~2x the tile buffer apart. This is the
+  // real cause of the "faint sim-only tile seams" the 2026-06-19 entry in
+  // docs/decision-log.md wrote off as a simulator Metal-translation quirk.
+  //
+  // Simulator-only by construction: everywhere else `stencilTexture` exists, so
+  // the new branch is dead. VERIFIED by forcing both simulator `#if`s on macOS:
+  // without this, a Liberty frame differs from the correct one on 2.05% of
+  // pixels, concentrated in one 16px band per tile boundary; with it, the frame
+  // is pixel-identical to the correct one (0 differing pixels).
+  //
+  // Upstream-PR candidate, alongside the text-centring patch.
+  (
+    file: 'src/mbgl/mtl/offscreen_texture.cpp',
+    marker: 'MBL_SIM_STENCIL_ATTACHMENT',
+    patch: 'patches/metal-simulator-stencil-attachment.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.

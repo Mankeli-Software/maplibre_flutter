@@ -547,8 +547,15 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - **The Android emulator cannot composite a GPU-produced `SurfaceProducer` buffer** (a foreign
   EGL context's HardwareBuffer). Zero-copy reads as white there in *every* configuration; it is a
   documented emulator bug, not ours. Do not chase it — use a physical device. CPU present works.
-- Simulator-only rendering artifacts are real: the iOS Simulator's offscreen Metal produced
-  1-px tile seams that a physical device does not.
+- **"Simulator-only" is a symptom, not a diagnosis.** The iOS-Simulator tile seams were written
+  off for six weeks as a Metal-translation quirk because they were clean on device and on macOS.
+  The actual cause was a real upstream bug: `mtl::OffscreenTextureResource` creates the stencil
+  texture inside `#if !TARGET_OS_SIMULATOR` and never attaches the combined depth-stencil
+  texture it allocates instead, so `makeDepthStencilState` applies no stencil descriptor and
+  **every stencil test passes** — tile clipping masks stop clipping and each tile draws its
+  buffered overhang over its neighbours. Fixed by `patches/metal-simulator-stencil-attachment.patch`.
+  When a platform is the only one showing an artifact, look for what that platform's `#if`s
+  actually exclude before concluding the platform is lying.
 - A warm browser profile serves a cached `.wasm` despite `Cache-Control: no-store` — relaunch
   headless Edge with a fresh `--user-data-dir` after rebuilding.
 
