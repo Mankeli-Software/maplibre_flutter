@@ -15,7 +15,11 @@ class UserLocationPuck extends StatelessWidget {
     required this.metresPerPixel,
     super.key,
     this.color = const Color(0xFF1E88E5),
+    this.semanticLabel,
   });
+
+  /// The default announcement, matching the Apple SDK's `USER_DOT_TITLE`.
+  static const String defaultSemanticLabel = 'You Are Here';
 
   /// Where the user is.
   final MapUserLocation location;
@@ -32,6 +36,13 @@ class UserLocationPuck extends StatelessWidget {
   /// The puck's colour; the halo is a translucent version of it.
   final Color color;
 
+  /// What a screen reader announces for the puck.
+  ///
+  /// The dot conveys position, accuracy and heading through colour and shape
+  /// alone, so without a label it does not exist for assistive technology at
+  /// all. Null uses [defaultSemanticLabel].
+  final String? semanticLabel;
+
   @override
   Widget build(BuildContext context) {
     final accuracy = location.accuracy;
@@ -43,15 +54,25 @@ class UserLocationPuck extends StatelessWidget {
     final direction = location.course ?? location.heading;
     final size = math.max(haloRadius * 2, 44.0);
 
-    return IgnorePointer(
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: CustomPaint(
-          painter: _PuckPainter(
-            color: color,
-            haloRadius: haloRadius,
-            directionDegrees: direction,
+    return Semantics(
+      label: semanticLabel ?? defaultSemanticLabel,
+      // A TRAP for whoever adds tap-to-recentre: an action registered anywhere
+      // inside this IgnorePointer is silently dropped. RenderIgnorePointer's
+      // describeSemanticsConfiguration sets `config.isBlockingUserActions`, and
+      // SemanticsConfiguration.absorb keeps only didGain/LoseAccessibilityFocus
+      // from a blocking child — no error, no warning, the action simply never
+      // reaches the tree. A label is unaffected, which is why this one works.
+      // The fix is to move the boundary, not to add a callback.
+      child: IgnorePointer(
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: CustomPaint(
+            painter: _PuckPainter(
+              color: color,
+              haloRadius: haloRadius,
+              directionDegrees: direction,
+            ),
           ),
         ),
       ),

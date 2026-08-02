@@ -1,4 +1,5 @@
-import 'package:flutter/scheduler.dart' show Ticker;
+import 'package:flutter/scheduler.dart' show SchedulerBinding, Ticker;
+import 'package:flutter/semantics.dart' show SemanticsBinding;
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
     show LatLng, MapLibreMapProjector;
@@ -59,6 +60,51 @@ class _MarkerOverlayState extends State<MarkerOverlay>
   // How long to keep frame-ticking after the last camera change. Covers the
   // render-thread latency between a command and the frame that shows it.
   static const Duration _settleWindow = Duration(milliseconds: 400);
+
+  // Which markers the delegate actually painted, written during paint, and the
+  // copy the last build used. Two lists rather than one because the first is
+  // mutated inside paint and the second may only change inside setState.
+  //
+  // This exists because [Flow] culls in PAINT and semantics are built from the
+  // WIDGET tree: RenderFlow does not override visitChildrenForSemantics, and
+  // applyPaintTransform leaves the identity for a child it never positioned.
+  // So without this every culled marker publishes a node at the overlay's
+  // layout origin, and a screen reader reads out a pile of off-screen markers
+  // stacked at (0, 0) — CLAUDE.md §11's Flow-reports-the-layout-origin trap,
+  // in the semantics tree. Subclassing RenderFlow to fix it properly is not
+  // available: its _lastPaintOrder is private.
+  final List<bool> _painted = <bool>[];
+  List<bool> _semanticsVisible = const <bool>[];
+  bool _syncScheduled = false;
+
+  /// Copies the painted set into build state, one frame later.
+  ///
+  /// Deliberately gated and deliberately lagging. **Gated** on semantics being
+  /// enabled, because the whole point of the [Flow] is that a camera tick moves
+  /// layers without rebuilding widgets, and an unconditional per-frame setState
+  /// here would rebuild every marker child on every frame of every pan — the
+  /// exact cost this overlay exists to avoid. **Lagging** because the answer is
+  /// only known during paint, and one frame of staleness in the semantics tree
+  /// is imperceptible where a dropped frame is not.
+  void _syncSemanticsVisibility() {
+    if (_syncScheduled || !SemanticsBinding.instance.semanticsEnabled) return;
+    _syncScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _syncScheduled = false;
+      if (!mounted) return;
+      if (_semanticsVisible.length == _painted.length) {
+        var same = true;
+        for (var i = 0; i < _painted.length; i++) {
+          if (_painted[i] != _semanticsVisible[i]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+      setState(() => _semanticsVisible = List<bool>.of(_painted));
+    });
+  }
 
   @override
   void initState() {
@@ -132,6 +178,11 @@ class _MarkerOverlayState extends State<MarkerOverlay>
 
   @override
   Widget build(BuildContext context) {
+    if (_painted.length != widget.markers.length) {
+      _painted
+        ..clear()
+        ..addAll(List<bool>.filled(widget.markers.length, false));
+    }
     return ClipRect(
       child: Flow(
         delegate: _MarkerFlowDelegate(
@@ -140,6 +191,8 @@ class _MarkerOverlayState extends State<MarkerOverlay>
           markers: widget.markers,
           dragIndex: _dragIndex,
           dragScreen: _dragScreen,
+          painted: _painted,
+          onPainted: _syncSemanticsVisibility,
         ),
         children: [
           for (var i = 0; i < widget.markers.length; i++)
@@ -165,6 +218,14 @@ class _MarkerOverlayState extends State<MarkerOverlay>
         child: child,
       );
     }
+    // A marker the delegate did not paint is not on screen, so it must not be
+    // in the semantics tree either — see [_syncSemanticsVisibility]. Defaults
+    // to visible before the first paint has reported, and stays that way for
+    // the whole life of a map with no assistive technology running.
+    final bool onScreen = i < _semanticsVisible.length
+        ? _semanticsVisible[i]
+        : true;
+    child = ExcludeSemantics(excluding: !onScreen, child: child);
     // Honor the marker's identity so child state survives list reorders. Flow
     // matches children positionally; a key keeps the right element with the
     // right marker. Fall back to the position when none is given.
@@ -185,12 +246,19 @@ class _MarkerFlowDelegate extends FlowDelegate {
     required this.markers,
     required this.dragIndex,
     required this.dragScreen,
+    required this.painted,
+    required this.onPainted,
   }) : super(repaint: repaint);
 
   final MapLibreMapProjector projector;
   final List<MapLibreMarker> markers;
   final int? dragIndex;
   final Offset dragScreen;
+
+  /// Written during paint, read one frame later by the overlay state to keep
+  /// culled markers out of the semantics tree.
+  final List<bool> painted;
+  final VoidCallback onPainted;
 
   // Reused across the per-camera-tick repaints of a single delegate instance, so
   // a moving map does no per-frame allocation. Sized once for this marker list.
@@ -231,6 +299,7 @@ class _MarkerFlowDelegate extends FlowDelegate {
         ? 0
         : projector.project(_points, _out, visible: _visible);
     final Size overlay = context.size;
+    painted.fillRange(0, painted.length, false);
 
     for (final i in _paintOrder) {
       final bool dragged = i == dragIndex;
@@ -268,7 +337,9 @@ class _MarkerFlowDelegate extends FlowDelegate {
       }
 
       context.paintChild(i, transform: Matrix4.translationValues(dx, dy, 0));
+      if (i < painted.length) painted[i] = true;
     }
+    onPainted();
   }
 
   @override

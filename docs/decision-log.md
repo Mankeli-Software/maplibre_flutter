@@ -1917,4 +1917,66 @@ stage that grows that surface, and each ships with a `@Deprecated` alias for one
 operative half of that decision is the constraint it puts on the intervening stages: no new API may
 be added under the old vocabulary.
 
+---
+
+## 2026-08-02 — Accessibility: what is settled before any of it ships
+
+Research and design are in `docs/accessibility.md`. Five things there are decisions rather than
+findings, and CLAUDE.md §3/§9 require each to be written down here rather than discovered later in a
+diff.
+
+**1. `MapControls` defaults ON.** An opt-out-only *visual* change to every consumer's map, which is
+normally the wrong default. It is right here because SC 2.5.1 (Level A) and 2.5.7 (AA) are pointer
+criteria: **no amount of `Semantics` discharges them**, and the obligation is created by the
+pinch/rotate/shove gestures *this package ships*. Shipping them with no single-pointer alternative
+hands every consumer a conformance failure they did not choose and cannot see. The precedent is
+exact — `showAttribution` already defaults `true` because displaying a credit is a licence
+condition. The presentation defaults to a collapsible cluster so it is a default a designer keeps
+rather than deletes.
+
+**2. `providesOwnSemantics` on the sealed `MapLibreRenderHandle` — base-contract churn, accepted.**
+§3 says optional capabilities are feature-detected with `is`, not added to the base contract, and
+that contract churn is the most expensive kind. This is the exception, on the evidence that no
+cheaper mechanism can express it: **both web tiers hand back an `ElementViewHandle` and only gl-js
+has canvas ARIA; both SDK tiers hand back a `PlatformViewHandle` and only the Apple SDK has a rich
+`UIAccessibilityContainer`.** Branching on the handle's type is therefore *wrong*, not merely ugly.
+A marker interface on the controller would work but puts the answer somewhere the widget is not
+already looking — it already `switch`es on the handle. Every subclass constructor forwards the
+field; it is renderer trivia, so it gets no `MapLibreCapabilities` row.
+
+**3. A flat locale map, not `flutter_localizations` + `.arb`.** Identical key names are the whole
+point: an app's existing gl-js translations and Apple's 24 shipped BSD-3 locales line up 1:1 with
+ours. Taking `intl` would also break this package's standing refusal of avoidable dependencies (it
+already refuses `url_launcher` for attribution links and `geolocator` for the puck), and would add a
+third generated-code surface needing a regen-diff check that dispatch-only CI would never run. The
+price is honest and recorded: `.one`/`.other` cannot express Slavic `few`/`many`. **Apple keys are
+only imported where the semantics survive** — we speak a zoom level where Apple speaks a
+magnification factor, so reusing `MAP_A11Y_VALUE_ZOOM` would give 24 languages a wrong string.
+
+**4. `MapGestureSettings` supersedes `docs/api-parity-binding-spec.md:3040`.** That row fixed
+gl-js-flavoured names (`keyboard`, `dragRotate`, `scrollZoom`). §9 says gesture toggles copy Android
+`UiSettings`' `…GesturesEnabled` suffix, because gl-js's names are DOM-input-flavoured and mean
+nothing on a phone. The spec row is the stale one. The two existing flat props land with
+`@Deprecated` aliases for one release.
+
+**5. Feature nodes require `layerIds` and ship no default allowlist.** Apple hardcodes the Mapbox
+Streets source-layer names *behind* an `isMapboxStreets` gate (`MLNVectorTileSource.mm:191-199`), so
+copying the allowlist would reproduce a feature that is dead on every MapLibre style, and guessing a
+schema would announce wrong names. **A wrong announcement is worse than silence.** The honest
+consequence is that the most differentiating part of the design reaches only apps that read the
+docs — the same outcome Apple's gate produces, by a different route, and chosen rather than
+inherited.
+
+### Two things the design got wrong, corrected by tests
+
+Both are axis/merge conventions of exactly the class §11 warns about, and both rendered plausibly.
+
+- **`scrollDown` increases latitude**, not decreases it. Flutter documents `onScrollDown` as "a user
+  moving their finger across the screen from top to bottom" and our `panBy` takes a finger delta —
+  two independent finger conventions that agree. The design had reasoned from viewport motion.
+- **`Semantics(link: true)` inside a `WidgetSpan` merges into the enclosing paragraph.** A two-link
+  credit collapsed into one node labelled with the entire line and carrying a single tap action, so
+  the second link was unreachable and the first announced the wrong URL. `container: true` is
+  load-bearing. Any future in-paragraph annotation needs the same.
+
 _Append new decisions here with date and rationale._

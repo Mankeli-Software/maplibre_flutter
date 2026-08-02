@@ -42,6 +42,12 @@ class MapLibreFlutterIosController implements MapLibreMapPlatformController {
     viewType: kIosMapViewType,
     id: _mapId,
     creationParams: _creationParams(),
+    // `MLNMapView` is a real `UIAccessibilityContainer` — it publishes a
+    // labelled, adjustable map element plus per-annotation and per-feature
+    // children, and VoiceOver reaches all of it through the `UiKitView`. Our
+    // Dart semantics layer must stay out of the way rather than describe the
+    // same map twice.
+    providesOwnSemantics: true,
   );
 
   @override

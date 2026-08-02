@@ -85,8 +85,15 @@ class MapLibreFlutterWebController implements MapLibreMapPlatformController {
       <JSNumber>[c.longitude.toJS, c.latitude.toJS].toJS;
 
   @override
-  MapLibreRenderHandle get renderHandle =>
-      ElementViewHandle(viewType: _viewType);
+  MapLibreRenderHandle get renderHandle => ElementViewHandle(
+    viewType: _viewType,
+    // maplibre-gl-js gives its own canvas `role="region"`, a localized
+    // `aria-label` and a `tabindex`, and ships a complete `KeyboardHandler`.
+    // The browser reaches all of it natively, so synthesizing a Flutter
+    // semantics node over the top would announce the map twice and fight the
+    // engine's own key handling for focus.
+    providesOwnSemantics: true,
+  );
 
   @override
   Future<void> get onReady => _ready.future;

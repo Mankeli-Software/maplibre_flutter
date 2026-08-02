@@ -1120,18 +1120,53 @@ class MapLibreStyleController {
   /// [size] is in logical pixels; [pixelRatio] should be the display's DPR so
   /// the bitmap is crisp (the icon is registered at that scale, so the engine
   /// draws it at the right size).
+  ///
+  /// **Pass [context] if the widget contains text or lays out horizontally.**
+  /// The rasterizer builds its own throwaway tree, which inherits nothing from
+  /// the app — so without a context the icon is painted left-to-right at the
+  /// system text size, whatever the user asked for. With one, the ambient
+  /// [Directionality] and [MediaQuery] come across, which is what makes an
+  /// Arabic label read right-to-left, a `Row` of icon-then-text put the icon on
+  /// the trailing side under an RTL locale, and the whole marker grow with
+  /// `textScaler`, `boldText` and `highContrast`. [textDirection] and
+  /// [mediaQuery] set either half explicitly and win over [context], for a
+  /// caller with no element to hand.
+  ///
+  /// Supplying none of the three keeps the historical behaviour exactly —
+  /// [TextDirection.ltr] and a bare [MediaQueryData] — so no icon an existing
+  /// app registers changes size or handedness under it.
+  ///
+  /// **An icon is a bitmap, so it does not re-scale itself.** Registration is a
+  /// snapshot taken at one text scale; when the user changes theirs the
+  /// registered image is still the old size, and the engine keeps drawing it.
+  /// An app driving this from a widget should re-run [addWidgetIcon] under the
+  /// **same [id]** when the scaler changes — from `didChangeDependencies`,
+  /// which is where a [MediaQuery] change arrives — and the new bitmap replaces
+  /// the old one in place (mbgl treats a repeat `addImage` as an update; see
+  /// [updateImage]).
   Future<void> addWidgetIcon(
     String id,
     Widget widget, {
     required Size size,
     double pixelRatio = 3.0,
     bool sdf = false,
+    BuildContext? context,
+    TextDirection? textDirection,
+    MediaQueryData? mediaQuery,
   }) async {
     if (_layers == null) return;
+    // `maybeOf`, not `of`: a context from outside a WidgetsApp has neither
+    // ancestor, and a missing ambient value should fall back to the documented
+    // default rather than throw out of an icon registration.
     final image = await rasterizeWidget(
       widget,
       size: size,
       pixelRatio: pixelRatio,
+      textDirection:
+          textDirection ??
+          (context == null ? null : Directionality.maybeOf(context)),
+      mediaQuery:
+          mediaQuery ?? (context == null ? null : MediaQuery.maybeOf(context)),
     );
     try {
       final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -1161,16 +1196,24 @@ class MapLibreStyleController {
   /// clipped at an edge is the usual way that shows up). Widgets with no
   /// intrinsic size of their own — a bare [ColoredBox], say — would collapse to
   /// nothing under loose constraints, so those fall back to exactly [size].
+  ///
+  /// [textDirection] and [mediaQuery] are the ambient environment the throwaway
+  /// tree cannot inherit; see [addWidgetIcon] for what dropping them costs.
+  /// They default to [TextDirection.ltr] and a bare [MediaQueryData].
   static Future<ui.Image> rasterizeWidget(
     Widget widget, {
     required Size size,
     double pixelRatio = 3.0,
+    TextDirection? textDirection,
+    MediaQueryData? mediaQuery,
   }) async {
     // First pass: let the widget pick its own size, bounded by `size`.
     final sized = await _paintOnce(
       widget,
       constraints: BoxConstraints.loose(size),
       pixelRatio: pixelRatio,
+      textDirection: textDirection,
+      mediaQuery: mediaQuery,
     );
     if (sized != null) return sized;
 
@@ -1180,6 +1223,8 @@ class MapLibreStyleController {
       widget,
       constraints: BoxConstraints.tight(size),
       pixelRatio: pixelRatio,
+      textDirection: textDirection,
+      mediaQuery: mediaQuery,
       forceSize: size,
     );
     if (forced != null) return forced;
@@ -1192,6 +1237,8 @@ class MapLibreStyleController {
     Widget widget, {
     required BoxConstraints constraints,
     required double pixelRatio,
+    required TextDirection? textDirection,
+    required MediaQueryData? mediaQuery,
     Size? forceSize,
   }) async {
     final boundary = RenderRepaintBoundary();
@@ -1211,9 +1258,15 @@ class MapLibreStyleController {
     final element = RenderObjectToWidgetAdapter<RenderBox>(
       container: boundary,
       child: Directionality(
-        textDirection: TextDirection.ltr,
+        textDirection: textDirection ?? TextDirection.ltr,
         child: MediaQuery(
-          data: MediaQueryData(devicePixelRatio: pixelRatio),
+          // The caller's DPR overrides the ambient one whichever way round: the
+          // boundary is rasterized at `pixelRatio`, so a widget that picks an
+          // asset resolution off devicePixelRatioOf must see the ratio the
+          // bitmap is actually produced at, not the display's.
+          data: (mediaQuery ?? const MediaQueryData()).copyWith(
+            devicePixelRatio: pixelRatio,
+          ),
           child: forceSize == null
               ? widget
               : SizedBox.fromSize(size: forceSize, child: widget),

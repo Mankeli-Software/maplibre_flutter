@@ -153,6 +153,17 @@ class MapLibreCoreWebController
   }
 
   @override
+  // `providesOwnSemantics` stays false, unlike the gl-js tier: this canvas is
+  // bare — no `role`, no `aria-label`, no `tabindex` — so Flutter's semantics
+  // and Flutter's `Focus` own the map here exactly as they do on the four
+  // texture tiers, and one Dart implementation covers all five.
+  //
+  // Deliberately NOT giving the canvas its own `tabindex` + `keydown`: the
+  // moment it takes DOM focus the browser routes keys to the element and
+  // Flutter's key handling never sees them. Either the canvas owns the keyboard
+  // (the gl-js model) or Flutter does — they cannot share it. Since keyboard
+  // camera control is implemented once in Dart over `controller.camera`, this
+  // tier needs no `keydown` listener in the Emscripten shim at all.
   MapLibreRenderHandle get renderHandle =>
       ElementViewHandle(viewType: _viewType);
 

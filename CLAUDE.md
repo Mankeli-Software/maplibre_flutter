@@ -502,6 +502,8 @@ deprecated aliases are recognisable as scheduled removals rather than live API:
 | `docs/building-from-source.md` | How consumers build the engine today, and why prebuilts aren't live yet. |
 | `docs/upstream-text-centring/` | An upstream MapLibre defect we patch: centre-anchored text is not centred. Evidence images, measurements, and the **TODO to open the upstream PRs**. |
 | `docs/upstream-simulator-stencil/` | An upstream MapLibre defect we patch: the offscreen Metal renderable never attaches the stencil buffer on the iOS Simulator, so tile clipping masks stop clipping. Evidence images, measurements, and the **TODO to open the upstream PR**. |
+| `docs/accessibility.md` | The state of the art across every MapLibre binding, what WCAG 2.2 actually demands of a map, and the design. **No Flutter map package ships accessible map content** — this is the gap. |
+| `docs/upstream-apple-a11y-vendor-gate/` | An upstream MapLibre defect we do NOT patch: the Apple SDK's per-feature VoiceOver elements are gated behind `isMapboxStreets`, so they are dead on every non-Mapbox style. The highest-leverage a11y fix in the ecosystem, and the **TODO to open the upstream PR**. |
 | `docs/typed-style-api.md` | Design of the generated typed style API (built). |
 | `docs/experimental-web-core-wasm.md` | mbgl-core → WASM: status, build steps, what's left. |
 | `docs/3d-models-research.md` | How 3D models work in MapLibre; the implementation plan. |

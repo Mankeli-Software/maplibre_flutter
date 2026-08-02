@@ -9,7 +9,23 @@ import 'package:flutter/foundation.dart';
 /// stays identical everywhere.
 @immutable
 sealed class MapLibreRenderHandle {
-  const MapLibreRenderHandle();
+  const MapLibreRenderHandle({this.providesOwnSemantics = false});
+
+  /// Whether the embedded native view or DOM element already publishes its own
+  /// accessibility tree, so the widget must **not** synthesize a second one.
+  ///
+  /// This is the one accessibility fact that has to cross the interface, and it
+  /// could not be a marker interface on the controller or a branch on the
+  /// handle's type: **both web tiers hand back an [ElementViewHandle] and only
+  /// maplibre-gl-js has canvas ARIA; both SDK tiers hand back a
+  /// [PlatformViewHandle] and only the Apple SDK has a rich
+  /// `UIAccessibilityContainer`.** The type carries the wrong information, so
+  /// the renderer has to state it. It lands on the handle because the widget
+  /// already switches there.
+  ///
+  /// Renderer trivia, not an app-facing ability — hence a defaulted field here
+  /// rather than a [MapLibreCapabilities] row.
+  final bool providesOwnSemantics;
 }
 
 /// Embed via `AndroidView` / `UiKitView` — used by the mobile SDK tier.
@@ -19,6 +35,7 @@ final class PlatformViewHandle extends MapLibreRenderHandle {
     required this.viewType,
     this.id,
     this.creationParams,
+    super.providesOwnSemantics,
   });
 
   /// Registered platform-view type name.
@@ -38,6 +55,9 @@ final class PlatformViewHandle extends MapLibreRenderHandle {
 /// Embed via a `Texture` widget — used by the desktop core tier.
 @immutable
 final class TextureHandle extends MapLibreRenderHandle {
+  /// A [Texture] contributes no semantics of its own — the string "semantic"
+  /// does not occur in Flutter's `texture.dart` at all — so this tier never sets
+  /// [providesOwnSemantics] and the widget owns the whole tree.
   const TextureHandle({required this.textureId});
 
   /// Engine texture id registered by the native plugin's texture registrar.
@@ -47,7 +67,7 @@ final class TextureHandle extends MapLibreRenderHandle {
 /// Embed via `HtmlElementView` — used by the web tier.
 @immutable
 final class ElementViewHandle extends MapLibreRenderHandle {
-  const ElementViewHandle({required this.viewType});
+  const ElementViewHandle({required this.viewType, super.providesOwnSemantics});
 
   /// Registered platform-view type name for the `<div>` host element.
   final String viewType;

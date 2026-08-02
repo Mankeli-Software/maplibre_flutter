@@ -97,13 +97,35 @@ class MapLibreAttributionBar extends StatelessWidget {
         WidgetSpan(
           alignment: PlaceholderAlignment.baseline,
           baseline: TextBaseline.alphabetic,
-          child: GestureDetector(
-            onTap: () => tap(link.url),
-            child: Text(
-              link.text,
-              style: base.copyWith(
-                color: const Color(0xFF1565C0),
-                decoration: TextDecoration.underline,
+          // The tap ALREADY reaches the semantics tree — GestureDetector's
+          // excludeFromSemantics defaults false — so what a screen reader is
+          // missing is not the action but the ROLE: it announces a tappable
+          // run of text and never the word "link". `link`/`linkUrl` annotate
+          // the same node rather than adding one, because a flag never
+          // conflicts with an action and the configurations merge.
+          //
+          // A texture-rendered map has no DOM, so there is no browser-provided
+          // credit underneath this and no second copy anywhere — and reaching
+          // the licence text is a licence condition.
+          child: Semantics(
+            // `container: true` is load-bearing, not tidiness. Without it the
+            // annotation merges straight up into the enclosing paragraph's
+            // node, and a credit with two links becomes ONE node labelled with
+            // the entire credit line, carrying one isLink flag and whichever
+            // tap action merged last. Verified by dumping the tree: the label
+            // read "© OpenStreetMap contributors" and the second link was
+            // unreachable. Own node per link, or the role is a lie.
+            container: true,
+            link: true,
+            linkUrl: Uri.tryParse(link.url),
+            child: GestureDetector(
+              onTap: () => tap(link.url),
+              child: Text(
+                link.text,
+                style: base.copyWith(
+                  color: const Color(0xFF1565C0),
+                  decoration: TextDecoration.underline,
+                ),
               ),
             ),
           ),
