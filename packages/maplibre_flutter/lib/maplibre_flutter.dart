@@ -37,6 +37,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 export 'geojson.dart';
 export 'src/a11y/formatters.dart';
 export 'src/a11y/locale.dart';
+export 'src/a11y/map_controls.dart' hide MapLibreMapControls;
 // The wrapper widget itself is widget-glue, like the controller's attach/detach
 // — apps configure it through `MapLibreMap.semantics`, never by mounting it.
 export 'src/a11y/map_semantics.dart' hide MapLibreMapSemantics;

@@ -14,6 +14,7 @@ import 'marker.dart';
 import 'attribution_bar.dart';
 import 'user_location_puck.dart';
 import 'a11y/locale.dart';
+import 'a11y/map_controls.dart';
 import 'a11y/map_semantics.dart';
 import 'marker_overlay.dart';
 
@@ -48,6 +49,7 @@ class MapLibreMap extends StatefulWidget {
     this.userLocationBuilder,
     this.semantics = const MapLibreSemantics(),
     this.locale = const MapLibreLocale(),
+    this.controls = const MapControls(),
   });
 
   /// The MapLibre style, in any of three forms:
@@ -220,6 +222,14 @@ class MapLibreMap extends StatefulWidget {
   /// (the Apple SDK tier and the maplibre-gl-js tier), where synthesizing a
   /// second one would announce the map twice.
   final MapLibreSemantics semantics;
+
+  /// Single-pointer alternatives to the map's multipoint gestures. **On by
+  /// default**, because WCAG 2.2 SC 2.5.1 (Level A) and SC 2.5.7 (AA) are
+  /// pointer criteria created by the pinch, rotate and shove this widget
+  /// itself ships — the same reasoning that makes [showAttribution] default
+  /// true for a licence condition. [MapControls.none] opts out and hands both
+  /// criteria to the app.
+  final MapControls controls;
 
   /// The strings every accessibility label, hint and action is drawn from.
   ///
@@ -533,20 +543,44 @@ class _MapLibreMapState extends State<MapLibreMap> with WidgetsBindingObserver {
           rotateGesturesEnabled: widget.rotateGesturesEnabled,
           tiltGesturesEnabled: widget.tiltGesturesEnabled,
         );
+        final controls = MapLibreMapControls(
+          controller: _controller,
+          controls: widget.controls,
+          locale: widget.locale,
+          rotateEnabled: widget.rotateGesturesEnabled,
+          tiltEnabled: widget.tiltGesturesEnabled,
+        );
         final Widget content = widget.showAttribution
             // ABOVE the marker overlay: a credit hidden behind a cluster of
             // pins is not displayed, and "displayed" is the licence condition.
+            // Paint order is map, controls, credit. SEMANTIC order is
+            // deliberately different: the controls sort FIRST, because for a
+            // switch-access or voice-control user the traversal order IS the
+            // interface, and making them scan past every marker to reach the
+            // zoom button is the difference between usable and not.
+            // OrdinalSortKey is sibling-scoped, which is exactly the scope
+            // these three share.
             ? Stack(
                 fit: StackFit.expand,
                 children: [
-                  embed,
-                  MapLibreAttributionBar(
-                    attributions: _attributions,
-                    onLinkTap: widget.onAttributionTap,
+                  Semantics(sortKey: const OrdinalSortKey(1), child: embed),
+                  Semantics(sortKey: const OrdinalSortKey(0), child: controls),
+                  Semantics(
+                    sortKey: const OrdinalSortKey(2),
+                    child: MapLibreAttributionBar(
+                      attributions: _attributions,
+                      onLinkTap: widget.onAttributionTap,
+                    ),
                   ),
                 ],
               )
-            : embed;
+            : Stack(
+                fit: StackFit.expand,
+                children: [
+                  Semantics(sortKey: const OrdinalSortKey(1), child: embed),
+                  Semantics(sortKey: const OrdinalSortKey(0), child: controls),
+                ],
+              );
 
         // The embedded view already has a real accessibility tree — the Apple
         // SDK's `UIAccessibilityContainer`, or gl-js's canvas ARIA plus its own

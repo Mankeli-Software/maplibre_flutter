@@ -25,6 +25,8 @@ class _A11yController
 
   MapCamera camera = const MapCamera(center: LatLng(0, 0), zoom: 12.4);
 
+  MapCameraConstraints? constraints;
+
   final List<CameraOptions> jumps = <CameraOptions>[];
   final List<CameraOptions> eases = <CameraOptions>[];
   final List<CameraOptions> flies = <CameraOptions>[];
@@ -90,7 +92,7 @@ class _A11yController
   @override
   Future<void> setCameraConstraints(MapCameraConstraints constraints) async {}
   @override
-  Future<MapCameraConstraints?> getCameraConstraints() async => null;
+  Future<MapCameraConstraints?> getCameraConstraints() async => constraints;
   @override
   Future<void> setConstrainToBounds({required bool wholeViewport}) async {}
   @override
@@ -98,17 +100,34 @@ class _A11yController
 }
 
 class _Platform extends MapLibreFlutterPlatform {
-  _Platform({this.providesOwnSemantics = false});
+  _Platform({
+    this.providesOwnSemantics = false,
+    this.initialCamera = const MapCamera(center: LatLng(0, 0), zoom: 12.4),
+    this.initialConstraints,
+  });
+
   final bool providesOwnSemantics;
+
+  /// Set at CONSTRUCTION, not after the pump: the controls read the camera and
+  /// the constraints once on mount, so anything assigned afterwards is a frame
+  /// too late and the test silently asserts the defaults.
+  final MapCamera initialCamera;
+  final MapCameraConstraints? initialConstraints;
   _A11yController? last;
 
   @override
   Future<MapLibreMapPlatformController> createMap({
     required String style,
     required MapOptions options,
-  }) async => last = _A11yController(
-    TextureHandle(textureId: 1, providesOwnSemantics: providesOwnSemantics),
-  );
+  }) async => last =
+      _A11yController(
+          TextureHandle(
+            textureId: 1,
+            providesOwnSemantics: providesOwnSemantics,
+          ),
+        )
+        ..camera = initialCamera
+        ..constraints = initialConstraints;
 }
 
 /// Pumps the map, then drives the 100 ms settle so the value is computed.
@@ -577,5 +596,181 @@ void main() {
         expect(controller.isMoving, isFalse);
       });
     }
+  });
+
+  group('controls — the SC 2.5.1 / 2.5.7 deliverable', () {
+    Future<_A11yController> pumpControls(
+      WidgetTester tester, {
+      MapControls controls = const MapControls(),
+      double bearing = 0,
+      MapCameraConstraints? constraints,
+    }) async {
+      final platform = _Platform(
+        initialCamera: MapCamera(
+          center: const LatLng(0, 0),
+          zoom: 12.4,
+          bearing: bearing,
+        ),
+        initialConstraints: constraints,
+      );
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: MediaQuery(
+            data: const MediaQueryData(),
+            child: MapLibreMap(
+              style: _style,
+              options: _options,
+              controls: controls,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return platform.last!;
+    }
+
+    Future<void> expand(WidgetTester tester) async {
+      tester.semantics.tap(find.semantics.byLabel('Show map controls'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('are on by default, behind one disclosure button', (
+      tester,
+    ) async {
+      await pumpControls(tester);
+      // Discoverable and operable, which is what WCAG asks for — not
+      // permanently visible, which is what gets a default deleted.
+      expect(find.semantics.byLabel('Show map controls'), findsOne);
+      expect(find.semantics.byLabel('Zoom in'), findsNothing);
+
+      await expand(tester);
+      expect(find.semantics.byLabel('Zoom in'), findsOne);
+      expect(find.semantics.byLabel('Zoom out'), findsOne);
+      expect(find.semantics.byLabel('Pan north'), findsOne);
+    });
+
+    testWidgets('MapControls.none() ships nothing', (tester) async {
+      await pumpControls(tester, controls: const MapControls.none());
+      expect(find.semantics.byLabel('Show map controls'), findsNothing);
+      expect(find.semantics.byLabel('Zoom in'), findsNothing);
+    });
+
+    testWidgets('expanded() needs no disclosure step', (tester) async {
+      await pumpControls(tester, controls: const MapControls.expanded());
+      expect(find.semantics.byLabel('Show map controls'), findsNothing);
+      expect(find.semantics.byLabel('Zoom in'), findsOne);
+    });
+
+    testWidgets('zoom in snaps to a whole level', (tester) async {
+      final controller = await pumpControls(
+        tester,
+        controls: const MapControls.expanded(),
+      );
+      tester.semantics.tap(find.semantics.byLabel('Zoom in'));
+      await tester.pumpAndSettle();
+      expect(controller.jumps.single.zoom, 13.0);
+    });
+
+    // ABSOLUTE directions again: the pad is the 2.5.7 alternative to dragging,
+    // so it has to move the map the same way a drag would.
+    testWidgets('the pan pad moves the camera the right way', (tester) async {
+      final controller = await pumpControls(
+        tester,
+        controls: const MapControls.expanded(),
+      );
+      tester.semantics.tap(find.semantics.byLabel('Pan north'));
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.latitude, greaterThan(0));
+
+      controller.eases.clear();
+      tester.semantics.tap(find.semantics.byLabel('Pan east'));
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.longitude, greaterThan(0));
+    });
+
+    // One pump per test, deliberately: a second pumpWidget reuses the element,
+    // so createMap never runs again and the new fake platform stays empty.
+    testWidgets('the compass is hidden on a north-up map', (tester) async {
+      await pumpControls(tester);
+      await expand(tester);
+      expect(find.semantics.byLabel('Compass'), findsNothing);
+    });
+
+    testWidgets('the compass appears once the map is turned', (tester) async {
+      await pumpControls(tester, bearing: 42);
+      await expand(tester);
+      expect(find.semantics.byLabel('Compass'), findsOne);
+    });
+
+    testWidgets('expanded() shows the compass even north-up', (tester) async {
+      await pumpControls(tester, controls: const MapControls.expanded());
+      expect(find.semantics.byLabel('Compass'), findsOne);
+    });
+
+    testWidgets('the compass resets north', (tester) async {
+      final controller = await pumpControls(
+        tester,
+        controls: const MapControls.expanded(),
+        bearing: 42,
+      );
+      tester.semantics.tap(find.semantics.byLabel('Compass'));
+      await tester.pumpAndSettle();
+      // resetNorth eases rather than jumps, and reports its own reason.
+      expect(controller.eases.single.bearing, 0);
+    });
+
+    testWidgets('a rotate-disabled map grows no compass', (tester) async {
+      final platform = _Platform();
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        const Directionality(
+          textDirection: TextDirection.ltr,
+          child: MediaQuery(
+            data: MediaQueryData(),
+            child: MapLibreMap(
+              style: _style,
+              options: _options,
+              rotateGesturesEnabled: false,
+              controls: MapControls.expanded(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Auto-suppressed: a button that resets a rotation the map can never have
+      // is worse than no button.
+      expect(find.semantics.byLabel('Compass'), findsNothing);
+    });
+
+    testWidgets('zoom in is disabled at the max, and says so', (tester) async {
+      await pumpControls(
+        tester,
+        controls: const MapControls.expanded(),
+        constraints: const MapCameraConstraints(maxZoom: 12.4),
+      );
+      // One property gives the visual, hasEnabledState and isEnabled together.
+      // gl-js needs two explicit calls and forgetting them was its issue #361.
+      expect(
+        find.semantics.byLabel('Zoom in').evaluate().single,
+        isSemantics(isEnabled: false, hasEnabledState: true),
+      );
+      expect(
+        find.semantics.byLabel('Zoom out').evaluate().single,
+        isSemantics(isEnabled: true, hasEnabledState: true),
+      );
+    });
+
+    testWidgets('every control meets the tap-target and label guidelines', (
+      tester,
+    ) async {
+      await pumpControls(tester, controls: const MapControls.expanded());
+      // 48x48 is Android's guideline, above WCAG 2.5.8's 24 and Apple's 44.
+      // gl-js ships 29x29 and that is its still-open issue #363.
+      await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+    });
   });
 }
