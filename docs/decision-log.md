@@ -1917,4 +1917,80 @@ stage that grows that surface, and each ships with a `@Deprecated` alias for one
 operative half of that decision is the constraint it puts on the intervening stages: no new API may
 be added under the old vocabulary.
 
+## 2026-08-01 — Offline regions, and the third upstream patch we carry
+
+`mbgl-core` cannot download an offline region under its own default tile server
+configuration: it aborts the process. That is the finding, and it is why offline took two
+attempts.
+
+**The mechanism.** `util::mapbox::createTokenMap` builds a `std::regex` out of a
+`TileServerOptions` URL template, replacing the five tokens it knows with a capture group and
+leaving the rest of the template as literal text — unescaped. In the ECMAScript grammar an
+unescaped `{` opens a quantifier, so a template with a brace that is not one of those five names
+is a syntax error rather than a brace. `MapLibreConfiguration()` — which is what
+`TileServerOptions::DefaultConfiguration()` returns — has two: the glyphs template
+`/font/{fontstack}/{start}-{end}.pbf` and the sprites template `/{path}/sprite{scale}.{format}`.
+The resulting `regex_error(error_badbrace)` is raised on mbgl's file-source thread, from
+`OfflineDownload::activateDownload`, where nothing catches it. Mapbox and MapTiler happen to use
+only the five known tokens, which is why this has survived: most SDK users configure one of those.
+
+**Why the patch touches two functions and not one.** Escaping `createTokenMap` alone converts the
+abort into a silent wrong answer. `isNormalizedSourceURL` is the gate that decides whether
+`createTokenMap` runs, and it recognised ANY `{...}` while the extractor recognises five names —
+so the MapLibre glyphs template passed the gate and came back with an empty map, and
+`canonicalizeGlyphURL` rebuilt the URL out of that nothing: every glyph range in the style becomes
+the literal string `maplibre://fonts`. **The two functions disagreeing about what a token is IS
+the bug**; the crash is one symptom of it. Both now compile the template through one helper.
+
+**It ships with its test, which the other two upstream patches do not.**
+`src/offline_url_probe.cpp` (ctest label `hermetic`) asserts the two crashing cases and the
+thirteen MapTiler expectations lifted from mbgl's own `test/util/mapbox.test.cpp` that the patch
+must not change. `docs/upstream-simulator-stencil/` names a missing committed test as the one gap
+in its submission; this one closes that gap by construction, and the probe is the artifact to
+attach to the upstream PR. → `docs/upstream-offline-url-regex/`.
+
+### The API shape, and what was left out
+
+Process-wide, not per-map, for the same reason `mbl_configure` is: a region is rows in the cache
+database, independent of any map. `MapLibreOfflineManager.instance` +
+`MapLibreOfflineRegion` handles, over a feature-detected `MapLibreOfflineStore` capability on
+`MapLibreFlutterPlatform` — one addition to the base contract rather than fourteen, which is what
+CLAUDE.md §3 asks for when a capability is this large. Names are the ones
+`docs/api-parity-binding-spec.md` fixed in advance: mbgl/Android's `OfflineRegion` over Apple's
+`OfflinePack`, `metadata` over `context` (which collides with `BuildContext`), Apple's
+`resume`/`suspend` over Android's untyped `setDownloadState(Int)`, and `setTileCountLimit` as a
+deliberate de-branding of `setOfflineMapboxTileCountLimit`.
+
+Three things the shape refuses to fake:
+
+- **`MapLibreOfflineRegionStatus.progress` returns null**, not a number, while
+  `requiredResourceCountIsPrecise` is false. mbgl grows the required total as it discovers sources,
+  so a fraction computed before then runs backwards; an indeterminate bar is the honest UI. mbgl
+  states outright that the required total in BYTES is unavailable, so there is no byte-accurate
+  progress bar to build at all.
+- **A geometry region written by another SDK is listed as `MapLibreOtherRegionDefinition` with no
+  bounds**, rather than flattened to a bounding box it never had. It can still be deleted.
+- **An id alone cannot act on a region.** mbgl's mutators take an `OfflineRegion` whose constructor
+  is private to `OfflineDatabase`, so a region from a previous run must be listed before it can be
+  resumed, deleted or observed. That is in the public dartdoc rather than worked around.
+
+Deliberately out of scope, each its own row in the binding spec: shape regions, `mergeOfflineRegions`,
+`setDatabasePath`, ambient-cache preload, `setConnected`/`NetworkStatus`, `transformRequest`. The
+ambient-cache calls that DID ship (clear, cap, reset, pack) are here because they are calls on the
+same `DatabaseFileSource` and are what a storage settings screen needs beside its region list.
+
+### Two traps this cost, both worth generalising
+
+- **A green test suite that aborts at exit is a failing test suite.** All 12 offline tests passed
+  and the process then died with `system_error: mutex lock failed: Invalid argument`. A
+  `DatabaseFileSource` owns a thread; a namespace-scope `shared_ptr` releasing the last reference
+  during static destruction joins that thread while the runtime is already tearing down. Every
+  offline global is now an intentionally leaked function-local `new`. The diagnosis was a control
+  run: a test group that touches no offline code exits 0.
+- **An async ABI call that can decline must say so synchronously.** `mbl_offline_get_region_status`
+  returns nothing for an id this process holds no region for, and a `void` version left the Dart
+  Future hanging. The first fix tried was a timeout, which is wrong twice: it cannot tell "slow"
+  from "never", and closing a `NativeCallable` that mbgl might still hold is a use-after-free. Both
+  it and `mbl_offline_set_observer` now return whether they dispatched.
+
 _Append new decisions here with date and rationale._

@@ -91,6 +91,20 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   mirror (Metal-specific). The one gap in the submission is a committed test — the defect cannot
   execute on macOS, so only a forced reproduction proves it.
   → `docs/upstream-simulator-stencil/`.
+- **Upstream PR not opened** for the offline URL-template patch we carry
+  (`patches/offline-url-template-regex.patch`), and this is the highest-severity of the three: mbgl
+  builds a `std::regex` out of a `TileServerOptions` URL template without escaping it, so an
+  unescaped `{` in the template is a quantifier rather than a brace. MapLibre's own glyphs and
+  sprites templates have one, and `MapLibreConfiguration` is the DEFAULT — so
+  `createOfflineRegion` + `setOfflineRegionDownloadState(Active)` abort the process for every
+  consumer who has not overridden the tile server, the Android and iOS SDKs included. Needs an
+  issue + PR on `maplibre-native`; no gl-js mirror (gl-js has no offline path). **Unlike the other
+  two, this one ships with its committed test** — `offline_url_probe`, ctest label `hermetic` —
+  which is the artifact to attach. A second, independent PR is owed for
+  `patches/offline-download-null-guards.patch`: two more aborts on the same thread, found by
+  asking what else there is unchecked — a null `Response::data` dereferenced for a no-content
+  style response, and `tileset.tiles[0]` read with `operator[]` on a possibly-empty vector.
+  → `docs/upstream-offline-url-regex/`.
 - ~~Known failing test: `"pinch zoom freezes its anchor…"`~~ — FIXED 2026-07-31, and it was never
   a stale test: two anchor fixes had collided and left a live touch bug where a two-finger pinch
   anchored on whichever finger moved last. `melos run test` had been red because of it, and
@@ -502,6 +516,8 @@ deprecated aliases are recognisable as scheduled removals rather than live API:
 | `docs/building-from-source.md` | How consumers build the engine today, and why prebuilts aren't live yet. |
 | `docs/upstream-text-centring/` | An upstream MapLibre defect we patch: centre-anchored text is not centred. Evidence images, measurements, and the **TODO to open the upstream PRs**. |
 | `docs/upstream-simulator-stencil/` | An upstream MapLibre defect we patch: the offscreen Metal renderable never attaches the stencil buffer on the iOS Simulator, so tile clipping masks stop clipping. Evidence images, measurements, and the **TODO to open the upstream PR**. |
+| `docs/upstream-offline-url-regex/` | An upstream MapLibre defect we patch: offline downloads abort the process under the DEFAULT tile server options, because a URL template is used unescaped as a regex. The committed reproduction, and the **TODO to open the upstream PR**. |
+| `docs/offline-design.md` | Offline regions: the shipped design, what was deliberately left out, and the two attempts it took. |
 | `docs/typed-style-api.md` | Design of the generated typed style API (built). |
 | `docs/experimental-web-core-wasm.md` | mbgl-core → WASM: status, build steps, what's left. |
 | `docs/3d-models-research.md` | How 3D models work in MapLibre; the implementation plan. |
@@ -608,6 +624,23 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   `Map::pitchBy` **subtracts** its argument, so `pitchBy(+10)` tilts down. Build both on
   `jumpTo(CameraOptions().withBearing(…).withAnchor(…))` / `.withPitch(…)`, as
   `mbl_map_rotate_by`/`mbl_map_pitch_by` do. Both are upstream-PR candidates.
+- **mbgl uses URL templates as regexes without escaping them, and the DEFAULT tile server options
+  break on it.** `util::mapbox::createTokenMap` / `isNormalizedSourceURL` compile a
+  `TileServerOptions` template into a pattern; an unescaped `{` is an ECMAScript quantifier, and
+  MapLibre's glyphs (`/font/{fontstack}/{start}-{end}.pbf`) and sprites
+  (`/{path}/sprite{scale}.{format}`) templates both have one. Fixed by
+  `patches/offline-url-template-regex.patch`. Two things generalise: the gate and the extractor
+  disagreeing about what a token is was the real defect (escaping alone turns the abort into every
+  glyph URL canonicalising to `maplibre://fonts`), and **a `regex_error` rather than a match failure
+  means a pattern was CONSTRUCTED from bad data** — which is what narrows the search from "somewhere
+  in mbgl" to "where does mbgl build a pattern out of data".
+- **Anything mbgl gives you that owns a thread must not be destroyed at static-destruction time.**
+  A namespace-scope `shared_ptr<DatabaseFileSource>` releasing its last reference at exit joins the
+  database thread while the runtime is tearing itself down: `system_error: mutex lock failed:
+  Invalid argument`, and a non-zero exit **after** every test has passed. Hold such things in an
+  intentionally leaked function-local `new`. Conversely you MUST hold a strong reference —
+  `FileSourceManager` remembers file sources weakly, so without one the thread dies as soon as no
+  map references it, mid-download.
 - **`CameraOptions::anchor` is silently discarded whenever `center` is set**
   (`transform.cpp`: `anchor = camera.center ? nullopt : camera.anchor`). Since `mbl_map_set_camera`
   always sends a centre, an anchored rotate/zoom can never be implemented as get-camera-then-
@@ -641,6 +674,10 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   actually exclude before concluding the platform is lying.
 - A warm browser profile serves a cached `.wasm` despite `Cache-Control: no-store` — relaunch
   headless Edge with a fresh `--user-data-dir` after rebuilding.
+- **"All tests passed" followed by a non-zero exit is a FAILING suite.** `dart test` prints its
+  summary before the VM tears the process down, so a static-destruction abort lands *after* the
+  green line and is easy to read as noise. Check the exit code, and diagnose with a control run —
+  a group that touches none of the new code exiting 0 localises it immediately.
 
 ### Flutter / Dart
 
@@ -662,6 +699,12 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   at runtime with `dlsym: symbol not found` — while the header, the declaration and
   `FFI_PLUGIN_EXPORT` all look right. `nm` showing the symbol absent *entirely* (not even mangled) is
   the tell.
+
+- **An async C ABI entry point that can DECLINE must say so synchronously.** If a callback-taking
+  function can return without ever calling back (an id the shim holds nothing for, a map that is
+  gone), the Dart Future built on it hangs forever. Return whether it dispatched. A timeout is the
+  wrong fix twice over: it cannot tell "slow" from "never", and closing a `NativeCallable` the
+  engine might still hold is a use-after-free.
 
 - **`set_source_files_properties` is directory-scoped** and silently no-ops for a target defined
   in a submodule subdirectory. Use `target_compile_definitions`.

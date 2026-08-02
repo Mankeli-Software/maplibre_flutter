@@ -2,6 +2,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'maplibre_map_controller.dart';
 import 'map_options.dart';
+import 'offline_store.dart';
 import 'snapshot.dart';
 
 /// The interface every platform implementation of `maplibre_flutter` extends.
@@ -71,6 +72,14 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
   /// The cache path in force, or null on a tier that has no cache. `:memory:`
   /// means there IS no persistent cache.
   String? get cachePath => null;
+
+  /// Downloading and managing offline regions, or null on a tier that cannot.
+  ///
+  /// A capability object rather than a dozen methods on this class (CLAUDE.md
+  /// §3): offline is a large, self-contained surface, and a tier that has no
+  /// persistent database — the web tiers today — should say so once instead of
+  /// stubbing every call.
+  MapLibreOfflineStore? get offlineStore => null;
 
   /// Renders a style to an image WITHOUT a map on screen — Apple
   /// `MLNMapSnapshotter`.

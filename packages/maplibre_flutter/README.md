@@ -185,7 +185,12 @@ MapLibre Style Spec** vendored in this repo — all 10 layer types, all 6 source
 and all 84 expression operators (`CircleLayer`, `SymbolLayer`, `GeoJsonSource`, `Expr.match`, …) —
 with raw Style Spec JSON still accepted as an escape hatch.
 
-Not yet wired: controls, events, 3D/terrain, and offline. These
+**Offline regions** — `MapLibreOfflineManager.instance.createRegion(...)` downloads a style, its
+tiles, glyphs and sprites for a bounding box and zoom range into the same database the tile cache
+uses, and keeps them until deleted. Progress and errors arrive as streams on the region handle. On
+the five native tiers only: the web tiers have no persistent database.
+
+Not yet wired: controls, terrain, and offline on web. These
 are binding work, not engine limitations — the underlying engines support them. The
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)
 tracks the full parity backlog, feature by feature, per platform.

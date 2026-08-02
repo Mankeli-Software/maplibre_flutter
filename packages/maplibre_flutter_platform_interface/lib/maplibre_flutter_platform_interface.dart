@@ -18,6 +18,7 @@ export 'src/maplibre_flutter_platform.dart';
 export 'src/maplibre_map_controller.dart';
 export 'src/map_options.dart';
 export 'src/model_host.dart';
+export 'src/offline_store.dart';
 export 'src/projector.dart';
 export 'src/render_handle.dart';
 export 'src/rotate_handler.dart';

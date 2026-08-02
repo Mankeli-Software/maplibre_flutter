@@ -29,20 +29,20 @@ final _repoRoot = Directory.current.path.endsWith('packages/maplibre_flutter')
 
 String _p(String relative) => '$_repoRoot/$relative';
 
-/// The tiers, in the order the matrix shows them.
+/// The tiers, in the order the matrix shows them, as their package `lib/`.
+///
+/// A DIRECTORY, not the controller file, because not every capability hangs off
+/// the map controller: `MapLibreOfflineStore` is reached through
+/// `MapLibreFlutterPlatform.offlineStore` and implemented by a class of its own,
+/// and scanning only the controller reported it as wired nowhere — which is the
+/// exact failure mode this generator exists to end.
 const _tiers = <String, String>{
-  'macOS':
-      'packages/maplibre_flutter_macos/lib/src/maplibre_flutter_macos_controller.dart',
-  'iOS':
-      'packages/maplibre_flutter_ios/lib/src/maplibre_flutter_ios_core_controller.dart',
-  'Android':
-      'packages/maplibre_flutter_android/lib/src/maplibre_flutter_android_core_controller.dart',
-  'Windows':
-      'packages/maplibre_flutter_windows/lib/src/maplibre_flutter_windows_controller.dart',
-  'Linux':
-      'packages/maplibre_flutter_linux/lib/src/maplibre_flutter_linux_controller.dart',
-  'Web (WASM)':
-      'packages/maplibre_flutter_web/lib/src/core_web/core_web_controller.dart',
+  'macOS': 'packages/maplibre_flutter_macos/lib',
+  'iOS': 'packages/maplibre_flutter_ios/lib',
+  'Android': 'packages/maplibre_flutter_android/lib',
+  'Windows': 'packages/maplibre_flutter_windows/lib',
+  'Linux': 'packages/maplibre_flutter_linux/lib',
+  'Web (WASM)': 'packages/maplibre_flutter_web/lib',
 };
 
 void main() {
@@ -89,7 +89,7 @@ void _writeCapabilities(StringBuffer buffer) {
     ..writeln(
       'Optional capabilities are feature-detected with `is` '
       '(CLAUDE.md §3), so this table is exactly the set of `implements` '
-      'clauses.',
+      'clauses across each tier\'s package.',
     )
     ..writeln()
     ..writeln('| Capability | ${_tiers.keys.join(' | ')} |')
@@ -152,22 +152,30 @@ int _memberCount(String source, int from) {
   return RegExp(r';').allMatches(body).length;
 }
 
-/// The interfaces a controller declares it implements.
-Set<String> _implementedBy(String path) {
-  final file = File(_p(path));
-  if (!file.existsSync()) return <String>{};
-  final source = file.readAsStringSync();
-  final match = RegExp(
-    r'class\s+\w+[^{]*?implements\s+([^{]+)\{',
-    dotAll: true,
-  ).firstMatch(source);
-  if (match == null) return <String>{};
-  return match
-      .group(1)!
-      .split(',')
-      .map((s) => s.trim().split('<').first.trim())
-      .where((s) => s.isNotEmpty)
-      .toSet();
+/// Every interface any class in a tier's package declares it implements.
+///
+/// Every class in the package, not just the controller, and every `implements`
+/// clause in each file rather than the first — see [_tiers].
+Set<String> _implementedBy(String libPath) {
+  final dir = Directory(_p(libPath));
+  if (!dir.existsSync()) return <String>{};
+  final found = <String>{};
+  for (final file in dir.listSync(recursive: true).whereType<File>()) {
+    if (!file.path.endsWith('.dart')) continue;
+    for (final match in RegExp(
+      r'class\s+\w+[^{;]*?implements\s+([^{]+)\{',
+      dotAll: true,
+    ).allMatches(file.readAsStringSync())) {
+      found.addAll(
+        match
+            .group(1)!
+            .split(',')
+            .map((s) => s.trim().split('<').first.trim())
+            .where((s) => s.isNotEmpty),
+      );
+    }
+  }
+  return found;
 }
 
 /// The C ABI surface, grouped by the header's own section comments.

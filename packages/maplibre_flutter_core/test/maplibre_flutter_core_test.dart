@@ -2868,4 +2868,469 @@ void main() {
     map.setDiagnosticCallback(null);
     await Future<void>.delayed(const Duration(milliseconds: 200));
   });
+
+  // --- Offline regions -------------------------------------------------------
+  //
+  // Runs after the 'resource configuration' group, which is what puts a real
+  // cache path in force. That ordering is load-bearing and cannot be undone
+  // here: mbl_configure refuses once a map exists, and by this point in the
+  // file many have.
+  group('offline regions', () {
+    // A box small enough that the whole pyramid is a handful of tiles, over
+    // demotiles — the same style every other test in this file uses.
+    const styleUrl = 'https://demotiles.maplibre.org/style.json';
+    const bounds = (swLat: 51.0, swLng: -0.6, neLat: 51.8, neLng: 0.4);
+
+    setUpAll(() {
+      // A region written to `:memory:` dies with the process, so every
+      // assertion below would be testing nothing.
+      //
+      // Running the whole file, the resource-configuration group has already
+      // put a real path in force. Running `--name "offline regions"` it has
+      // not — and then no map exists yet either, so configuring one here still
+      // works. Doing both is what makes this group runnable on its own; the
+      // temp directory is deliberately not deleted, for the reason that group
+      // records.
+      if (MapLibreCoreSettings.cachePath == ':memory:' ||
+          MapLibreCoreSettings.cachePath.isEmpty) {
+        final dir = Directory.systemTemp.createTempSync('mbl-offline-test');
+        MapLibreCoreSettings.configure(cachePath: '${dir.path}/offline.db');
+      }
+      expect(
+        MapLibreCoreSettings.cachePath,
+        isNot(anyOf(':memory:', '')),
+        reason: 'the offline group needs a real cache path',
+      );
+    });
+
+    // Leave the database as we found it whatever a test does, so a failure
+    // mid-download does not leak a region into every later run.
+    Future<void> deleteAll() async {
+      for (final region in await MapLibreCoreOffline.listRegions()) {
+        await MapLibreCoreOffline.deleteRegion(region.id);
+      }
+    }
+
+    tearDown(deleteAll);
+
+    test('a definition round-trips through create and list', () async {
+      final id = await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 3,
+        pixelRatio: 2,
+        metadata: Uint8List.fromList(utf8.encode('London, 0-3')),
+      );
+      expect(id, greaterThan(0));
+
+      final regions = await MapLibreCoreOffline.listRegions();
+      expect(regions, hasLength(1));
+      final region = regions.single;
+
+      expect(region.id, id);
+      expect(region.kind, CoreOfflineRegionKind.tilePyramid);
+      expect(region.styleUrl, styleUrl);
+      expect(region.minZoom, 0);
+      expect(region.maxZoom, 3);
+      expect(region.pixelRatio, 2);
+      expect(region.includeIdeographs, isFalse);
+      expect(utf8.decode(region.metadata), 'London, 0-3');
+
+      // Asymmetric on purpose (CLAUDE.md §11): a box whose corners are all
+      // distinct catches a swapped north/south or east/west, which a square
+      // around the origin cannot.
+      expect(region.bounds, isNotNull);
+      expect(region.bounds!.swLat, closeTo(bounds.swLat, 1e-9));
+      expect(region.bounds!.swLng, closeTo(bounds.swLng, 1e-9));
+      expect(region.bounds!.neLat, closeTo(bounds.neLat, 1e-9));
+      expect(region.bounds!.neLng, closeTo(bounds.neLng, 1e-9));
+
+      // A region starts INACTIVE — every SDK over mbgl behaves this way and
+      // everyone trips over it once.
+      expect(region.status.downloadState, CoreOfflineDownloadState.inactive);
+      expect(region.status.completedResourceCount, 0);
+    });
+
+    test('an infinite max zoom survives the JSON round-trip', () async {
+      // JSON has no infinity, so the ABI encodes it as null. A stand-in number
+      // would silently redefine the region as bounded.
+      final id = await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 4,
+        maxZoom: double.infinity,
+      );
+      final region = (await MapLibreCoreOffline.listRegions()).single;
+      expect(region.id, id);
+      expect(region.minZoom, 4);
+      expect(region.maxZoom, double.infinity);
+    });
+
+    test('an empty metadata blob comes back empty, not null', () async {
+      await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 1,
+      );
+      expect(
+        (await MapLibreCoreOffline.listRegions()).single.metadata,
+        isEmpty,
+      );
+    });
+
+    test('metadata can be replaced, including with non-UTF-8 bytes', () async {
+      final id = await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 1,
+        metadata: Uint8List.fromList(utf8.encode('before')),
+      );
+
+      // mbgl stores a BLOB and tells bindings not to impose a format on it, so
+      // a byte sequence that is not text — including an embedded NUL — has to
+      // survive. A `char *` ABI would have truncated this at the NUL.
+      final raw = Uint8List.fromList([0x00, 0xFF, 0x10, 0x00, 0x80]);
+      await MapLibreCoreOffline.setMetadata(id, raw);
+
+      final region = (await MapLibreCoreOffline.listRegions()).single;
+      expect(region.metadata, orderedEquals(raw));
+    });
+
+    test(
+      'an invalid definition is reported, never thrown across the ABI',
+      () async {
+        // mbgl's LatLng constructor throws on a bad latitude, and a throw
+        // crossing `extern "C"` is undefined behaviour — so these are checked
+        // before mbgl sees them and reported through the Future.
+        Future<void> expectRejected(
+          Future<int> Function() call,
+          String because,
+        ) async {
+          await expectLater(
+            call(),
+            throwsA(isA<CoreOfflineException>()),
+            reason: because,
+          );
+        }
+
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: '',
+            bounds: bounds,
+            minZoom: 0,
+            maxZoom: 1,
+          ),
+          'an empty style URL',
+        );
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: (swLat: 0, swLng: 0, neLat: 91, neLng: 1),
+            minZoom: 0,
+            maxZoom: 1,
+          ),
+          'a latitude past the pole',
+        );
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: (swLat: 10, swLng: 0, neLat: 0, neLng: 1),
+            minZoom: 0,
+            maxZoom: 1,
+          ),
+          'north below south',
+        );
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: bounds,
+            minZoom: 5,
+            maxZoom: 2,
+          ),
+          'max zoom below min zoom',
+        );
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: bounds,
+            minZoom: 0,
+            maxZoom: 1,
+            pixelRatio: 0,
+          ),
+          'a zero pixel ratio',
+        );
+
+        // The two a plausible guard lets through, and that mbgl's own
+        // definition constructor then THROWS on — across `extern "C"`, which is
+        // UB and in practice an abort. Every comparison with NaN is false, so
+        // `max_zoom < min_zoom` does not catch a NaN max zoom; and
+        // `pixel_ratio > 0` is true for +infinity. Neither is exotic — both
+        // come out of a division by zero, which is how a zoom range or a device
+        // pixel ratio gets computed.
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: bounds,
+            minZoom: 0,
+            maxZoom: double.nan,
+          ),
+          'a NaN max zoom',
+        );
+        await expectRejected(
+          () => MapLibreCoreOffline.createRegion(
+            styleUrl: styleUrl,
+            bounds: bounds,
+            minZoom: 0,
+            maxZoom: 1,
+            pixelRatio: double.infinity,
+          ),
+          'an infinite pixel ratio',
+        );
+
+        expect(await MapLibreCoreOffline.listRegions(), isEmpty);
+      },
+    );
+
+    test('status for an unknown id resolves rather than hanging', () async {
+      // The native side cannot answer for an id it holds no region for, and
+      // says so synchronously — a timeout could not tell "slow" from "never",
+      // and freeing the callback while mbgl might still hold it would be a
+      // use-after-free.
+      expect(await MapLibreCoreOffline.getRegionStatus(999999), isNull);
+      expect(
+        MapLibreCoreOffline.setObserver(999999, onStatus: (_) {}),
+        isFalse,
+      );
+    });
+
+    test(
+      'deleting removes it, and deleting again is an error not a crash',
+      () async {
+        final id = await MapLibreCoreOffline.createRegion(
+          styleUrl: styleUrl,
+          bounds: bounds,
+          minZoom: 0,
+          maxZoom: 1,
+        );
+        await MapLibreCoreOffline.deleteRegion(id);
+        expect(await MapLibreCoreOffline.listRegions(), isEmpty);
+
+        await expectLater(
+          MapLibreCoreOffline.deleteRegion(id),
+          throwsA(isA<CoreOfflineException>()),
+        );
+      },
+    );
+
+    test('a region can be invalidated without deleting it', () async {
+      final id = await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 1,
+      );
+      await MapLibreCoreOffline.invalidateRegion(id);
+      expect((await MapLibreCoreOffline.listRegions()).single.id, id);
+    });
+
+    test(
+      'a download runs to completion — the case that used to abort the process',
+      () async {
+        // THE regression test for patches/offline-url-template-regex.patch.
+        //
+        // Before it, this exact call killed the process: OfflineDownload
+        // canonicalises the style's glyph URL first thing, mbgl built a
+        // std::regex out of the MapLibre glyphs template
+        // "/font/{fontstack}/{start}-{end}.pbf" without escaping it, and an
+        // unescaped `{` is a syntax error in the ECMAScript grammar. The
+        // resulting std::regex_error was raised on the database thread with
+        // nothing to catch it — so there was no failing assertion to see, only
+        // "Abort trap: 6" and a suite that stopped.
+        //
+        // Reaching `complete` is therefore two claims at once: the download
+        // path no longer aborts, AND the URLs it produces are ones the tile
+        // server actually answers. A crash-only fix would hang here instead,
+        // because canonicalising the glyph URL wrongly makes every glyph range
+        // 404 and requiredResourceCount never gets met.
+        final id = await MapLibreCoreOffline.createRegion(
+          styleUrl: styleUrl,
+          bounds: bounds,
+          minZoom: 0,
+          maxZoom: 1,
+        );
+
+        final statuses = <CoreOfflineRegionStatus>[];
+        final errors = <CoreOfflineError>[];
+        expect(
+          MapLibreCoreOffline.setObserver(
+            id,
+            onStatus: statuses.add,
+            onError: errors.add,
+          ),
+          isTrue,
+        );
+        addTearDown(() => MapLibreCoreOffline.setObserver(id));
+
+        MapLibreCoreOffline.setDownloadState(
+          id,
+          CoreOfflineDownloadState.active,
+        );
+
+        CoreOfflineRegionStatus? last;
+        for (var i = 0; i < 240; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          last = statuses.isEmpty ? null : statuses.last;
+          if (last != null &&
+              last.requiredResourceCountIsPrecise &&
+              last.completedResourceCount >= last.requiredResourceCount) {
+            break;
+          }
+        }
+
+        expect(
+          statuses,
+          isNotEmpty,
+          reason: 'the observer must report the download it is observing',
+        );
+        expect(last, isNotNull);
+        expect(
+          last!.requiredResourceCountIsPrecise,
+          isTrue,
+          reason:
+              'mbgl only sets this once it has enumerated the whole pyramid, '
+              'so it is the signal that the style and its sources were parsed',
+        );
+        expect(
+          last.completedResourceCount,
+          greaterThanOrEqualTo(last.requiredResourceCount),
+          reason: 'the download must actually finish, not merely start',
+        );
+        expect(last.completedResourceSize, greaterThan(0));
+        expect(
+          errors.where((e) => e.isTileCountLimit),
+          isEmpty,
+          reason: 'a region this small is nowhere near the 6000-tile cap',
+        );
+
+        // And the same numbers must be readable without an observer — which is
+        // what a UI needs after a restart, since an observer only fires on a
+        // CHANGE and a finished region never changes again.
+        final onDemand = await MapLibreCoreOffline.getRegionStatus(id);
+        expect(onDemand, isNotNull);
+        expect(
+          onDemand!.completedResourceCount,
+          greaterThanOrEqualTo(onDemand.requiredResourceCount),
+        );
+        // Every field, not just the two a progress bar reads. The observer and
+        // the listing are separate paths into the same struct, and a field the
+        // ABI forgets to carry reads as a plausible 0 rather than as an error —
+        // completedTileSize did exactly that until the callback grew it.
+        final listed = (await MapLibreCoreOffline.listRegions()).single.status;
+        expect(onDemand.completedResourceSize, listed.completedResourceSize);
+        expect(onDemand.completedTileCount, listed.completedTileCount);
+        expect(onDemand.completedTileSize, listed.completedTileSize);
+        expect(onDemand.completedTileSize, greaterThan(0));
+        expect(onDemand.requiredTileCount, listed.requiredTileCount);
+        expect(
+          (await MapLibreCoreOffline.listRegions())
+              .single
+              .status
+              .completedTileCount,
+          greaterThan(0),
+          reason: 'a tile pyramid region must have stored some tiles',
+        );
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+
+    test('removing the observer stops delivery', () async {
+      final id = await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 1,
+      );
+      final seen = <CoreOfflineRegionStatus>[];
+      expect(MapLibreCoreOffline.setObserver(id, onStatus: seen.add), isTrue);
+      MapLibreCoreOffline.setDownloadState(id, CoreOfflineDownloadState.active);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(seen, isNotEmpty);
+
+      MapLibreCoreOffline.setObserver(id);
+      MapLibreCoreOffline.setDownloadState(
+        id,
+        CoreOfflineDownloadState.inactive,
+      );
+      seen.clear();
+      MapLibreCoreOffline.setDownloadState(id, CoreOfflineDownloadState.active);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(seen, isEmpty, reason: 'unregistered means unregistered');
+      MapLibreCoreOffline.setDownloadState(
+        id,
+        CoreOfflineDownloadState.inactive,
+      );
+    });
+
+    test(
+      'the ambient cache can be capped and cleared without losing regions',
+      () async {
+        final id = await MapLibreCoreOffline.createRegion(
+          styleUrl: styleUrl,
+          bounds: bounds,
+          minZoom: 0,
+          maxZoom: 1,
+        );
+        // mbgl guarantees neither of these touches a resource an offline region
+        // requires — that guarantee is the whole point of one database.
+        await MapLibreCoreOffline.setMaximumAmbientCacheSize(8 * 1024 * 1024);
+        await MapLibreCoreOffline.clearAmbientCache();
+        await MapLibreCoreOffline.packDatabase();
+        expect((await MapLibreCoreOffline.listRegions()).single.id, id);
+
+        MapLibreCoreOffline.setTileCountLimit(50000);
+      },
+    );
+
+    test('configuring after an offline call is refused, not half-applied', () async {
+      // Building the offline database bakes the current ResourceOptions into a
+      // file source held for the process lifetime, so a cache path set
+      // afterwards can never reach it. Accepting it would leave every region in
+      // the in-memory database that dies with the process while every map used
+      // the real file — a download that appears to work and is gone next launch.
+      //
+      // **This assertion only bites when the group is run on its own**
+      // (`--name "offline regions"`): running the whole file, a map exists by
+      // now and `mbl_configure` refuses for that reason too. It cannot be a
+      // separate test FILE either — `dart test` shares one process across
+      // suites, so building the offline database there poisons the
+      // `resource configuration` group above, which needs a process where
+      // nothing has been configured yet.
+      final dir = Directory.systemTemp.createTempSync('mbl-offline-order');
+      final before = MapLibreCoreSettings.cachePath;
+      expect(
+        MapLibreCoreSettings.configure(cachePath: '${dir.path}/tiles.db'),
+        isFalse,
+      );
+      expect(
+        MapLibreCoreSettings.cachePath,
+        before,
+        reason: 'a refused configure must change NOTHING',
+      );
+    });
+
+    test('resetting the database destroys every region', () async {
+      await MapLibreCoreOffline.createRegion(
+        styleUrl: styleUrl,
+        bounds: bounds,
+        minZoom: 0,
+        maxZoom: 1,
+      );
+      expect(await MapLibreCoreOffline.listRegions(), hasLength(1));
+      await MapLibreCoreOffline.resetDatabase();
+      expect(await MapLibreCoreOffline.listRegions(), isEmpty);
+    });
+  });
 }

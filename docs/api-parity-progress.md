@@ -220,11 +220,18 @@ Highest row count in the backlog, correctly last among the core stages.
       means a custom `FileSource` registered through `FileSourceManager`, plus a Dart callback
       crossing the FFI boundary on every resource request — a per-request `NativeCallable` on the
       network path, which is a different order of risk from anything in this stage.
-- [-] 8.3 **BLOCKED — the ABI works, the DOWNLOAD aborts the process.** A full C ABI and Dart
-      wrapper were written and compiled; create/list/delete round-trips a region definition
-      correctly, and then starting the download raises an uncaught `std::regex_error` from inside
-      mbgl and kills the process. Backed out rather than shipped. Full design, the decisions worth
-      keeping, and the three things to try next: `docs/offline-design.md`.
+- [x] 8.3 `MapLibreOfflineManager` / `MapLibreOfflineRegion` over 13 `mbl_offline_*` entry points and
+      a feature-detected `MapLibreOfflineStore` — create, list, resume/suspend, progress and error
+      streams, metadata, invalidate, delete, tile-count limit, and the ambient-cache siblings that
+      share the database. **The blocker was an upstream MapLibre defect**: offline downloads abort
+      the process on the DEFAULT tile server configuration, because mbgl builds a `std::regex` out of
+      a URL template without escaping it and MapLibre's own glyphs template contains
+      `{fontstack}`. Patched (`patches/offline-url-template-regex.patch`) with a committed
+      reproduction (`offline_url_probe`, ctest label `hermetic`). Verified end to end: a region
+      downloads to completion against demotiles in the native suite.
+      → `docs/offline-design.md`, `docs/upstream-offline-url-regex/`.
+      **Not shipped, deliberately:** shape (GeoJSON) regions, `mergeOfflineRegions`,
+      `setDatabasePath`, ambient-cache preload, `setConnected`/`NetworkStatus`, `transformRequest`.
 - [x] 8.4 `MapLibreSnapshotter.take` / `.takeImage` over `MapSnapshotOptions` — a real off-screen
       render with no map on screen, verified on hardware.
 - [x] 8.5 `MapUserLocation` / `MapUserTrackingMode` / `UserLocationPuck`, fed by the app.
@@ -1441,3 +1448,61 @@ their widget tree.
   marker across two legs of an engine flight (absolute screen positions, not a round trip), and mixin
   tests for the ref-counting and the dispose race.
 - **Gates:** `analyze --fatal-infos` clean / workspace `test --no-select` green / `format` clean.
+
+### 2026-08-01 — Stage 8 (8.3) — offline, second attempt: the crash was upstream's
+
+- **The first attempt's four observations were all correct, and the fourth is what found it.** It
+  recorded that the abort happens after `createOfflineRegion` succeeds, that the shim contains no
+  regex, that removing the progress test does not avoid it, and that `regex_error` rather than a
+  match failure means a regex was CONSTRUCTED from a bad pattern. That last one narrows the search
+  to "where does mbgl build a pattern out of data": `grep -rn regex src/` in the submodule gives two
+  files, and one of them builds a `std::regex` out of a `TileServerOptions` URL template without
+  escaping it. **"Not our code" is a location, not a dead end** — the distance from the first
+  attempt's stopping point to the answer was one grep and reading the two hits.
+- **The defect is bigger than it looks.** In the ECMAScript grammar an unescaped `{` opens a
+  quantifier, so a template containing a brace that is not one of the five names `createTokenMap`
+  knows is a syntax error. MapLibre's own glyphs template is `/font/{fontstack}/{start}-{end}.pbf`
+  and its sprites template is `/{path}/sprite{scale}.{format}` — and `MapLibreConfiguration()` is
+  what `TileServerOptions::DefaultConfiguration()` returns. So `createOfflineRegion` +
+  `setOfflineRegionDownloadState(Active)` — the two calls that ARE the feature — kill the process
+  for every consumer who has not overridden the tile server, on every platform, including the
+  Android and iOS SDKs.
+- **A crash fix that is only a crash fix would have been worse than the crash.** The gate
+  (`isNormalizedSourceURL`, which recognises ANY `{...}`) and the extractor (`createTokenMap`, which
+  recognises five names) disagreed about what a token is. Escaping alone leaves the gate letting the
+  glyphs template through to an extractor that returns an empty map, and `canonicalizeGlyphURL`
+  rebuilds the URL out of that nothing: every glyph range in the style becomes the string
+  `maplibre://fonts`. That is a download that runs, completes, and produces an unusable region.
+  Both functions now compile the template the same way.
+- **It ships with a committed reproduction, which the other two upstream patches lack.**
+  `offline_url_probe` (ctest label `hermetic`, no GPU, no network, 0.2 s) asserts the two crashing
+  cases AND the thirteen MapTiler expectations lifted from mbgl's own `test/util/mapbox.test.cpp`
+  that the patch must not change. Reverting `mapbox.cpp` and rebuilding turns exactly the two
+  MapLibre rows red. → `docs/upstream-offline-url-regex/`.
+- **The end-to-end test is the one that proves both halves.** `a download runs to completion` builds
+  a region over London at z0–1 against demotiles, activates it, and waits for
+  `completedResourceCount >= requiredResourceCount` with `requiredResourceCountIsPrecise`. Reaching
+  that says the path no longer aborts AND that the URLs it produces are ones the server answers — a
+  crash-only fix hangs there instead, because a wrongly canonicalised glyph URL 404s forever.
+- **A green suite that aborts at exit is still a failure.** All 12 offline tests passed and the
+  process then died with `system_error: mutex lock failed: Invalid argument`. A `DatabaseFileSource`
+  owns a thread, and a namespace-scope `shared_ptr` releasing the last reference at
+  static-destruction time joins it while the runtime is tearing itself down. Every offline global is
+  now a function-local `new` that is never deleted. The control was the giveaway: a group that
+  touches no offline code exits 0.
+- **Two ABI calls return whether they dispatched**, which is not decoration.
+  `mbl_offline_get_region_status` and `mbl_offline_set_observer` cannot answer for an id this
+  process holds no `OfflineRegion` for, and a `void` version left the Dart Future hanging forever.
+  The first fix attempted was a timeout, which is wrong twice over: it cannot distinguish "slow"
+  from "never", and closing a `NativeCallable` mbgl might still hold is a use-after-free.
+- **Region metadata is bytes at every layer**, including the C ABI (`const uint8_t *` + length) and
+  the public Dart (`Uint8List`). mbgl's header asks bindings not to impose a format so the database
+  stays portable between SDKs; a `char *` would truncate at the first NUL, and the listing carries
+  it as base64 because JSON cannot hold arbitrary bytes. There is a test with an embedded NUL.
+- **The generated feature matrix was reporting offline as wired nowhere, and that was the
+  generator's bug.** It scanned each tier's map-controller file for `implements` clauses, and
+  `MapLibreOfflineStore` hangs off `MapLibreFlutterPlatform` instead, implemented by a class of its
+  own. It now scans each tier's whole package `lib/`. No other cell changed — which is the check
+  that widening the scan introduced no false positives.
+- **Gates:** `analyze` clean / `test --no-select` green (+24 new) / `test:native` green (89, was 77)
+  / `test:harness:hermetic` green (3, was 2) / matrix regenerated.

@@ -13,7 +13,7 @@ Only macOS and iOS have been exercised on hardware; see
 
 ## Capabilities by tier
 
-Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this table is exactly the set of `implements` clauses.
+Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this table is exactly the set of `implements` clauses across each tier's package.
 
 | Capability | macOS | iOS | Android | Windows | Linux | Web (WASM) |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -22,6 +22,7 @@ Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this ta
 | `MapLibreMapEvents` (6 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreMapProjector` (3 members) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MapLibreModelHost` (7 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| `MapLibreOfflineStore` (14 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreResizeMaskHint` (0 members) | — | — | — | ✅ | ✅ | — |
 | `MapLibreRotateHandler` (3 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreStyleLayers` (31 members) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -29,13 +30,26 @@ Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this ta
 ## C ABI surface
 
 Every `FFI_PLUGIN_EXPORT` in `maplibre_flutter_core.h` — the whole engine surface the Dart tiers can reach. 
-**74 entry points.**
+**87 entry points.**
 
 <details><summary>Full list</summary>
 
 - `mbl_map_set_diagnostic_callback`
 - `mbl_configure`
 - `mbl_get_cache_path`
+- `mbl_offline_create_region`
+- `mbl_offline_set_metadata`
+- `mbl_offline_list_regions`
+- `mbl_offline_set_download_state`
+- `mbl_offline_get_region_status`
+- `mbl_offline_set_observer`
+- `mbl_offline_delete_region`
+- `mbl_offline_invalidate_region`
+- `mbl_offline_set_tile_count_limit`
+- `mbl_offline_pack_database`
+- `mbl_offline_clear_ambient_cache`
+- `mbl_offline_set_maximum_ambient_cache_size`
+- `mbl_offline_reset_database`
 - `mbl_map_create`
 - `mbl_map_set_style`
 - `mbl_map_set_camera`

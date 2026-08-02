@@ -123,8 +123,11 @@ FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
 // reached the same conclusion and shipped `MLNSettings` as a static
 // configure-before-first-map surface; this mirrors it.
 
-// Configure resources. Returns 1 on success, 0 if a map already exists (too
-// late — the file sources are built and shared by then).
+// Configure resources. Returns 1 on success, 0 if it is too late — a map
+// already exists, or an mbl_offline_* call has already built the offline
+// database. Both bake the current options into a file source that is then
+// shared for the process lifetime, so a later change would apply to nothing
+// while looking like it had worked.
 //
 // `cache_path`: the SQLite cache database. mbgl's own default is `:memory:`,
 // which means every restart re-downloads every tile — so passing a real path
@@ -142,6 +145,239 @@ FFI_PLUGIN_EXPORT int mbl_configure(const char *cache_path,
 // The cache path in force, as a heap string (mbl_string_free), so a caller can
 // report what it actually got rather than what it asked for.
 FFI_PLUGIN_EXPORT char *mbl_get_cache_path(void);
+
+// --- Offline regions ----------------------------------------------------------
+//
+// Download a style and everything it needs for a bounding box and zoom range,
+// into the SAME database mbl_configure named, and keep it there until deleted.
+// Apple's shapes (MLNOfflineStorage / MLNOfflinePack /
+// MLNTilePyramidOfflineRegion), because gl-js has no offline vocabulary at all.
+//
+// **Process-wide, not per-map**, for the same reason mbl_configure is: a region
+// is rows in the cache database, so it exists independently of any map, and
+// downloading one benefits every map afterwards. There is no map handle in this
+// section by design.
+//
+// **A region is identified by its int64 id everywhere.** mbgl's mutators take an
+// `OfflineRegion` object with a private constructor, which cannot cross a C ABI,
+// so the shim keeps the objects mbgl handed it in a table and maps ids back.
+//
+// **Everything here is asynchronous and every callback fires on mbgl's DATABASE
+// thread**, so a Dart handler must be a `NativeCallable.listener`.
+//
+// **A region download needs a real cache path.** With mbgl's default `:memory:`
+// the region is written to a database that dies with the process, which looks
+// exactly like a download that did nothing. Call mbl_configure first.
+
+// Matches `mbgl::OfflineRegionDownloadState`.
+typedef enum {
+  MBL_OFFLINE_INACTIVE = 0,
+  MBL_OFFLINE_ACTIVE = 1,
+} MblOfflineDownloadState;
+
+// `required_is_precise` when the status could not be read at all — see
+// mbl_offline_get_region_status. Never sent to an observer.
+#define MBL_OFFLINE_STATUS_UNAVAILABLE (-1)
+
+// A region's progress. `state` is an MblOfflineDownloadState.
+//
+// `required_is_precise` is 0 until mbgl has enumerated the whole tile pyramid,
+// and it is the reason this field exists rather than being hidden: before it
+// turns 1, `required_resources` is a LOWER BOUND that grows as sources are
+// discovered, so `completed / required` runs backwards and a progress bar built
+// on it jumps. Show a spinner until it is 1. It is
+// MBL_OFFLINE_STATUS_UNAVAILABLE (-1) only in the one case documented on
+// mbl_offline_get_region_status, and every other field is then 0.
+typedef void (*MblOfflineProgressCallback)(void *user, int64_t region_id,
+                                           int32_t state,
+                                           uint64_t completed_resources,
+                                           uint64_t required_resources,
+                                           int required_is_precise,
+                                           uint64_t completed_bytes,
+                                           uint64_t completed_tiles,
+                                           uint64_t required_tiles,
+                                           uint64_t completed_tile_bytes);
+
+// Why a download is not finishing. `message` is a heap string TRANSFERRED to the
+// callee (mbl_string_free), never NULL.
+//
+// `is_tile_limit` distinguishes the one error that is not transient: mbgl caps
+// the number of tiles ONE DATABASE may hold across all regions whose URLs
+// canonicalise under the configured tile server's scheme (6000 by default, see
+// mbl_offline_set_tile_count_limit) and stops storing tiles at the cap. Every
+// other error here is a network failure mbgl retries on its own backoff, so a
+// caller should surface but not act on those.
+typedef void (*MblOfflineErrorCallback)(void *user, int64_t region_id,
+                                        int is_tile_limit, char *message);
+
+// Delivers a one-shot result. `error` is NULL on success, otherwise a heap
+// string (mbl_string_free) and `region_id` is meaningless.
+typedef void (*MblOfflineRegionCallback)(void *user, int64_t region_id,
+                                         char *error);
+
+// Delivers the region list as a heap JSON array (mbl_string_free), or NULL if
+// the query failed. Each element is
+//   {"id":N,"kind":"tilePyramid"|"geometry","styleUrl":"…",
+//    "north":…,"south":…,"east":…,"west":…,
+//    "minZoom":…,"maxZoom":…|null,"pixelRatio":…,"includeIdeographs":bool,
+//    "metadataBase64":"…","state":0|1,"completedResources":N,
+//    "requiredResources":N,"requiredResourceCountIsPrecise":bool,
+//    "completedBytes":N,"completedTiles":N,"requiredTiles":N,
+//    "completedTileBytes":N}
+//
+// `maxZoom` is **null** when the region was defined with an infinite one ("as
+// deep as each source goes"): JSON has no infinity, and writing a stand-in
+// number would silently redefine the region on the way back out.
+//
+// `kind` is `"geometry"` for a region another SDK wrote to the same database
+// with mbgl's OfflineGeometryRegionDefinition — this ABI cannot create one, and
+// such an element carries no bounds rather than a bounding box the region never
+// had. It can still be listed, deleted and invalidated by id.
+//
+// Metadata is base64 because mbgl stores arbitrary BYTES and explicitly tells
+// bindings not to impose a format on them (offline.hpp) — a raw string field
+// cannot carry a NUL or invalid UTF-8, and quietly mangling an app's blob is
+// worse than making it decode one line.
+//
+// The status fields come from a separate per-region query, so listing is not
+// free — but a list without progress is useless to a UI that has just restarted,
+// which is the only time anything lists.
+typedef void (*MblOfflineListCallback)(void *user, char *json);
+
+// Define a region and write it to the database. It starts INACTIVE: register a
+// progress callback, then call mbl_offline_set_download_state to begin.
+//
+// The bounds are mbgl's `LatLngBounds(sw, ne)` in degrees. `max_zoom` may be
+// INFINITY, meaning "as deep as each source goes". `pixel_ratio` should be the
+// device's — a region downloaded at 1.0 and displayed at 2.0 re-fetches every
+// raster tile.
+//
+// A box that crosses the antimeridian is expressed with an UNWRAPPED east —
+// west 170, east 190 — not a wrapped one. `east < west` is rejected rather than
+// normalised: mbgl would hull it into the complementary box, which is the whole
+// rest of the world, and downloading that silently is worse than an error.
+//
+// `metadata`/`metadata_len` is opaque to the engine: mbgl stores the bytes and
+// hands them back on listing, and Apple documents the same field
+// (MLNOfflinePack.context) the same way. Pass a name, a JSON blob, or NULL/0.
+//
+// Invalid input (empty style URL, max_zoom < min_zoom, non-finite bounds)
+// reports through `callback` with an error rather than throwing: mbgl's
+// LatLngBounds constructor throws on a bad latitude and a throw across
+// `extern "C"` is undefined behaviour.
+FFI_PLUGIN_EXPORT void mbl_offline_create_region(
+    const char *style_url, double north, double south, double east, double west,
+    double min_zoom, double max_zoom, float pixel_ratio,
+    int include_ideographs, const uint8_t *metadata, uint32_t metadata_len,
+    MblOfflineRegionCallback callback, void *user);
+
+// Replace a region's metadata blob. The new bytes are visible to the next
+// mbl_offline_list_regions.
+FFI_PLUGIN_EXPORT void mbl_offline_set_metadata(
+    int64_t region_id, const uint8_t *metadata, uint32_t metadata_len,
+    MblOfflineRegionCallback callback, void *user);
+
+// Every region in the database, with its current progress. See
+// MblOfflineListCallback for the JSON shape.
+FFI_PLUGIN_EXPORT void mbl_offline_list_regions(MblOfflineListCallback callback,
+                                                void *user);
+
+// Start (MBL_OFFLINE_ACTIVE) or pause (MBL_OFFLINE_INACTIVE) downloading.
+// A no-op for an id this process has not seen — the shim can only act on
+// regions it holds an `OfflineRegion` for, so call mbl_offline_list_regions
+// after a restart before touching a region created by a previous run.
+FFI_PLUGIN_EXPORT void mbl_offline_set_download_state(int64_t region_id,
+                                                      int32_t state);
+
+// Read a region's progress once, without waiting for it to change. This is what
+// a UI needs on startup: the observer only fires on a CHANGE, so a completed
+// region that nobody is downloading never reports anything.
+//
+// Returns 1 if a callback is on its way, 0 if `region_id` is not one this
+// process holds (see mbl_offline_set_download_state) — in which case NOTHING
+// will be delivered. The return value is what lets a binding resolve its
+// promise instead of waiting on a call that is never coming, and it must not be
+// replaced by a timeout: freeing the callback while mbgl may still hold it is a
+// use-after-free, and a timeout cannot tell "slow" from "never".
+//
+// Returning 1 is a PROMISE of exactly one delivery, including when the read
+// fails — mbgl can refuse whenever the row has gone or SQLite is unhappy, which
+// a caller cannot predict. That case arrives as `required_is_precise ==
+// MBL_OFFLINE_STATUS_UNAVAILABLE` with every other field 0, rather than as
+// silence, because silence is indistinguishable from a slow database and leaves
+// the caller's callback allocated forever.
+FFI_PLUGIN_EXPORT int mbl_offline_get_region_status(
+    int64_t region_id, MblOfflineProgressCallback callback, void *user);
+
+// Observe a region's progress and errors. Either callback may be NULL. Passing
+// NULL for both removes the observer. Returns 1 if it was installed (or
+// removed), 0 for an id this process does not hold.
+//
+// The observer is owned by mbgl and outlives this call, so the shim holds the
+// (callback, user) pair in a table rather than in a capture — a lambda capturing
+// them would be a dangling call the moment this function returned.
+FFI_PLUGIN_EXPORT int mbl_offline_set_observer(
+    int64_t region_id, MblOfflineProgressCallback on_progress,
+    MblOfflineErrorCallback on_error, void *user);
+
+// Delete a region and evict the resources no other region needs. The observer is
+// cleared first, so no status callback can fire for a region that is gone.
+FFI_PLUGIN_EXPORT void mbl_offline_delete_region(
+    int64_t region_id, MblOfflineRegionCallback callback, void *user);
+
+// Mark a region's tiles stale so the next map load revalidates them against the
+// server instead of trusting the cache. Cheaper than delete-and-redownload: an
+// unchanged tile costs one conditional request rather than its bytes.
+FFI_PLUGIN_EXPORT void mbl_offline_invalidate_region(
+    int64_t region_id, MblOfflineRegionCallback callback, void *user);
+
+// Raise or lower the per-database tile cap (mbgl's default is 6000).
+//
+// It is easy to assume this is a Mapbox-only limit — mbgl calls it
+// `setOfflineMapboxTileCountLimit` and its own comment cites the Mapbox terms of
+// service. It is NOT: the counter is over tiles whose URL is canonical for the
+// CONFIGURED tile server, and OfflineDownload canonicalises tile URLs before
+// storing them, so a MapLibre-hosted region's tiles count too. Past the cap mbgl
+// silently stops storing tiles and reports through MblOfflineErrorCallback with
+// `is_tile_limit` set; a large region hits it long before it hits disk.
+FFI_PLUGIN_EXPORT void mbl_offline_set_tile_count_limit(uint64_t limit);
+
+// Compact the database file, releasing the space deleted regions freed. mbgl
+// does this automatically after every delete, so this exists for the caller who
+// turned that off or wants it at a chosen moment — it vacuums, which is slow and
+// rewrites pages.
+FFI_PLUGIN_EXPORT void mbl_offline_pack_database(
+    MblOfflineRegionCallback callback, void *user);
+
+// --- The ambient cache, in the same database ----------------------------------
+//
+// Offline regions and the ambient (opportunistic) tile cache share one SQLite
+// file, which is why these live here and not next to mbl_configure: they are
+// calls on the same DatabaseFileSource, and every one of them is the sibling an
+// app's "storage" settings screen needs next to its region list.
+//
+// Neither of these touches resources an offline region requires — that is mbgl's
+// guarantee, and it is the whole point of having both in one database.
+
+// Erase the ambient cache. Regions survive.
+FFI_PLUGIN_EXPORT void mbl_offline_clear_ambient_cache(
+    MblOfflineRegionCallback callback, void *user);
+
+// Cap the ambient cache at `bytes`. **0 disables ambient caching entirely**
+// while leaving regions alone, which is the supported way to run
+// "downloaded regions only, nothing opportunistic".
+//
+// Expensive: it trims to fit before returning. Note the cap is over the whole
+// database, so regions eat into it — 40 MB of regions under a 50 MB cap leaves
+// the ambient cache 10.
+FFI_PLUGIN_EXPORT void mbl_offline_set_maximum_ambient_cache_size(
+    uint64_t bytes, MblOfflineRegionCallback callback, void *user);
+
+// Delete the database file and start again — regions, ambient cache, all of it.
+// This is the "reset" behind an app's clear-all-data button, and it is the only
+// call here that destroys downloaded regions.
+FFI_PLUGIN_EXPORT void mbl_offline_reset_database(
+    MblOfflineRegionCallback callback, void *user);
 
 // Create an off-screen map of `width`x`height` device pixels at `pixel_ratio`,
 // loading `style_uri` (URL, file path, or inline JSON). Spawns the render thread

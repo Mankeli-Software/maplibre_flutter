@@ -122,9 +122,11 @@ typedef CoreDiagnostic = ({
 abstract final class MapLibreCoreSettings {
   /// Configures the tile cache and the API key.
   ///
-  /// Returns false if a map already exists, in which case NOTHING was changed —
-  /// the file sources are built and shared by then, so a later change would
-  /// apply to nothing while looking like it had worked.
+  /// Returns false if it is too late, in which case NOTHING was changed: either
+  /// a map already exists, or [MapLibreCoreOffline] has already built the
+  /// offline database. Both bake the current options into a file source that is
+  /// then shared for the process lifetime, so a later change would apply to
+  /// nothing while looking like it had worked.
   ///
   /// [cachePath] is a SQLite database file; its parent directories are created.
   /// **mbgl's own default is `:memory:`**, so without this every restart
@@ -2038,5 +2040,594 @@ class MapLibreCoreMap {
     if (_disposed) {
       throw StateError('MapLibreCoreMap used after dispose()');
     }
+  }
+}
+
+// --- Offline regions ----------------------------------------------------------
+
+/// The `MblOfflineProgressCallback` signature.
+typedef _OfflineProgressNative =
+    ffi.Void Function(
+      ffi.Pointer<ffi.Void>,
+      ffi.Int64,
+      ffi.Int32,
+      ffi.Uint64,
+      ffi.Uint64,
+      ffi.Int,
+      ffi.Uint64,
+      ffi.Uint64,
+      ffi.Uint64,
+      ffi.Uint64,
+    );
+
+/// The `MblOfflineErrorCallback` signature.
+typedef _OfflineErrorNative =
+    ffi.Void Function(
+      ffi.Pointer<ffi.Void>,
+      ffi.Int64,
+      ffi.Int,
+      ffi.Pointer<ffi.Char>,
+    );
+
+/// The `MblOfflineRegionCallback` signature.
+typedef _OfflineRegionNative =
+    ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Int64, ffi.Pointer<ffi.Char>);
+
+/// The `MblOfflineListCallback` signature.
+typedef _OfflineListNative =
+    ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Char>);
+
+/// Something the offline database could not do. Carries the engine's own text.
+class CoreOfflineException implements Exception {
+  const CoreOfflineException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'CoreOfflineException: $message';
+}
+
+/// Whether a region is downloading. Mirrors `mbgl::OfflineRegionDownloadState`.
+enum CoreOfflineDownloadState {
+  /// Not downloading. Anything already downloaded stays usable — this is not
+  /// "empty", it is "not fetching".
+  inactive(0),
+
+  /// Downloading, or waiting for the network to come back so it can.
+  active(1);
+
+  const CoreOfflineDownloadState(this.code);
+
+  /// The `MblOfflineDownloadState` value.
+  final int code;
+
+  /// The state for [code], or [inactive] for anything unknown.
+  static CoreOfflineDownloadState fromCode(int code) =>
+      code == active.code ? active : inactive;
+}
+
+/// Which mbgl definition a region was created with.
+enum CoreOfflineRegionKind {
+  /// A bounding box and zoom range — the only kind this binding can create.
+  tilePyramid,
+
+  /// A GeoJSON geometry and zoom range. mbgl supports it; this ABI has no way
+  /// to pass a geometry, so one can only appear if another SDK wrote to the
+  /// same database. Such a region has no [CoreOfflineRegion.bounds] — it is
+  /// reported as having none rather than as the bounding box it never had —
+  /// but it can still be listed, invalidated and deleted.
+  geometry,
+}
+
+/// How far a region's download has got. Field-for-field
+/// `mbgl::OfflineRegionStatus`.
+typedef CoreOfflineRegionStatus = ({
+  CoreOfflineDownloadState downloadState,
+  int completedResourceCount,
+  int completedResourceSize,
+  int completedTileCount,
+  int completedTileSize,
+  int requiredResourceCount,
+  int requiredTileCount,
+  bool requiredResourceCountIsPrecise,
+});
+
+/// One region in the offline database, with the progress read alongside it.
+typedef CoreOfflineRegion = ({
+  int id,
+  CoreOfflineRegionKind kind,
+  String styleUrl,
+
+  /// Null for a [CoreOfflineRegionKind.geometry] region.
+  CoreLatLngBounds? bounds,
+  double minZoom,
+
+  /// [double.infinity] means "as deep as each source goes".
+  double maxZoom,
+  double pixelRatio,
+  bool includeIdeographs,
+
+  /// The application's own opaque blob. Empty when none was stored.
+  Uint8List metadata,
+  CoreOfflineRegionStatus status,
+});
+
+/// A problem reported while downloading a region.
+typedef CoreOfflineError = ({
+  int regionId,
+
+  /// True for the one error that is NOT transient: the per-database tile cap
+  /// was reached and mbgl will store no further tiles. Everything else here is
+  /// a network failure mbgl retries on its own backoff.
+  bool isTileCountLimit,
+  String message,
+});
+
+/// The registered observers, by region id.
+///
+/// Held here rather than in a local because a `NativeCallable` only a local
+/// refers to can be collected while the native side still holds its function
+/// pointer — progress then stops arriving with no error anywhere (CLAUDE.md
+/// §5e). Cleared by [MapLibreCoreOffline.setObserver] with both handlers null.
+final Map<
+  int,
+  ({
+    ffi.NativeCallable<_OfflineProgressNative> progress,
+    ffi.NativeCallable<_OfflineErrorNative> error,
+  })
+>
+_offlineObservers = {};
+
+/// Download a style, and everything it needs for a box and zoom range, into the
+/// cache database — and keep it there until it is deleted.
+///
+/// **Process-wide, not per-map**, for the reason [MapLibreCoreSettings] is: a
+/// region is rows in the cache database, so it exists independently of any map,
+/// and downloading one benefits every map afterwards.
+///
+/// **Call [MapLibreCoreSettings.configure] with a real cache path first.** With
+/// mbgl's default `:memory:` a region is written to a database that dies with
+/// the process, which looks exactly like a download that did nothing. The first
+/// call here builds the database file source and holds it for the process
+/// lifetime, so configuring afterwards is refused rather than half-applied —
+/// [MapLibreCoreSettings.configure] returns false from then on.
+///
+/// **A region created by a previous run must be [listRegions]ed before anything
+/// else can touch it.** mbgl's mutators take a region OBJECT whose constructor
+/// is private to the engine, so an id alone cannot be turned back into one; the
+/// binding can only act on regions the engine has handed it in this process.
+abstract final class MapLibreCoreOffline {
+  /// Defines a region and writes it to the database, returning its id.
+  ///
+  /// **It starts [CoreOfflineDownloadState.inactive] and downloads nothing**
+  /// until [setDownloadState] — mbgl's behaviour, shared by every SDK over it,
+  /// and the thing everyone trips over once. Register an observer first if you
+  /// want to see the download from its first byte.
+  ///
+  /// [maxZoom] may be [double.infinity]. [pixelRatio] should be the device's:
+  /// a region downloaded at 1.0 and shown at 2.0 re-fetches every raster tile.
+  /// [metadata] is opaque to the engine — a name, a JSON blob, anything.
+  ///
+  /// A box crossing the antimeridian needs an UNWRAPPED east (west 170, east
+  /// 190). Throws [CoreOfflineException] if the definition is not valid.
+  static Future<int> createRegion({
+    required String styleUrl,
+    required CoreLatLngBounds bounds,
+    required double minZoom,
+    required double maxZoom,
+    double pixelRatio = 1.0,
+    bool includeIdeographs = false,
+    Uint8List? metadata,
+  }) => _regionCall(
+    (callback) => using((arena) {
+      bindings.mbl_offline_create_region(
+        styleUrl.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        bounds.neLat,
+        bounds.swLat,
+        bounds.neLng,
+        bounds.swLng,
+        minZoom,
+        maxZoom,
+        pixelRatio,
+        includeIdeographs ? 1 : 0,
+        _bytes(arena, metadata),
+        metadata?.length ?? 0,
+        callback,
+        ffi.nullptr,
+      );
+    }),
+  );
+
+  /// Every region in the database, each with its current progress.
+  ///
+  /// This is also what makes a region created by a previous run actionable —
+  /// see the class doc. Throws [CoreOfflineException] if the database could not
+  /// be read.
+  static Future<List<CoreOfflineRegion>> listRegions() {
+    final completer = Completer<List<CoreOfflineRegion>>();
+    late final ffi.NativeCallable<_OfflineListNative> callable;
+    callable = ffi.NativeCallable<_OfflineListNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      ffi.Pointer<ffi.Char> json,
+    ) {
+      callable.close();
+      // Freed BEFORE the isCompleted check, not after: ownership of the string
+      // came with the call, so returning early without taking it leaks the
+      // whole JSON array.
+      final text = _takeOfflineString(json);
+      if (completer.isCompleted) return;
+      if (text == null) {
+        completer.completeError(
+          const CoreOfflineException('could not read the offline database'),
+        );
+        return;
+      }
+      // Parsing runs inside a listener, which is the ONLY thing that can
+      // complete this Future — so a throw here (malformed JSON, an unexpected
+      // type, a non-UTF-8 byte in a style URL) would escape as an unhandled
+      // async error and leave the caller awaiting forever. A failure the caller
+      // can catch is worth more than a spinner that never resolves.
+      try {
+        completer.complete(_parseRegions(text));
+      } on Object catch (error) {
+        completer.completeError(
+          CoreOfflineException('could not parse the region list: $error'),
+        );
+      }
+    });
+    bindings.mbl_offline_list_regions(callable.nativeFunction, ffi.nullptr);
+    return completer.future;
+  }
+
+  /// Starts or pauses a region's download.
+  ///
+  /// A no-op for an id this process has not listed — see the class doc.
+  static void setDownloadState(int regionId, CoreOfflineDownloadState state) {
+    bindings.mbl_offline_set_download_state(regionId, state.code);
+  }
+
+  /// Reads a region's progress once, without waiting for it to change.
+  ///
+  /// This is what a UI needs on startup: an observer only fires on a CHANGE, so
+  /// a finished region nobody is downloading never reports anything.
+  ///
+  /// Completes with null when there is no answer to give — the id is not one
+  /// this process holds, or the engine could not read the row (the region was
+  /// deleted by something else, the database is locked, the disk is full). Both
+  /// resolve rather than hang: an unresolved Future here would also hold its
+  /// native callback open for the life of the isolate.
+  static Future<CoreOfflineRegionStatus?> getRegionStatus(int regionId) {
+    final completer = Completer<CoreOfflineRegionStatus?>();
+    late final ffi.NativeCallable<_OfflineProgressNative> callable;
+    callable = ffi.NativeCallable<_OfflineProgressNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      int id,
+      int state,
+      int completedResources,
+      int requiredResources,
+      int precise,
+      int completedBytes,
+      int completedTiles,
+      int requiredTiles,
+      int completedTileBytes,
+    ) {
+      callable.close();
+      if (completer.isCompleted) return;
+      // MBL_OFFLINE_STATUS_UNAVAILABLE: the engine promised a delivery and this
+      // is how it says it has nothing. Reporting it as a real all-zero status
+      // would read as "downloaded nothing", which is a different and wrong
+      // answer.
+      if (precise < 0) {
+        completer.complete(null);
+        return;
+      }
+      completer.complete((
+        downloadState: CoreOfflineDownloadState.fromCode(state),
+        completedResourceCount: completedResources,
+        completedResourceSize: completedBytes,
+        completedTileCount: completedTiles,
+        completedTileSize: completedTileBytes,
+        requiredResourceCount: requiredResources,
+        requiredTileCount: requiredTiles,
+        requiredResourceCountIsPrecise: precise != 0,
+      ));
+    });
+    final dispatched = bindings.mbl_offline_get_region_status(
+      regionId,
+      callable.nativeFunction,
+      ffi.nullptr,
+    );
+    if (dispatched == 0) {
+      // Nothing is coming, and the engine never took the pointer — so closing
+      // here is safe and the Future resolves instead of hanging. A timeout
+      // would be the wrong tool twice over: it cannot tell "slow" from "never",
+      // and closing a callable mbgl might still hold is a use-after-free.
+      callable.close();
+      return Future.value(null);
+    }
+    return completer.future;
+  }
+
+  /// Watches a region's progress and errors. Pass both null to stop watching.
+  ///
+  /// [onStatus] fires on every change, which during a download is often. Both
+  /// run on the calling isolate — mbgl reports from its database thread and
+  /// these are `NativeCallable.listener`s, so delivery hops back here.
+  ///
+  /// Returns false for an id this process does not hold, in which case nothing
+  /// was registered — see the class doc on why an id from a previous run needs
+  /// a [listRegions] first.
+  static bool setObserver(
+    int regionId, {
+    void Function(CoreOfflineRegionStatus status)? onStatus,
+    void Function(CoreOfflineError error)? onError,
+  }) {
+    final previous = _offlineObservers.remove(regionId);
+    if (onStatus == null && onError == null) {
+      // Unregister natively BEFORE closing, so nothing native holds a pointer
+      // into a closed callable.
+      final removed = bindings.mbl_offline_set_observer(
+        regionId,
+        ffi.nullptr,
+        ffi.nullptr,
+        ffi.nullptr,
+      );
+      previous?.progress.close();
+      previous?.error.close();
+      return removed != 0;
+    }
+
+    final progress = ffi.NativeCallable<_OfflineProgressNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      int id,
+      int state,
+      int completedResources,
+      int requiredResources,
+      int precise,
+      int completedBytes,
+      int completedTiles,
+      int requiredTiles,
+      int completedTileBytes,
+    ) {
+      onStatus?.call((
+        downloadState: CoreOfflineDownloadState.fromCode(state),
+        completedResourceCount: completedResources,
+        completedResourceSize: completedBytes,
+        completedTileCount: completedTiles,
+        completedTileSize: completedTileBytes,
+        requiredResourceCount: requiredResources,
+        requiredTileCount: requiredTiles,
+        requiredResourceCountIsPrecise: precise != 0,
+      ));
+    });
+    final error = ffi.NativeCallable<_OfflineErrorNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      int id,
+      int isTileLimit,
+      ffi.Pointer<ffi.Char> message,
+    ) {
+      // Ownership of `message` came with the call; release it whatever the
+      // handler does, including throw.
+      try {
+        onError?.call((
+          regionId: id,
+          isTileCountLimit: isTileLimit != 0,
+          message: message == ffi.nullptr
+              ? ''
+              : message.cast<Utf8>().toDartString(),
+        ));
+      } finally {
+        if (message != ffi.nullptr) bindings.mbl_string_free(message);
+      }
+    });
+
+    final installed = bindings.mbl_offline_set_observer(
+      regionId,
+      progress.nativeFunction,
+      error.nativeFunction,
+      ffi.nullptr,
+    );
+    previous?.progress.close();
+    previous?.error.close();
+    if (installed == 0) {
+      // Nothing native took the pointers, so nothing can call them. Do not keep
+      // them alive in the registry pretending otherwise.
+      progress.close();
+      error.close();
+      return false;
+    }
+    _offlineObservers[regionId] = (progress: progress, error: error);
+    return true;
+  }
+
+  /// Replaces a region's opaque metadata blob.
+  static Future<void> setMetadata(int regionId, Uint8List metadata) =>
+      _regionCall(
+        (callback) => using((arena) {
+          bindings.mbl_offline_set_metadata(
+            regionId,
+            _bytes(arena, metadata),
+            metadata.length,
+            callback,
+            ffi.nullptr,
+          );
+        }),
+      );
+
+  /// Deletes a region and evicts the resources no OTHER region needs.
+  ///
+  /// The observer is removed first, so nothing can report progress for a region
+  /// that is gone.
+  static Future<void> deleteRegion(int regionId) {
+    setObserver(regionId);
+    return _regionCall(
+      (callback) =>
+          bindings.mbl_offline_delete_region(regionId, callback, ffi.nullptr),
+    );
+  }
+
+  /// Marks a region's tiles stale, so the next load revalidates them against
+  /// the server rather than trusting the cache.
+  ///
+  /// Cheaper than delete-and-redownload: an unchanged tile costs one
+  /// conditional request instead of its bytes.
+  static Future<void> invalidateRegion(int regionId) => _regionCall(
+    (callback) =>
+        bindings.mbl_offline_invalidate_region(regionId, callback, ffi.nullptr),
+  );
+
+  /// Raises or lowers the per-database tile cap (mbgl's default is 6000).
+  ///
+  /// Despite mbgl's `setOfflineMapboxTileCountLimit` name this is NOT
+  /// Mapbox-only: the counter is over tiles whose URL is canonical for the
+  /// CONFIGURED tile server, and offline downloads canonicalise tile URLs
+  /// before storing them, so a MapLibre-hosted region's tiles count too. Past
+  /// the cap mbgl stops storing tiles and reports it through the observer's
+  /// error handler with `isTileCountLimit` set.
+  static void setTileCountLimit(int limit) {
+    bindings.mbl_offline_set_tile_count_limit(limit);
+  }
+
+  /// Compacts the database file, releasing space that deleted regions freed.
+  ///
+  /// mbgl already does this after every delete, so this is for a caller who
+  /// wants it at a chosen moment. It vacuums, which is slow.
+  static Future<void> packDatabase() => _regionCall(
+    (callback) => bindings.mbl_offline_pack_database(callback, ffi.nullptr),
+  );
+
+  /// Erases the ambient (opportunistic) tile cache. Regions survive — mbgl
+  /// never evicts a resource a region requires.
+  static Future<void> clearAmbientCache() => _regionCall(
+    (callback) =>
+        bindings.mbl_offline_clear_ambient_cache(callback, ffi.nullptr),
+  );
+
+  /// Caps the ambient cache at [bytes]. **0 disables ambient caching entirely**
+  /// while leaving regions alone — the supported way to run "downloaded regions
+  /// only, nothing opportunistic".
+  ///
+  /// Expensive: it trims to fit before returning. The cap is over the whole
+  /// database, so regions eat into it — 40 MB of regions under a 50 MB cap
+  /// leaves the ambient cache 10.
+  static Future<void> setMaximumAmbientCacheSize(int bytes) => _regionCall(
+    (callback) => bindings.mbl_offline_set_maximum_ambient_cache_size(
+      bytes,
+      callback,
+      ffi.nullptr,
+    ),
+  );
+
+  /// Deletes the database and starts again — regions, ambient cache, all of it.
+  ///
+  /// The only call here that destroys downloaded regions.
+  static Future<void> resetDatabase() {
+    for (final id in _offlineObservers.keys.toList()) {
+      setObserver(id);
+    }
+    return _regionCall(
+      (callback) => bindings.mbl_offline_reset_database(callback, ffi.nullptr),
+    );
+  }
+
+  /// Shared marshalling for the one-shot `MblOfflineRegionCallback` calls:
+  /// completes with the region id, or throws [CoreOfflineException].
+  static Future<int> _regionCall(
+    void Function(ffi.Pointer<ffi.NativeFunction<_OfflineRegionNative>>) invoke,
+  ) {
+    final completer = Completer<int>();
+    // One call, one callable, closed on first use — no registry to leak. It
+    // fires on the DATABASE thread, so it has to be a listener.
+    late final ffi.NativeCallable<_OfflineRegionNative> callable;
+    callable = ffi.NativeCallable<_OfflineRegionNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      int id,
+      ffi.Pointer<ffi.Char> error,
+    ) {
+      callable.close();
+      // Taken before any early return: ownership of the string came with the
+      // call.
+      final message = _takeOfflineString(error);
+      if (completer.isCompleted) return;
+      if (message != null) {
+        completer.completeError(CoreOfflineException(message));
+      } else {
+        completer.complete(id);
+      }
+    });
+    try {
+      invoke(callable.nativeFunction);
+    } on Object {
+      // A synchronous throw (an allocation failure marshalling the arguments)
+      // means the engine never took the pointer, so nothing will ever call back
+      // — close the callable rather than leaving it and the Future alive for
+      // the life of the isolate.
+      callable.close();
+      rethrow;
+    }
+    return completer.future;
+  }
+
+  static ffi.Pointer<ffi.Uint8> _bytes(Arena arena, Uint8List? data) {
+    if (data == null || data.isEmpty) return ffi.nullptr;
+    final buffer = arena<ffi.Uint8>(data.length);
+    buffer.asTypedList(data.length).setAll(0, data);
+    return buffer;
+  }
+
+  static List<CoreOfflineRegion> _parseRegions(String json) {
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.whereType<Map<String, dynamic>>().map((r) {
+      final kind = r['kind'] == 'geometry'
+          ? CoreOfflineRegionKind.geometry
+          : CoreOfflineRegionKind.tilePyramid;
+      final maxZoom = r['maxZoom'];
+      return (
+        id: (r['id'] as num).toInt(),
+        kind: kind,
+        styleUrl: (r['styleUrl'] as String?) ?? '',
+        bounds: kind == CoreOfflineRegionKind.tilePyramid
+            ? (
+                swLat: (r['south'] as num).toDouble(),
+                swLng: (r['west'] as num).toDouble(),
+                neLat: (r['north'] as num).toDouble(),
+                neLng: (r['east'] as num).toDouble(),
+              )
+            : null,
+        minZoom: (r['minZoom'] as num).toDouble(),
+        // Null is the engine's encoding of an infinite max zoom — JSON has no
+        // infinity, and a stand-in number would redefine the region.
+        maxZoom: maxZoom == null
+            ? double.infinity
+            : (maxZoom as num).toDouble(),
+        pixelRatio: (r['pixelRatio'] as num).toDouble(),
+        includeIdeographs: r['includeIdeographs'] == true,
+        metadata: base64Decode((r['metadataBase64'] as String?) ?? ''),
+        status: (
+          downloadState: CoreOfflineDownloadState.fromCode(
+            (r['state'] as num).toInt(),
+          ),
+          completedResourceCount: (r['completedResources'] as num).toInt(),
+          completedResourceSize: (r['completedBytes'] as num).toInt(),
+          completedTileCount: (r['completedTiles'] as num).toInt(),
+          completedTileSize: (r['completedTileBytes'] as num).toInt(),
+          requiredResourceCount: (r['requiredResources'] as num).toInt(),
+          requiredTileCount: (r['requiredTiles'] as num).toInt(),
+          requiredResourceCountIsPrecise:
+              r['requiredResourceCountIsPrecise'] == true,
+        ),
+      );
+    }).toList();
+  }
+}
+
+/// Reads a native string and hands it back to the library's own free.
+String? _takeOfflineString(ffi.Pointer<ffi.Char> out) {
+  if (out == ffi.nullptr) return null;
+  try {
+    return out.cast<Utf8>().toDartString();
+  } finally {
+    bindings.mbl_string_free(out);
   }
 }

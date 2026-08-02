@@ -32,12 +32,26 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapLibreMapProjector,
         MapLibreModelHost,
         MapLibreRotateHandler,
-        MapLibreStyleLayers;
+        MapLibreStyleLayers,
+        // Offline. The store itself is a platform capability apps never touch —
+        // MapLibreOfflineManager is the app-facing form — but every value type
+        // it exchanges is public API.
+        MapLibreOfflineDownloadState,
+        MapLibreOfflineError,
+        MapLibreOfflineException,
+        MapLibreOfflineRegionDefinition,
+        MapLibreOfflineRegionStatus,
+        MapLibreOfflineResponseError,
+        MapLibreOfflineTileCountLimitExceeded,
+        MapLibreOtherRegionDefinition,
+        MapLibreTilePyramidRegionDefinition;
 
 export 'geojson.dart';
 export 'src/attribution_bar.dart';
 export 'src/map_style_controller.dart';
 export 'src/maplibre_map.dart';
+export 'src/offline/offline_manager.dart';
+export 'src/offline/offline_region.dart';
 export 'src/settings.dart';
 export 'src/snapshotter.dart';
 export 'src/user_location_puck.dart';

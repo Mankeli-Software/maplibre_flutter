@@ -27,7 +27,9 @@
 // pure projection math (latLng <-> screen, exact for bearing/pitch). We snapshot
 // a copy on every camera change so projection runs off the render thread.
 #include <mbgl/map/transform_state.hpp>
+#include <mbgl/storage/database_file_source.hpp>
 #include <mbgl/storage/file_source_manager.hpp>
+#include <mbgl/storage/offline.hpp>
 #include <mbgl/storage/resource_options.hpp>
 #include <mbgl/style/image_impl.hpp>
 #include <mbgl/style/style.hpp>
@@ -872,6 +874,16 @@ mbgl::ResourceOptions &resourceOptionsLocked() {
 // to nothing and silently look like it had.
 std::atomic<int> g_liveMaps{0};
 
+// Whether the offline DatabaseFileSource has been built (see offlineDatabase(),
+// at the end of this file). It is exactly the same "too late" condition as a
+// live map, and it is a SEPARATE flag because it is a separate way to be too
+// late: touching offline before configuring bakes ResourceOptions::Default()'s
+// `:memory:` path into a file source that is then held for the process
+// lifetime, so every region would be written to a database that dies with the
+// process while every map used the real one. Nothing about that is visible to a
+// caller, which is why mbl_configure has to refuse rather than half-work.
+std::atomic<bool> g_offlineDatabaseBuilt{false};
+
 // A copy, so callers cannot mutate the shared value by accident.
 mbgl::ResourceOptions currentResourceOptions() {
   std::lock_guard<std::mutex> lk(g_resourceMutex);
@@ -1304,6 +1316,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
 int mbl_configure(const char *cache_path, uint64_t max_cache_bytes,
                   const char *api_key) {
   if (g_liveMaps.load(std::memory_order_relaxed) > 0) return 0;
+  if (g_offlineDatabaseBuilt.load(std::memory_order_relaxed)) return 0;
   std::lock_guard<std::mutex> lk(g_resourceMutex);
   auto &options = resourceOptionsLocked();
   if (cache_path != nullptr && *cache_path != '\0') {
@@ -3588,3 +3601,679 @@ int mbl_map_android_zero_copy_active(MblMap *m) {
   return (m != nullptr && m->androidZeroCopy) ? 1 : 0;
 }
 #endif // __ANDROID__
+
+// --- Offline regions ----------------------------------------------------------
+//
+// Contract in the header. Three things shape this implementation:
+//
+//   * **Ids, not handles, across the ABI.** mbgl's mutators take an
+//     `mbgl::OfflineRegion`, whose constructor is private to OfflineDatabase, so
+//     an id cannot be turned back into one. The shim keeps every region mbgl has
+//     handed it. That is why acting on a region created by a PREVIOUS run needs
+//     an mbl_offline_list_regions first: nothing else can produce the object.
+//
+//   * **The observer outlives the call that installs it.** mbgl owns it, so the
+//     Dart (callback, user) pair lives in a table keyed by region id rather than
+//     in a lambda capture, which would dangle the moment the ABI call returned.
+//
+//   * **Every callback here runs on mbgl's database thread**, and hops into Dart
+//     from there. No lock is held across one — CLAUDE.md §11. The table is read
+//     under the mutex, copied, and the mutex released before the call.
+//
+// This block is at the END of the translation unit deliberately: an
+// `extern "C"` definition placed inside one of this file's ten anonymous
+// namespaces gets internal linkage, is dead-stripped, and fails at runtime with
+// `dlsym: symbol not found` while the header and the export macro both look
+// right (CLAUDE.md §11).
+
+namespace {
+
+// Where a region's progress and errors go. Empty callbacks mean "observed, but
+// nothing to deliver" — the observer is still installed, since mbgl has no way
+// to install one for errors only.
+struct MblOfflineSink {
+  MblOfflineProgressCallback onProgress = nullptr;
+  MblOfflineErrorCallback onError = nullptr;
+  void *user = nullptr;
+};
+
+// All offline state, INTENTIONALLY LEAKED — allocated on first use and never
+// destroyed.
+//
+// A DatabaseFileSource owns a thread. Letting a namespace-scope `shared_ptr`
+// release the last reference at static-destruction time joins that thread while
+// the C++ runtime is already tearing itself down, and on macOS that surfaces
+// as `system_error: mutex lock failed: Invalid argument` and an abort AFTER the
+// last test has passed — a green suite followed by a non-zero exit. Nothing
+// here needs reclaiming at exit; the process is going away, and a clean exit is
+// worth more than a tidy leak report.
+//
+// The strong reference itself is not optional either way: FileSourceManager
+// remembers file sources WEAKLY, so without it the database thread would be
+// destroyed the instant no map referenced it — a download that stops when the
+// last map is disposed is precisely the bug offline exists to avoid.
+struct MblOfflineState {
+  std::mutex mutex;
+  std::unordered_map<int64_t, std::shared_ptr<mbgl::OfflineRegion>> regions;
+  std::unordered_map<int64_t, MblOfflineSink> sinks;
+
+  std::mutex dbMutex;
+  std::shared_ptr<mbgl::DatabaseFileSource> db;
+};
+
+MblOfflineState &offlineState() {
+  static auto *state = new MblOfflineState();
+  return *state;
+}
+
+std::shared_ptr<mbgl::DatabaseFileSource> offlineDatabase() {
+  auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.dbMutex);
+  if (state.db == nullptr) {
+    // The SAME ResourceOptions the maps use, so this is the same database and
+    // the same connection pool — see mbl_configure.
+    state.db = std::static_pointer_cast<mbgl::DatabaseFileSource>(
+        mbgl::FileSourceManager::get()->getFileSource(
+            mbgl::FileSourceType::Database, currentResourceOptions(),
+            mbgl::ClientOptions()));
+    // The options are baked in now and this source is held for the process
+    // lifetime, so mbl_configure must refuse from here on — see the flag's
+    // declaration for what configuring afterwards would silently do.
+    g_offlineDatabaseBuilt.store(true, std::memory_order_relaxed);
+  }
+  return state.db;
+}
+
+std::string offlineErrorText(const std::exception_ptr &error) {
+  if (!error) return "";
+  try {
+    std::rethrow_exception(error);
+  } catch (const std::exception &e) {
+    return e.what();
+  } catch (...) {
+    return "unknown error";
+  }
+}
+
+// Report a one-shot result. `error` empty means success.
+void offlineComplete(MblOfflineRegionCallback callback, void *user, int64_t id,
+                     const std::string &error) {
+  if (callback == nullptr) return;
+  callback(user, id, error.empty() ? nullptr : dupToHeap(error));
+}
+
+void offlineCompleteFromExceptionPtr(MblOfflineRegionCallback callback,
+                                     void *user, int64_t id,
+                                     const std::exception_ptr &error) {
+  offlineComplete(callback, user, id, offlineErrorText(error));
+}
+
+void emitOfflineStatus(const MblOfflineSink &sink, int64_t id,
+                       const mbgl::OfflineRegionStatus &status) {
+  if (sink.onProgress == nullptr) return;
+  sink.onProgress(
+      sink.user, id,
+      status.downloadState == mbgl::OfflineRegionDownloadState::Active
+          ? MBL_OFFLINE_ACTIVE
+          : MBL_OFFLINE_INACTIVE,
+      status.completedResourceCount, status.requiredResourceCount,
+      status.requiredResourceCountIsPrecise ? 1 : 0,
+      status.completedResourceSize, status.completedTileCount,
+      status.requiredTileCount, status.completedTileSize);
+}
+
+// Deliver to a region's observer WHILE HOLDING the table lock.
+//
+// This is the one place the usual "never hold a lock across a callback"
+// (CLAUDE.md §11) is deliberately inverted, and the reason is that that rule is
+// about mbgl's own re-entrant `FileSource::Callback`, not about this. What is on
+// the other side of `deliver` is a Dart `NativeCallable.listener` trampoline,
+// which posts to the isolate's port and RETURNS — it does not run the Dart
+// handler, so it cannot re-enter an `mbl_offline_*` function and cannot block on
+// the Dart thread.
+//
+// Copying the sink out and releasing the lock first — the obvious shape, and
+// what this did first — is a use-after-free. Erasing the entry in
+// `mbl_offline_set_observer` only shuts out lookups that have not happened yet;
+// a delivery that has ALREADY read the pointers still calls them, and Dart
+// closes the `NativeCallable` as soon as that function returns. Since
+// `statusChanged` fires per downloaded resource and the public API re-installs
+// the observer on every stream listen/cancel, that window is hit in ordinary
+// use, not under stress.
+template <typename Deliver>
+void withOfflineSink(int64_t id, Deliver deliver) {
+  auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  const auto it = state.sinks.find(id);
+  if (it == state.sinks.end()) return;
+  deliver(it->second);
+}
+
+std::shared_ptr<mbgl::OfflineRegion> offlineRegionFor(int64_t id) {
+  auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  const auto it = state.regions.find(id);
+  return it == state.regions.end() ? nullptr : it->second;
+}
+
+// Remember a region so its id can be acted on later. OfflineRegion has a
+// user-declared destructor, so it is copyable but not movable — the copy is
+// deliberate, not an oversight.
+void rememberOfflineRegion(const mbgl::OfflineRegion &region) {
+  auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  state.regions[region.getID()] =
+      std::make_shared<mbgl::OfflineRegion>(region);
+}
+
+// The observer mbgl owns. It holds only the id: everything else is looked up in
+// the table at delivery time, under the lock (see withOfflineSink), so removing
+// an observer cannot race a delivery already in flight.
+class MblOfflineObserver final : public mbgl::OfflineRegionObserver {
+ public:
+  explicit MblOfflineObserver(int64_t id) : regionId(id) {}
+
+  void statusChanged(mbgl::OfflineRegionStatus status) override {
+    withOfflineSink(regionId, [&](const MblOfflineSink &sink) {
+      emitOfflineStatus(sink, regionId, status);
+    });
+  }
+
+  void responseError(mbgl::Response::Error error) override {
+    emitError(0, error.message);
+  }
+
+  void mapboxTileCountLimitExceeded(uint64_t limit) override {
+    // Not a Mapbox-only condition despite the name — see
+    // mbl_offline_set_tile_count_limit in the header.
+    emitError(1, "offline tile limit reached (" + std::to_string(limit) +
+                     " tiles); mbgl will store no further tiles for any region "
+                     "in this database");
+  }
+
+ private:
+  void emitError(int isTileLimit, const std::string &message) {
+    withOfflineSink(regionId, [&](const MblOfflineSink &sink) {
+      if (sink.onError == nullptr) return;
+      // dupToHeap only once there is somewhere for it to go: transferring
+      // ownership to a callback that is not there leaks the string outright.
+      sink.onError(sink.user, regionId, isTileLimit, dupToHeap(message));
+    });
+  }
+
+  const int64_t regionId;
+};
+
+const char kBase64Alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string offlineBase64(const std::vector<uint8_t> &bytes) {
+  std::string out;
+  out.reserve(((bytes.size() + 2) / 3) * 4);
+  std::size_t i = 0;
+  for (; i + 2 < bytes.size(); i += 3) {
+    const uint32_t triple = (static_cast<uint32_t>(bytes[i]) << 16) |
+                            (static_cast<uint32_t>(bytes[i + 1]) << 8) |
+                            static_cast<uint32_t>(bytes[i + 2]);
+    out += kBase64Alphabet[(triple >> 18) & 0x3F];
+    out += kBase64Alphabet[(triple >> 12) & 0x3F];
+    out += kBase64Alphabet[(triple >> 6) & 0x3F];
+    out += kBase64Alphabet[triple & 0x3F];
+  }
+  if (i < bytes.size()) {
+    const bool haveTwo = (i + 1) < bytes.size();
+    const uint32_t triple = (static_cast<uint32_t>(bytes[i]) << 16) |
+                            (haveTwo ? static_cast<uint32_t>(bytes[i + 1]) << 8
+                                     : 0u);
+    out += kBase64Alphabet[(triple >> 18) & 0x3F];
+    out += kBase64Alphabet[(triple >> 12) & 0x3F];
+    out += haveTwo ? kBase64Alphabet[(triple >> 6) & 0x3F] : '=';
+    out += '=';
+  }
+  return out;
+}
+
+mbgl::OfflineRegionMetadata offlineMetadataFrom(const uint8_t *bytes,
+                                                uint32_t length) {
+  if (bytes == nullptr || length == 0) return {};
+  return mbgl::OfflineRegionMetadata(bytes, bytes + length);
+}
+
+// One region, plus the status read for it, as a JSON object.
+void writeOfflineRegionJson(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                            const mbgl::OfflineRegion &region,
+                            const mbgl::OfflineRegionStatus &status) {
+  writer.StartObject();
+  writer.Key("id");
+  writer.Int64(region.getID());
+
+  // mbgl has two definition kinds and this ABI can only CREATE the tile
+  // pyramid. A geometry region can still turn up here — another SDK writing to
+  // the same database — and it is reported as `"kind":"geometry"` with
+  // everything except its shape, rather than flattened to a bounding box it
+  // never had. Everything but the shape is common to both.
+  const auto &definition = region.getDefinition();
+  const auto *pyramid =
+      std::get_if<mbgl::OfflineTilePyramidRegionDefinition>(&definition);
+  const auto *geometry =
+      std::get_if<mbgl::OfflineGeometryRegionDefinition>(&definition);
+
+  const std::string &styleURL = pyramid != nullptr ? pyramid->styleURL
+                                : geometry != nullptr ? geometry->styleURL
+                                                      : std::string();
+  writer.Key("kind");
+  writer.String(pyramid != nullptr ? "tilePyramid" : "geometry");
+  writer.Key("styleUrl");
+  writer.String(styleURL.data(),
+                static_cast<rapidjson::SizeType>(styleURL.size()));
+  if (pyramid != nullptr) {
+    writer.Key("north");
+    writer.Double(pyramid->bounds.north());
+    writer.Key("south");
+    writer.Double(pyramid->bounds.south());
+    writer.Key("east");
+    writer.Double(pyramid->bounds.east());
+    writer.Key("west");
+    writer.Double(pyramid->bounds.west());
+  }
+  const double minZoom = pyramid != nullptr ? pyramid->minZoom
+                         : geometry != nullptr ? geometry->minZoom
+                                               : 0.0;
+  const double maxZoom = pyramid != nullptr ? pyramid->maxZoom
+                         : geometry != nullptr ? geometry->maxZoom
+                                               : 0.0;
+  writer.Key("minZoom");
+  writer.Double(std::isfinite(minZoom) ? minZoom : 0.0);
+  writer.Key("maxZoom");
+  // JSON has no infinity, and rapidjson refuses to write one. Null is the
+  // honest encoding of "as deep as each source goes"; a stand-in number would
+  // redefine the region on the way back out.
+  if (std::isfinite(maxZoom)) {
+    writer.Double(maxZoom);
+  } else {
+    writer.Null();
+  }
+  // Guarded like maxZoom above, and for the same reason: rapidjson writes
+  // NOTHING for a non-finite double while having already emitted the `:`, so one
+  // bad value turns the whole array into unparseable JSON and takes every OTHER
+  // region's listing down with it. Our own create path rejects these, but the
+  // database is shared with any SDK that opens it.
+  const double pixelRatio = pyramid != nullptr    ? pyramid->pixelRatio
+                            : geometry != nullptr ? geometry->pixelRatio
+                                                  : 1.0;
+  writer.Key("pixelRatio");
+  writer.Double(std::isfinite(pixelRatio) ? pixelRatio : 1.0);
+  writer.Key("includeIdeographs");
+  writer.Bool(pyramid != nullptr    ? pyramid->includeIdeographs
+              : geometry != nullptr ? geometry->includeIdeographs
+                                    : false);
+
+  const std::string metadata = offlineBase64(region.getMetadata());
+  writer.Key("metadataBase64");
+  writer.String(metadata.data(),
+                static_cast<rapidjson::SizeType>(metadata.size()));
+
+  writer.Key("state");
+  writer.Int(status.downloadState == mbgl::OfflineRegionDownloadState::Active
+                 ? MBL_OFFLINE_ACTIVE
+                 : MBL_OFFLINE_INACTIVE);
+  writer.Key("completedResources");
+  writer.Uint64(status.completedResourceCount);
+  writer.Key("requiredResources");
+  writer.Uint64(status.requiredResourceCount);
+  writer.Key("requiredResourceCountIsPrecise");
+  writer.Bool(status.requiredResourceCountIsPrecise);
+  writer.Key("completedBytes");
+  writer.Uint64(status.completedResourceSize);
+  writer.Key("completedTiles");
+  writer.Uint64(status.completedTileCount);
+  writer.Key("requiredTiles");
+  writer.Uint64(status.requiredTileCount);
+  writer.Key("completedTileBytes");
+  writer.Uint64(status.completedTileSize);
+  writer.EndObject();
+}
+
+} // namespace
+
+void mbl_offline_create_region(const char *style_url, double north,
+                               double south, double east, double west,
+                               double min_zoom, double max_zoom,
+                               float pixel_ratio, int include_ideographs,
+                               const uint8_t *metadata, uint32_t metadata_len,
+                               MblOfflineRegionCallback callback, void *user) {
+  // Validated here rather than in mbgl: LatLngBounds' constructor throws on a
+  // bad latitude, and a throw crossing `extern "C"` is undefined behaviour.
+  if (style_url == nullptr || *style_url == '\0') {
+    offlineComplete(callback, user, 0, "style URL is empty");
+    return;
+  }
+  if (!std::isfinite(north) || !std::isfinite(south) || !std::isfinite(east) ||
+      !std::isfinite(west) || north < south || east < west) {
+    offlineComplete(callback, user, 0, "bounds are not a valid box");
+    return;
+  }
+  if (north > 90.0 || south < -90.0) {
+    offlineComplete(callback, user, 0, "latitude is outside -90..90");
+    return;
+  }
+  // NaN is why this is spelled out rather than written as `max_zoom < min_zoom`
+  // alone: every comparison with NaN is false, so a NaN max zoom passes an
+  // ordering test and then reaches
+  // `OfflineTilePyramidRegionDefinition`'s constructor, which checks
+  // `std::isnan(maxZoom)` and THROWS — across `extern "C"`, which is UB
+  // (CLAUDE.md §11). +infinity is a legal max zoom ("as deep as each source
+  // goes") and must stay legal, so this is not simply `isfinite`.
+  if (!std::isfinite(min_zoom) || min_zoom < 0 || std::isnan(max_zoom) ||
+      max_zoom < min_zoom) {
+    offlineComplete(callback, user, 0, "zoom range is not valid");
+    return;
+  }
+  // Likewise `!(pixel_ratio > 0)` alone rejects NaN and negatives but ACCEPTS
+  // +infinity, which the same constructor throws on — and which would then be
+  // written into the region and make every later listing emit malformed JSON,
+  // since rapidjson refuses to serialise a non-finite double and leaves the key
+  // with no value at all.
+  if (!std::isfinite(pixel_ratio) || pixel_ratio <= 0) {
+    offlineComplete(callback, user, 0, "pixel ratio must be positive and finite");
+    return;
+  }
+
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, 0, "no offline database");
+    return;
+  }
+
+  const mbgl::OfflineTilePyramidRegionDefinition definition(
+      std::string(style_url),
+      mbgl::LatLngBounds::hull(mbgl::LatLng(south, west),
+                               mbgl::LatLng(north, east)),
+      min_zoom, max_zoom, pixel_ratio, include_ideographs != 0);
+
+  db->createOfflineRegion(
+      definition, offlineMetadataFrom(metadata, metadata_len),
+      [callback, user](mbgl::expected<mbgl::OfflineRegion, std::exception_ptr>
+                           result) {
+        if (!result) {
+          offlineCompleteFromExceptionPtr(callback, user, 0, result.error());
+          return;
+        }
+        rememberOfflineRegion(*result);
+        offlineComplete(callback, user, result->getID(), "");
+      });
+}
+
+void mbl_offline_set_metadata(int64_t region_id, const uint8_t *metadata,
+                              uint32_t metadata_len,
+                              MblOfflineRegionCallback callback, void *user) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, region_id, "no offline database");
+    return;
+  }
+  // The cached OfflineRegion still carries the OLD blob afterwards, and there
+  // is no way to update it — the members are private and there is no setter.
+  // That is harmless: the cache exists only so an id can be turned back into an
+  // object for the mutators, while mbl_offline_list_regions re-reads every
+  // region from the database and reports THOSE. Nothing ever reads the cached
+  // metadata.
+  db->updateOfflineMetadata(
+      region_id, offlineMetadataFrom(metadata, metadata_len),
+      [region_id, callback,
+       user](mbgl::expected<mbgl::OfflineRegionMetadata, std::exception_ptr>
+                 result) {
+        offlineComplete(callback, user, region_id,
+                        result ? std::string() : offlineErrorText(result.error()));
+      });
+}
+
+void mbl_offline_list_regions(MblOfflineListCallback callback, void *user) {
+  if (callback == nullptr) return;
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    callback(user, nullptr);
+    return;
+  }
+  db->listOfflineRegions([db, callback, user](
+                             mbgl::expected<mbgl::OfflineRegions,
+                                            std::exception_ptr> result) {
+    if (!result) {
+      callback(user, nullptr);
+      return;
+    }
+    // Everything below runs on the database thread, in order: listOfflineRegions
+    // and every getOfflineRegionStatus it queues are messages to one actor. The
+    // shared counter therefore needs no atomics.
+    const auto regions =
+        std::make_shared<mbgl::OfflineRegions>(std::move(*result));
+    for (const auto &region : *regions) rememberOfflineRegion(region);
+
+    if (regions->empty()) {
+      callback(user, dupToHeap("[]"));
+      return;
+    }
+
+    const auto statuses = std::make_shared<std::vector<mbgl::OfflineRegionStatus>>(
+        regions->size());
+    const auto remaining = std::make_shared<std::size_t>(regions->size());
+    for (std::size_t i = 0; i < regions->size(); ++i) {
+      db->getOfflineRegionStatus(
+          (*regions)[i],
+          [i, regions, statuses, remaining, callback, user](
+              mbgl::expected<mbgl::OfflineRegionStatus, std::exception_ptr>
+                  statusResult) {
+            // A status that could not be read is reported as an all-zero one
+            // rather than dropping the region: an app that cannot see a region
+            // it downloaded cannot delete it either.
+            if (statusResult) (*statuses)[i] = *statusResult;
+            if (--(*remaining) != 0) return;
+
+            rapidjson::StringBuffer buffer;
+            rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+            writer.StartArray();
+            for (std::size_t j = 0; j < regions->size(); ++j) {
+              writeOfflineRegionJson(writer, (*regions)[j], (*statuses)[j]);
+            }
+            writer.EndArray();
+            callback(user,
+                     dupToHeap(std::string(buffer.GetString(),
+                                           buffer.GetSize())));
+          });
+    }
+  });
+}
+
+void mbl_offline_set_download_state(int64_t region_id, int32_t state) {
+  const auto region = offlineRegionFor(region_id);
+  if (region == nullptr) return;
+  const auto db = offlineDatabase();
+  if (db == nullptr) return;
+  db->setOfflineRegionDownloadState(
+      *region, state == MBL_OFFLINE_ACTIVE
+                   ? mbgl::OfflineRegionDownloadState::Active
+                   : mbgl::OfflineRegionDownloadState::Inactive);
+}
+
+int mbl_offline_get_region_status(int64_t region_id,
+                                  MblOfflineProgressCallback callback,
+                                  void *user) {
+  if (callback == nullptr) return 0;
+  const auto region = offlineRegionFor(region_id);
+  const auto db = offlineDatabase();
+  if (region == nullptr || db == nullptr) return 0;
+  db->getOfflineRegionStatus(
+      *region,
+      [region_id, callback, user](
+          mbgl::expected<mbgl::OfflineRegionStatus, std::exception_ptr>
+              result) {
+        if (!result) {
+          // Having returned 1, this MUST call back — a promise of delivery that
+          // is silently dropped leaves the caller's Future pending for the
+          // process lifetime, holding its callback open with it. mbgl reaches
+          // here whenever the region row has gone or SQLite refuses (a second
+          // connection, a full disk), which a caller cannot predict.
+          callback(user, region_id, MBL_OFFLINE_INACTIVE, 0, 0,
+                   MBL_OFFLINE_STATUS_UNAVAILABLE, 0, 0, 0, 0);
+          return;
+        }
+        const MblOfflineSink sink{callback, nullptr, user};
+        emitOfflineStatus(sink, region_id, *result);
+      });
+  return 1;
+}
+
+int mbl_offline_set_observer(int64_t region_id,
+                             MblOfflineProgressCallback on_progress,
+                             MblOfflineErrorCallback on_error, void *user) {
+  const auto region = offlineRegionFor(region_id);
+  if (region == nullptr) return 0;
+  const auto db = offlineDatabase();
+  if (db == nullptr) return 0;
+
+  if (on_progress == nullptr && on_error == nullptr) {
+    // Erase the table entry FIRST: a status callback already on its way to the
+    // database thread then finds nothing to deliver to, instead of calling a
+    // Dart NativeCallable the caller is about to close.
+    {
+      auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+      state.sinks.erase(region_id);
+    }
+    db->setOfflineRegionObserver(*region, nullptr);
+    return 1;
+  }
+
+  {
+    auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+    state.sinks[region_id] = MblOfflineSink{on_progress, on_error, user};
+  }
+  db->setOfflineRegionObserver(
+      *region, std::make_unique<MblOfflineObserver>(region_id));
+  return 1;
+}
+
+void mbl_offline_delete_region(int64_t region_id,
+                               MblOfflineRegionCallback callback, void *user) {
+  const auto region = offlineRegionFor(region_id);
+  const auto db = offlineDatabase();
+  if (region == nullptr || db == nullptr) {
+    offlineComplete(callback, user, region_id,
+                    "no such region in this process — list regions first");
+    return;
+  }
+  // Clear the observer before deleting, or a status callback can fire for a
+  // region that no longer exists.
+  {
+    auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+    state.sinks.erase(region_id);
+  }
+  db->setOfflineRegionObserver(*region, nullptr);
+  db->setOfflineRegionDownloadState(*region,
+                                    mbgl::OfflineRegionDownloadState::Inactive);
+  db->deleteOfflineRegion(
+      *region, [region_id, region, callback, user](std::exception_ptr error) {
+        if (!error) {
+          auto &state = offlineState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+          state.regions.erase(region_id);
+        }
+        offlineCompleteFromExceptionPtr(callback, user, region_id, error);
+      });
+}
+
+void mbl_offline_invalidate_region(int64_t region_id,
+                                   MblOfflineRegionCallback callback,
+                                   void *user) {
+  const auto region = offlineRegionFor(region_id);
+  const auto db = offlineDatabase();
+  if (region == nullptr || db == nullptr) {
+    offlineComplete(callback, user, region_id,
+                    "no such region in this process — list regions first");
+    return;
+  }
+  db->invalidateOfflineRegion(
+      *region, [region_id, region, callback, user](std::exception_ptr error) {
+        offlineCompleteFromExceptionPtr(callback, user, region_id, error);
+      });
+}
+
+void mbl_offline_set_tile_count_limit(uint64_t limit) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) return;
+  db->setOfflineMapboxTileCountLimit(limit);
+}
+
+void mbl_offline_pack_database(MblOfflineRegionCallback callback, void *user) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, 0, "no offline database");
+    return;
+  }
+  db->packDatabase([callback, user](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  });
+}
+
+void mbl_offline_clear_ambient_cache(MblOfflineRegionCallback callback,
+                                     void *user) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, 0, "no offline database");
+    return;
+  }
+  db->clearAmbientCache([callback, user](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  });
+}
+
+void mbl_offline_set_maximum_ambient_cache_size(
+    uint64_t bytes, MblOfflineRegionCallback callback, void *user) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, 0, "no offline database");
+    return;
+  }
+  db->setMaximumAmbientCacheSize(
+      bytes, [callback, user](std::exception_ptr error) {
+        offlineCompleteFromExceptionPtr(callback, user, 0, error);
+      });
+}
+
+void mbl_offline_reset_database(MblOfflineRegionCallback callback, void *user) {
+  const auto db = offlineDatabase();
+  if (db == nullptr) {
+    offlineComplete(callback, user, 0, "no offline database");
+    return;
+  }
+  // Stop every download FIRST, and only then forget the regions.
+  //
+  // mbgl's resetDatabase does not touch its `downloads` map, so an OfflineDownload
+  // left Active survives the reset and keeps fetching the rest of its pyramid over
+  // the network, writing each resource to a region row that no longer exists (which
+  // OfflineDatabase swallows). Clearing our table first would make that
+  // unstoppable, because mbl_offline_set_download_state can only act on a region
+  // this process still holds — "clear all data" would leave a download running with
+  // no way to reach it.
+  {
+    auto &state = offlineState();
+    std::vector<std::shared_ptr<mbgl::OfflineRegion>> regions;
+    {
+      std::lock_guard<std::mutex> lk(state.mutex);
+      for (const auto &entry : state.regions) regions.push_back(entry.second);
+    }
+    for (const auto &region : regions) {
+      db->setOfflineRegionObserver(*region, nullptr);
+      db->setOfflineRegionDownloadState(
+          *region, mbgl::OfflineRegionDownloadState::Inactive);
+    }
+    std::lock_guard<std::mutex> lk(state.mutex);
+    state.regions.clear();
+    state.sinks.clear();
+  }
+  db->resetDatabase([callback, user](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  });
+}

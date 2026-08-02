@@ -261,9 +261,10 @@ fly), style switching, gestures, `resize`, `onReady`, `dispose`.
 > 🧪 wired-but-unrun). **Web binds none of it** — no projector, no layers, no models — which is
 > the single largest gap.
 
-Still unbound everywhere: rotate / pitch / double-tap gestures, offline storage, terrain and
-hillshade, the location component, and built-in controls. These are binding work, not engine
-limitations — the engines underneath support them. The
+Still unbound everywhere: terrain and hillshade, and built-in controls. These are binding work, not
+engine limitations — the engines underneath support them. **Offline regions are bound on the five
+native tiers but not on web**, where the engine compiles its offline database but nothing persists
+it across page loads. The
 [feature matrix](https://github.com/Mankeli-Software/maplibre_flutter/blob/main/FEATURE_MATRIX.md)
 tracks the full parity backlog feature by feature, per platform.
 

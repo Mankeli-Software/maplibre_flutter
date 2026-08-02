@@ -49,6 +49,402 @@ external int mbl_configure(
 external ffi.Pointer<ffi.Char> mbl_get_cache_path();
 
 @ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Double,
+    ffi.Float,
+    ffi.Int,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Uint32,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_create_region(
+  ffi.Pointer<ffi.Char> style_url,
+  double north,
+  double south,
+  double east,
+  double west,
+  double min_zoom,
+  double max_zoom,
+  double pixel_ratio,
+  int include_ideographs,
+  ffi.Pointer<ffi.Uint8> metadata,
+  int metadata_len,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Int64,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Uint32,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_set_metadata(
+  int region_id,
+  ffi.Pointer<ffi.Uint8> metadata,
+  int metadata_len,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Pointer<ffi.Char> json,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_list_regions(
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(ffi.Pointer<ffi.Void> user, ffi.Pointer<ffi.Char> json)
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int32)>()
+external void mbl_offline_set_download_state(int region_id, int state);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Int64,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Int32 state,
+          ffi.Uint64 completed_resources,
+          ffi.Uint64 required_resources,
+          ffi.Int required_is_precise,
+          ffi.Uint64 completed_bytes,
+          ffi.Uint64 completed_tiles,
+          ffi.Uint64 required_tiles,
+          ffi.Uint64 completed_tile_bytes,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external int mbl_offline_get_region_status(
+  int region_id,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Int32 state,
+        ffi.Uint64 completed_resources,
+        ffi.Uint64 required_resources,
+        ffi.Int required_is_precise,
+        ffi.Uint64 completed_bytes,
+        ffi.Uint64 completed_tiles,
+        ffi.Uint64 required_tiles,
+        ffi.Uint64 completed_tile_bytes,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Int64,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Int32 state,
+          ffi.Uint64 completed_resources,
+          ffi.Uint64 required_resources,
+          ffi.Int required_is_precise,
+          ffi.Uint64 completed_bytes,
+          ffi.Uint64 completed_tiles,
+          ffi.Uint64 required_tiles,
+          ffi.Uint64 completed_tile_bytes,
+        )
+      >
+    >,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Int is_tile_limit,
+          ffi.Pointer<ffi.Char> message,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external int mbl_offline_set_observer(
+  int region_id,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Int32 state,
+        ffi.Uint64 completed_resources,
+        ffi.Uint64 required_resources,
+        ffi.Int required_is_precise,
+        ffi.Uint64 completed_bytes,
+        ffi.Uint64 completed_tiles,
+        ffi.Uint64 required_tiles,
+        ffi.Uint64 completed_tile_bytes,
+      )
+    >
+  >
+  on_progress,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Int is_tile_limit,
+        ffi.Pointer<ffi.Char> message,
+      )
+    >
+  >
+  on_error,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Int64,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_delete_region(
+  int region_id,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Int64,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_invalidate_region(
+  int region_id,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Uint64)>()
+external void mbl_offline_set_tile_count_limit(int limit);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_pack_database(
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_clear_ambient_cache(
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Uint64,
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_set_maximum_ambient_cache_size(
+  int bytes,
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Int64 region_id,
+          ffi.Pointer<ffi.Char> error,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external void mbl_offline_reset_database(
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Int64 region_id,
+        ffi.Pointer<ffi.Char> error,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<
   ffi.Pointer<MblMap> Function(
     ffi.Uint32,
     ffi.Uint32,

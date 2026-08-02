@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
 
+import 'src/core_offline_store.dart';
 import 'src/maplibre_flutter_linux_controller.dart';
 
 /// The controller is exported so the shared core-controller conformance suite
@@ -50,6 +51,11 @@ class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
 
   @override
   String? get cachePath => MapLibreCoreSettings.cachePath;
+
+  /// Offline regions live in the same database `cachePath` names, so the tier
+  /// that has a cache is exactly the tier that can store regions.
+  @override
+  MapLibreOfflineStore? get offlineStore => const CoreOfflineStore();
 
   /// Renders off-screen in STATIC mode, which blocks until every tile for the
   /// frame has loaded — a Continuous map would hand back a half-loaded picture,

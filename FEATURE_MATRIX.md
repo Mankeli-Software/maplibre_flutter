@@ -82,8 +82,14 @@ the ffigen bindings, so it cannot drift.
     It is also the only tier where a filtered query is *refused* rather than
     answered, deliberately: returning unfiltered features is the one failure a
     caller cannot see. Nothing in `src/web/` has been compiled anywhere.
-  - **Offline packs** (`MLNOfflineStorage`) and the **location component**
-    (`MLNUserLocation`) are unbuilt on every tier.
+  - **Offline regions** are wired on all five native tiers and **not on web**,
+    which is the honest cell rather than a pessimistic one: the engine compiles
+    its offline database into the WASM build, but nothing persists it across page
+    loads (Emscripten needs IDBFS + `FS.syncfs`), and a download that silently
+    evaporates is worse than a feature that reports itself missing. Shape
+    (GeoJSON) regions are unbuilt everywhere — the C ABI has no way to pass a
+    geometry — as are `mergeOfflineRegions`, `setDatabasePath`, ambient-cache
+    preload and `setConnected`. → `docs/offline-design.md`.
   - **Auth headers and `transformRequest`** are unbuilt; the API key is not.
     mbgl has no header hook on `ResourceOptions`, so it needs a custom
     `FileSource` and a Dart callback on the network path — a different order of
