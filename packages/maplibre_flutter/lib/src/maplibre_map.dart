@@ -232,7 +232,30 @@ class MapLibreMap extends StatefulWidget {
   State<MapLibreMap> createState() => _MapLibreMapState();
 }
 
-class _MapLibreMapState extends State<MapLibreMap> {
+class _MapLibreMapState extends State<MapLibreMap> with WidgetsBindingObserver {
+  /// Whether the user has asked the OS for less movement.
+  ///
+  /// **Two sources, deliberately.** `MediaQueryData` has no `reduceMotion`
+  /// member at all, and iOS's embedder only ever inserts `.reduceMotion` into
+  /// the feature set, never `.disableAnimations` — so `disableAnimationsOf`
+  /// alone silently ignores the setting on the one platform this project has a
+  /// physical test device for. Reading both is what makes it work on iOS and
+  /// Android at once.
+  bool get _reduceMotion =>
+      MediaQuery.disableAnimationsOf(context) ||
+      PlatformDispatcher.instance.accessibilityFeatures.reduceMotion;
+
+  void _pushReduceMotion() => _controller.reduceMotion = _reduceMotion;
+
+  @override
+  void didChangeAccessibilityFeatures() => setState(_pushReduceMotion);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _pushReduceMotion();
+  }
+
   // Set only when the widget owns the controller (none was provided).
   MapLibreMapController? _internalController;
   MapLibreMapController get _controller =>
@@ -356,6 +379,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.controller == null) {
       _internalController = MapLibreMapController();
     }
@@ -475,6 +499,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _attributionRetry?.cancel();
     _attributionRetry = null;
     _moveEnds?.cancel();

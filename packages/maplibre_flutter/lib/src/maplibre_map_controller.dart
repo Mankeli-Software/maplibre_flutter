@@ -96,6 +96,19 @@ class MapLibreMapController {
   /// [detach]/[dispose]).
   bool get isAttached => _platform != null;
 
+  /// Whether the user has asked the system to reduce motion.
+  ///
+  /// Pushed in by [MapLibreMap] — a controller has no [BuildContext] — and read
+  /// by every camera verb, so an app's own imperative `flyTo` honours the
+  /// setting too. Widget glue; apps read the OS setting through `MediaQuery`.
+  ///
+  /// **Two sources have to be read to get this right, and the widget reads
+  /// both.** `MediaQueryData` has no `reduceMotion` at all, and iOS's embedder
+  /// only ever inserts `.reduceMotion`, never `.disableAnimations` — so
+  /// `MediaQuery.disableAnimationsOf` alone silently ignores the iOS setting.
+  @internal
+  bool reduceMotion = false;
+
   /// What the bound renderer can actually do.
   ///
   /// The tiers have genuinely different ceilings — the web tier has no
@@ -661,6 +674,16 @@ class MapLibreCameraController {
   Future<MapCamera> _resolve(CameraOptions options) async =>
       options.applyTo(await getCamera());
 
+  /// Whether this move should be stripped of its animation.
+  ///
+  /// The flag is pushed in by the widget rather than read here, because a
+  /// controller has no [BuildContext] — and it has to reach *this* layer rather
+  /// than the widget's gesture code, or an app's own
+  /// `controller.camera.flyTo(...)` would keep animating for a user who asked
+  /// the OS for stillness.
+  bool _stripAnimation({required bool essential}) =>
+      _owner.reduceMotion && !essential;
+
   /// Brackets a programmatic move with start/end reports, so
   /// [MapLibreMapController.onCameraMoveStart] fires for app-driven moves as
   /// well as gestures.
@@ -696,11 +719,19 @@ class MapLibreCameraController {
   ///
   /// This was simply unreachable before: the old `move(duration:)` stepped a
   /// flight arc, so an eased straight-line move had no API at all.
+  /// Set [essential] when the animation carries meaning the destination does
+  /// not — gl-js `AnimationOptions.essential`. It is the only way an app can
+  /// say "this one matters" and keep it under reduce motion.
   Future<void> easeTo(
     CameraOptions camera, {
     Duration duration = const Duration(milliseconds: 300),
     Cubic? easing,
+    bool essential = false,
   }) => _reported(() async {
+    // Clamped, not skipped: gl-js sets `duration = 0` and still fires the whole
+    // event sequence, so an app's state machine cannot diverge between a
+    // reduced-motion user and everyone else.
+    if (_stripAnimation(essential: essential)) duration = Duration.zero;
     final commands = _commands;
     if (commands != null) {
       return commands.easeTo(
@@ -725,7 +756,25 @@ class MapLibreCameraController {
     Cubic? easing,
     double? speed,
     double? apexZoom,
+    bool essential = false,
   }) => _reported(() async {
+    if (_stripAnimation(essential: essential)) {
+      // Degrades to a jump carrying ONLY the destination, exactly as gl-js
+      // does. Dropping `anchor` is the correctness half, not tidiness: a flight
+      // that carried its anchor through into a jump lands somewhere else.
+      // `speed` and `apexZoom` describe the arc, and there is no longer an arc.
+      final commands = _commands;
+      final destination = CameraOptions(
+        center: camera.center,
+        zoom: camera.zoom,
+        bearing: camera.bearing,
+        pitch: camera.pitch,
+        roll: camera.roll,
+        padding: camera.padding,
+      );
+      if (commands != null) return commands.jumpTo(destination);
+      return _owner._platform?.moveCamera(await _resolve(destination));
+    }
     final commands = _commands;
     if (commands != null) {
       return commands.flyTo(

@@ -27,6 +27,8 @@ class _A11yController
 
   final List<CameraOptions> jumps = <CameraOptions>[];
   final List<CameraOptions> eases = <CameraOptions>[];
+  final List<CameraOptions> flies = <CameraOptions>[];
+  final List<CameraAnimation?> easeAnimations = <CameraAnimation?>[];
 
   @override
   Future<void> get onReady => Future<void>.value();
@@ -58,11 +60,14 @@ class _A11yController
   @override
   Future<void> jumpTo(CameraOptions c) async => jumps.add(c);
   @override
-  Future<void> easeTo(CameraOptions c, {CameraAnimation? animation}) async =>
-      eases.add(c);
+  Future<void> easeTo(CameraOptions c, {CameraAnimation? animation}) async {
+    eases.add(c);
+    easeAnimations.add(animation);
+  }
+
   @override
   Future<void> flyTo(CameraOptions c, {CameraAnimation? animation}) async =>
-      eases.add(c);
+      flies.add(c);
   @override
   Future<void> fitBounds(
     LatLngBounds bounds, {
@@ -438,5 +443,139 @@ void main() {
         expect(c.longitude, lessThan(0));
       });
     });
+  });
+
+  group('reduced motion', () {
+    Future<_A11yController> pumpWith(
+      WidgetTester tester, {
+      required bool disableAnimations,
+      MapLibreMapController? controller,
+    }) async {
+      final platform = _Platform();
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: MediaQuery(
+            data: MediaQueryData(disableAnimations: disableAnimations),
+            child: MapLibreMap(
+              style: _style,
+              options: _options,
+              controller: controller,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return platform.last!;
+    }
+
+    testWidgets('easeTo is clamped to zero, not skipped', (tester) async {
+      final controller = MapLibreMapController();
+      final fake = await pumpWith(
+        tester,
+        disableAnimations: true,
+        controller: controller,
+      );
+      await controller.camera.easeTo(const CameraOptions(zoom: 5));
+      await tester.pumpAndSettle();
+      // Clamped rather than dropped: gl-js still fires the whole event
+      // sequence, so an app's state machine cannot diverge between a
+      // reduced-motion user and everyone else.
+      expect(fake.easeAnimations.single!.duration, Duration.zero);
+      expect(fake.eases.single.zoom, 5);
+      controller.dispose();
+    });
+
+    testWidgets('flyTo degrades to a jump carrying only the destination', (
+      tester,
+    ) async {
+      final controller = MapLibreMapController();
+      final fake = await pumpWith(
+        tester,
+        disableAnimations: true,
+        controller: controller,
+      );
+      await controller.camera.flyTo(
+        const CameraOptions(
+          center: LatLng(60.17, 24.94),
+          zoom: 9,
+          anchor: Offset(10, 20),
+        ),
+        speed: 3,
+        apexZoom: 2,
+      );
+      await tester.pumpAndSettle();
+
+      expect(fake.flies, isEmpty);
+      final jump = fake.jumps.single;
+      expect(jump.center, const LatLng(60.17, 24.94));
+      expect(jump.zoom, 9);
+      // Dropping the anchor is the CORRECTNESS half, not tidiness: a flight
+      // that carried its anchor into a jump lands somewhere else.
+      expect(jump.anchor, isNull);
+      controller.dispose();
+    });
+
+    testWidgets('essential survives', (tester) async {
+      final controller = MapLibreMapController();
+      final fake = await pumpWith(
+        tester,
+        disableAnimations: true,
+        controller: controller,
+      );
+      await controller.camera.flyTo(
+        const CameraOptions(zoom: 9),
+        essential: true,
+      );
+      await controller.camera.easeTo(
+        const CameraOptions(zoom: 4),
+        essential: true,
+      );
+      await tester.pumpAndSettle();
+      expect(fake.flies.single.zoom, 9);
+      expect(fake.easeAnimations.single!.duration, isNot(Duration.zero));
+      controller.dispose();
+    });
+
+    testWidgets('without the setting nothing changes', (tester) async {
+      final controller = MapLibreMapController();
+      final fake = await pumpWith(
+        tester,
+        disableAnimations: false,
+        controller: controller,
+      );
+      await controller.camera.flyTo(const CameraOptions(zoom: 9), speed: 3);
+      await tester.pumpAndSettle();
+      expect(fake.flies.single.zoom, 9);
+      expect(fake.jumps, isEmpty);
+      controller.dispose();
+    });
+
+    // The bookends must complete identically in both modes, or an app's state
+    // machine diverges between a reduced-motion user and everyone else. That is
+    // exactly why easeTo is CLAMPED to zero rather than skipped.
+    for (final reduced in <bool>[true, false]) {
+      testWidgets('a move still starts and ends with reduceMotion=$reduced', (
+        tester,
+      ) async {
+        final controller = MapLibreMapController();
+        final fake = await pumpWith(
+          tester,
+          disableAnimations: reduced,
+          controller: controller,
+        );
+        expect(controller.isMoving, isFalse);
+
+        await controller.camera.flyTo(const CameraOptions(zoom: 9));
+        await tester.pumpAndSettle();
+
+        // Exactly one command either way — reduce motion changes WHICH command,
+        // never how many.
+        expect(fake.jumps.length + fake.flies.length, 1);
+        // `_reported` fired its end bookend, so the camera is not stuck moving.
+        expect(controller.isMoving, isFalse);
+      });
+    }
   });
 }
