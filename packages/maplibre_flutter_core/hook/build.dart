@@ -306,6 +306,65 @@ const _submodulePatches = [
     marker: 'MBL_SIM_STENCIL_ATTACHMENT',
     patch: 'patches/metal-simulator-stencil-attachment.patch',
   ),
+  // Offline downloads abort the process under the DEFAULT tile server options.
+  //
+  // mbgl builds a std::regex out of a TileServerOptions URL template without
+  // escaping the template's literal text, and in the ECMAScript grammar an
+  // unescaped `{` opens a quantifier. Two of the three built-in configurations
+  // carry a brace that is not one of the five tokens createTokenMap knows —
+  // MapLibre's glyphs template is "/font/{fontstack}/{start}-{end}.pbf" and its
+  // sprites template is "/{path}/sprite{scale}.{format}" — so constructing the
+  // regex throws std::regex_error(error_badbrace).
+  //
+  // Nothing catches it: canonicalize{Source,Glyph,Sprite}URL are called only
+  // from OfflineDownload::activateDownload, on mbgl's file-source thread.
+  // `mbl_offline_set_download_state(id, Active)` against demotiles therefore
+  // killed the host process, which is what stopped offline support shipping the
+  // first time (see docs/offline-design.md).
+  //
+  // Escaping alone would have turned the abort into a silent wrong answer: the
+  // gate (isNormalizedSourceURL) recognised any `{...}` while the extractor
+  // (createTokenMap) recognises five names, so a template with an unrecognised
+  // token passed the gate and came back with an empty map — rebuilding every
+  // glyph range in the style as "maplibre://fonts". Both now compile the
+  // template the same way, so the gate accepts exactly what the extractor can
+  // read.
+  //
+  // Upstream-PR candidate, and the only one of the three we carry that ships
+  // with a committed reproduction: `offline_url_probe` (ctest label `hermetic`)
+  // asserts the crashing cases AND the MapTiler expectations from mbgl's own
+  // test/util/mapbox.test.cpp that the patch must not change.
+  (
+    file: 'src/mbgl/util/mapbox.cpp',
+    marker: 'MBL_URL_TEMPLATE_ESCAPE',
+    patch: 'patches/offline-url-template-regex.patch',
+  ),
+  // Two more ways the offline download path kills the process, both found while
+  // fixing the one above and both the same shape: an unchecked value on mbgl's
+  // database thread, where an app has nothing to catch.
+  //
+  //   * `parser.parse(*styleResponse.data)` dereferences a null `shared_ptr`
+  //     when the style request answers with no content — an HTTP 204, or a
+  //     stored resource whose blob is NULL. `Response::data` is documented as
+  //     present only for non-error, non-notModified responses, and every OTHER
+  //     consumer in mbgl checks `noContent` first (style_impl, tile_source,
+  //     sprite_loader, geojson_source); offline_download is the one that does
+  //     not, in both `activateDownload` and `getStatus`.
+  //   * `queueTiles` reads `tileset.tiles[0]` with `operator[]`, and a TileJSON
+  //     carrying `"tiles": []` converts successfully — conversion/tileset.cpp
+  //     only rejects a missing or non-array member. The render path uses `at()`
+  //     for the same read (tile_loader_impl.hpp); this is the one place that
+  //     reads past the end.
+  //
+  // Both are upstream-PR candidates alongside the URL-template patch, and both
+  // are one-line guards that return early: a region that cannot be enumerated
+  // stops, which is what `requiredResourceCountIsPrecise` staying false already
+  // means to a caller.
+  (
+    file: 'platform/default/src/mbgl/storage/offline_download.cpp',
+    marker: 'MBL_OFFLINE_NULL_GUARDS',
+    patch: 'patches/offline-download-null-guards.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.

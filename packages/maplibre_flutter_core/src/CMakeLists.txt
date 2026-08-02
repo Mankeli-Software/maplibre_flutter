@@ -762,6 +762,15 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   target_link_libraries(shaping_probe PRIVATE maplibre_flutter_core mbgl-core)
   target_include_directories(shaping_probe PRIVATE "${MLN_ROOT}/src" "${MLN_ROOT}/include")
 
+  # Offline URL canonicalisation: asserts
+  # patches/offline-url-template-regex.patch against mbgl's own
+  # canonicalize*URL, plus the MapTiler cases from mbgl's suite that the patch
+  # must not change. No map, no GPU, no network. Needs mbgl's private headers
+  # (src/mbgl/util/mapbox.hpp) the same way shaping_probe does.
+  add_executable(offline_url_probe offline_url_probe.cpp)
+  target_link_libraries(offline_url_probe PRIVATE maplibre_flutter_core mbgl-core)
+  target_include_directories(offline_url_probe PRIVATE "${MLN_ROOT}/src" "${MLN_ROOT}/include")
+
   # Renders a model at four points around a circular path, to check its facing
   # against its direction of travel.
   add_executable(drive_probe drive_probe.cpp)
@@ -792,6 +801,9 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
 
   add_test(NAME shaping_probe COMMAND shaping_probe)
   set_tests_properties(shaping_probe PROPERTIES LABELS "hermetic" TIMEOUT 60)
+
+  add_test(NAME offline_url_probe COMMAND offline_url_probe)
+  set_tests_properties(offline_url_probe PROPERTIES LABELS "hermetic" TIMEOUT 60)
 
   if(EXISTS "${_demo_glb}")
     add_test(NAME gltf_probe COMMAND gltf_probe "${_demo_glb}")

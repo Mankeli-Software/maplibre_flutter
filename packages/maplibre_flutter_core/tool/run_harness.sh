@@ -30,7 +30,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   "${CCACHE_ARGS[@]}"
 
 echo "=== build ==="
-cmake --build "$BUILD" --target shaping_probe gltf_probe proj_probe model_harness
+cmake --build "$BUILD" --target shaping_probe offline_url_probe gltf_probe proj_probe model_harness
 
 echo "=== ctest ${LABEL:+(label: $LABEL)} ==="
 if [ -n "$LABEL" ]; then

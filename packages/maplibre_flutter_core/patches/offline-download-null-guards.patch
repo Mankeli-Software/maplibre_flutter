@@ -1,0 +1,48 @@
+diff --git a/platform/default/src/mbgl/storage/offline_download.cpp b/platform/default/src/mbgl/storage/offline_download.cpp
+index 4a48c584c638..051b55af0b10 100644
+--- a/platform/default/src/mbgl/storage/offline_download.cpp
++++ b/platform/default/src/mbgl/storage/offline_download.cpp
+@@ -149,6 +149,10 @@ OfflineRegionStatus OfflineDownload::getStatus() const {
+         return *result;
+     }
+ 
++    if (!styleResponse->data) {
++        return *result; // see MBL_OFFLINE_NULL_GUARDS in activateDownload
++    }
++
+     style::Parser parser;
+     parser.parse(*styleResponse->data);
+ 
+@@ -251,6 +255,17 @@ void OfflineDownload::activateDownload() {
+     ensureResource(std::move(styleResource), [&](const Response& styleResponse) {
+         status.requiredResourceCountIsPrecise = true;
+ 
++        // MBL_OFFLINE_NULL_GUARDS: Response::data is documented as present only
++        // for non-error, non-notModified responses, and is null for a 204 and
++        // for a stored resource whose blob is NULL. Every other consumer of a
++        // style response in mbgl tests noContent first (style_impl.cpp,
++        // tile_source.cpp, sprite_loader.cpp, geojson_source.cpp); this was the
++        // one that did not, and dereferencing it segfaults on the database
++        // thread where nothing can catch it.
++        if (!styleResponse.data) {
++            return;
++        }
++
+         style::Parser parser;
+         parser.parse(*styleResponse.data);
+ 
+@@ -448,6 +463,14 @@ void OfflineDownload::queueResource(Resource&& resource) {
+ }
+ 
+ void OfflineDownload::queueTiles(SourceType type, uint16_t tileSize, const Tileset& tileset) {
++    // A TileJSON with "tiles": [] converts successfully — conversion/tileset.cpp
++    // only rejects a missing or non-array member — so this vector can be empty,
++    // and the indexing below is operator[], not at(). The render path uses at()
++    // (tile_loader_impl.hpp); this was the one place that read past the end.
++    if (tileset.tiles.empty()) {
++        return;
++    }
++
+     tileCover(definition, type, tileSize, tileset.zoomRange, [&](const auto& tile) {
+         status.requiredResourceCount++;
+         status.requiredTileCount++;
