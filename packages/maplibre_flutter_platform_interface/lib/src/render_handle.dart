@@ -56,9 +56,11 @@ final class PlatformViewHandle extends MapLibreRenderHandle {
 @immutable
 final class TextureHandle extends MapLibreRenderHandle {
   /// A [Texture] contributes no semantics of its own — the string "semantic"
-  /// does not occur in Flutter's `texture.dart` at all — so this tier never sets
-  /// [providesOwnSemantics] and the widget owns the whole tree.
-  const TextureHandle({required this.textureId});
+  /// does not occur in Flutter's `texture.dart` at all — so no texture tier
+  /// sets [providesOwnSemantics] today, and none can while that stays true. It
+  /// is accepted here so the sealed family is uniform and the widget's branch
+  /// is reachable from a test.
+  const TextureHandle({required this.textureId, super.providesOwnSemantics});
 
   /// Engine texture id registered by the native plugin's texture registrar.
   final int textureId;

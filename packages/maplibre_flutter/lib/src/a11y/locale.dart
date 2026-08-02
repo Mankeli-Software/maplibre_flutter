@@ -210,6 +210,19 @@ class MapLibreLocale {
     // a map, so these follow gl-js's `Namespace.Name` spelling rather than
     // Apple's SCREAMING_SNAKE.
     'Map.ValueZoom': 'Zoom {zoom}.',
+    'Map.ValueCenter': 'Centred on {coordinate}.',
+    'Map.ValueBearing': 'Facing {direction}.',
+    'Map.ValuePitch': 'Tilted {pitch} degrees.',
+    'Map.Hint': 'Swipe up or down to zoom. Use the actions to pan and rotate.',
+
+    // Load state. Announced FIRST when it is not `ready`, because a blank map
+    // and an ocean produce the same camera summary — "Zoom 12. 0 markers
+    // visible." — and a sighted user can tell them apart at a glance. This is
+    // the gap gl-js has too: it announces no errors at all, anywhere.
+    'Map.Loading': 'Map loading.',
+    'Map.LoadFailed': 'The map could not be loaded.',
+    'Map.PartiallyLoaded': 'Some of the map could not be loaded.',
+
     'Action.PanNorth': 'Pan north',
     'Action.PanSouth': 'Pan south',
     'Action.PanEast': 'Pan east',

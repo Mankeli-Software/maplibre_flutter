@@ -13,6 +13,8 @@ import 'maplibre_map_controller.dart';
 import 'marker.dart';
 import 'attribution_bar.dart';
 import 'user_location_puck.dart';
+import 'a11y/locale.dart';
+import 'a11y/map_semantics.dart';
 import 'marker_overlay.dart';
 
 /// The public map widget.
@@ -44,6 +46,8 @@ class MapLibreMap extends StatefulWidget {
     this.userLocation,
     this.userTrackingMode = MapUserTrackingMode.none,
     this.userLocationBuilder,
+    this.semantics = const MapLibreSemantics(),
+    this.locale = const MapLibreLocale(),
   });
 
   /// The MapLibre style, in any of three forms:
@@ -202,6 +206,27 @@ class MapLibreMap extends StatefulWidget {
 
   /// Replaces the default puck. Gets the current location; return any widget.
   final Widget Function(BuildContext, MapUserLocation)? userLocationBuilder;
+
+  /// What assistive technology is told about the map.
+  ///
+  /// The map surface is a GPU texture on five of the six tiers, and a [Texture]
+  /// contributes **no** semantics of its own — so without this a screen-reader
+  /// user finds a labelled rectangle with nothing in it and no way to move the
+  /// camera. Defaults to a labelled, adjustable region; use
+  /// [MapLibreSemantics.excluded] to publish nothing and describe the map
+  /// yourself.
+  ///
+  /// Ignored on tiers whose embedded view publishes its own accessibility tree
+  /// (the Apple SDK tier and the maplibre-gl-js tier), where synthesizing a
+  /// second one would announce the map twice.
+  final MapLibreSemantics semantics;
+
+  /// The strings every accessibility label, hint and action is drawn from.
+  ///
+  /// A flat patch table over [MapLibreLocale.defaultLocale], with gl-js's and
+  /// the Apple SDK's key names kept verbatim so their existing translations
+  /// line up 1:1.
+  final MapLibreLocale locale;
 
   @override
   State<MapLibreMap> createState() => _MapLibreMapState();
@@ -475,25 +500,47 @@ class _MapLibreMapState extends State<MapLibreMap> {
             _controller.renderHandle == null) {
           return const SizedBox.shrink();
         }
+        final markers = _markersWithPuck(context);
         final embed = _MapEmbed(
           controller: _controller,
-          markers: _markersWithPuck(context),
+          markers: markers,
           onTap: widget.onTap,
           rotateGesturesEnabled: widget.rotateGesturesEnabled,
           tiltGesturesEnabled: widget.tiltGesturesEnabled,
         );
-        if (!widget.showAttribution) return embed;
-        // ABOVE the marker overlay: a credit hidden behind a cluster of pins is
-        // not displayed, and "displayed" is the licence condition.
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            embed,
-            MapLibreAttributionBar(
-              attributions: _attributions,
-              onLinkTap: widget.onAttributionTap,
-            ),
-          ],
+        final Widget content = widget.showAttribution
+            // ABOVE the marker overlay: a credit hidden behind a cluster of
+            // pins is not displayed, and "displayed" is the licence condition.
+            ? Stack(
+                fit: StackFit.expand,
+                children: [
+                  embed,
+                  MapLibreAttributionBar(
+                    attributions: _attributions,
+                    onLinkTap: widget.onAttributionTap,
+                  ),
+                ],
+              )
+            : embed;
+
+        // The embedded view already has a real accessibility tree — the Apple
+        // SDK's `UIAccessibilityContainer`, or gl-js's canvas ARIA plus its own
+        // keyboard handler. Wrapping it would describe the same map twice and,
+        // on the web tier, fight the engine for keyboard focus. NOT
+        // `ExcludeSemantics`: that would drop the platform view's own node and
+        // the native subtree grafted at it.
+        if (_controller.renderHandle!.providesOwnSemantics) return content;
+
+        // Wraps the OUTER stack, so the map surface, its markers and the
+        // attribution are one region rather than three unrelated things — WCAG
+        // 1.3.1, and the thing gl-js issue #364 asked for and never got,
+        // because attributes on a `<canvas>` cannot contain anything.
+        return MapLibreMapSemantics(
+          controller: _controller,
+          semantics: widget.semantics,
+          locale: widget.locale,
+          markerCount: markers.length,
+          child: content,
         );
       },
     );
