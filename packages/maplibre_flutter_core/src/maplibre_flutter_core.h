@@ -124,10 +124,10 @@ FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
 // configure-before-first-map surface; this mirrors it.
 
 // Configure resources. Returns 1 on success, 0 if it is too late — a map
-// already exists, or an mbl_offline_* call has already built the offline
-// database. Both bake the current options into a file source that is then
-// shared for the process lifetime, so a later change would apply to nothing
-// while looking like it had worked.
+// already exists, or something has already PINNED a file source (an
+// mbl_offline_* call, or mbl_set_request_transform). All of them bake the
+// current options into a source that is then held for the process lifetime, so
+// a later change would apply to nothing while looking like it had worked.
 //
 // `cache_path`: the SQLite cache database. mbgl's own default is `:memory:`,
 // which means every restart re-downloads every tile — so passing a real path

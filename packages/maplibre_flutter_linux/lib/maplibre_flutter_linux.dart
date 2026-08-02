@@ -68,6 +68,21 @@ class MapLibreFlutterLinux extends MapLibreFlutterPlatform {
       MapLibreCoreSettings.setHttpHeaders(rulesByUrlPrefix);
 
   @override
+  bool setRequestTransform(
+    String Function(MapLibreResourceKind kind, String url)? transform,
+  ) => MapLibreCoreSettings.setRequestTransform(
+    transform == null
+        ? null
+        : (kind, url) => transform(
+            MapLibreResourceKind.values[kind.code.clamp(
+              0,
+              MapLibreResourceKind.values.length - 1,
+            )],
+            url,
+          ),
+  );
+
+  @override
   String? get cachePath => MapLibreCoreSettings.cachePath;
 
   /// Offline regions live in the same database `cachePath` names, so the tier

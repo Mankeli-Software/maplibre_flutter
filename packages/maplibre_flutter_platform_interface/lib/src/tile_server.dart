@@ -29,3 +29,17 @@ enum MapLibreTileServer {
   /// `api.mapbox.com`, the `mapbox://` scheme, key as `?access_token=`.
   mapbox,
 }
+
+/// What is being requested — the argument to a request transform.
+///
+/// Mirrors `mbgl::Resource::Kind`, and gl-js's `resourceType`.
+enum MapLibreResourceKind {
+  unknown,
+  style,
+  source,
+  tile,
+  glyphs,
+  spriteImage,
+  spriteJson,
+  image,
+}

@@ -3508,4 +3508,87 @@ void main() {
       expect(received.first.value('injected'), isNull);
     });
   });
+
+  // --- transformRequest ------------------------------------------------------
+  group('request transform', () {
+    late HttpServer server;
+    late List<String> paths;
+    late String origin;
+
+    setUp(() async {
+      paths = [];
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      origin = 'http://127.0.0.1:${server.port}';
+      server.listen((request) {
+        paths.add(request.uri.path);
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write('{"version":8,"sources":{},"layers":[]}');
+        request.response.close();
+      });
+    });
+
+    tearDown(() async {
+      MapLibreCoreSettings.setRequestTransform(null);
+      await server.close(force: true);
+    });
+
+    Future<void> loadStyleFrom(String url) async {
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: url,
+      );
+      addTearDown(map.dispose);
+      map.awaitFrame(const Duration(seconds: 10));
+      for (var i = 0; i < 100 && paths.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    test('rewrites the URL the engine actually fetches', () async {
+      final seen = <CoreResourceKind>[];
+      expect(
+        MapLibreCoreSettings.setRequestTransform((kind, url) {
+          seen.add(kind);
+          return url.replaceFirst('/before.json', '/after.json');
+        }),
+        isTrue,
+      );
+      await loadStyleFrom('$origin/before.json');
+
+      // The server is the assertion. A transform that is called but whose
+      // answer is discarded would pass any check made on the Dart side.
+      expect(paths, contains('/after.json'));
+      expect(paths, isNot(contains('/before.json')));
+      expect(seen, contains(CoreResourceKind.style));
+    });
+
+    test('returning the URL unchanged declines', () async {
+      MapLibreCoreSettings.setRequestTransform((kind, url) => url);
+      await loadStyleFrom('$origin/plain.json');
+      expect(paths, contains('/plain.json'));
+    });
+
+    test('a THROWING transform declines rather than stalling', () async {
+      // A resource that is never answered stalls forever, and for a style that
+      // is a blank map with no error anywhere — so the handler cannot be
+      // allowed to strand one by raising.
+      MapLibreCoreSettings.setRequestTransform((kind, url) {
+        throw StateError('boom');
+      });
+      await loadStyleFrom('$origin/throws.json');
+      expect(paths, contains('/throws.json'));
+    });
+
+    test('removing it restores the original URL', () async {
+      MapLibreCoreSettings.setRequestTransform(
+        (kind, url) => url.replaceFirst('/a.json', '/b.json'),
+      );
+      expect(MapLibreCoreSettings.setRequestTransform(null), isTrue);
+      await loadStyleFrom('$origin/a.json');
+      expect(paths, contains('/a.json'));
+    });
+  });
 }

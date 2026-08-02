@@ -102,6 +102,28 @@ abstract final class MapLibreSettings {
     Map<String, Map<String, String>> rulesByUrlPrefix,
   ) => MapLibreFlutterPlatform.instance.setHttpHeaders(rulesByUrlPrefix);
 
+  /// Rewrites every resource URL before it is fetched — gl-js
+  /// `transformRequest`, for signed URLs and per-tenant hosts. Null removes it.
+  ///
+  /// ```dart
+  /// MapLibreSettings.setRequestTransform((kind, url) =>
+  ///     url.startsWith(myHost) ? '$url?sig=${sign(url)}' : url);
+  /// ```
+  ///
+  /// Returning the URL unchanged is how to decline, and so is throwing — a
+  /// resource that is never answered stalls forever, and for a style that is a
+  /// blank map with no error anywhere, so a raising handler is treated as
+  /// declining rather than allowed to strand one.
+  ///
+  /// **It is asked for EVERY resource** — every tile, glyph range and sprite —
+  /// so it is on the hot path. For a static credential prefer
+  /// [setHttpHeaders], which costs nothing per request. And note the engine
+  /// hands back a URL and only a URL: headers are not expressible here, which
+  /// is why the two are separate calls rather than gl-js's single one.
+  static bool setRequestTransform(
+    String Function(MapLibreResourceKind kind, String url)? transform,
+  ) => MapLibreFlutterPlatform.instance.setRequestTransform(transform);
+
   /// The cache path actually in force, so an app can log what it got rather
   /// than what it asked for.
   ///

@@ -206,6 +206,72 @@ abstract final class MapLibreCoreSettings {
     });
   }
 
+  /// Rewrites every resource URL before it is fetched — gl-js
+  /// `transformRequest`, for signed URLs and per-tenant hosts.
+  ///
+  /// Pass null to remove. Returns false if the engine's network file source
+  /// could not be reached.
+  ///
+  /// [transform] runs on the calling isolate (the engine asks from its own
+  /// file-source thread and this hops back), and returning the URL unchanged is
+  /// how to decline. **It is asked for EVERY resource** — every tile, glyph
+  /// range and sprite — so it is on the hot path and should not do real work;
+  /// for a static credential prefer [setHttpHeaders].
+  ///
+  /// A throw is treated as declining, because a resource that is never answered
+  /// stalls forever and for a style that means a blank map with no error.
+  static bool setRequestTransform(
+    String Function(CoreResourceKind kind, String url)? transform,
+  ) {
+    if (transform == null) {
+      final removed =
+          bindings.mbl_set_request_transform(ffi.nullptr, ffi.nullptr) != 0;
+      _requestTransformCallable?.close();
+      _requestTransformCallable = null;
+      return removed;
+    }
+    final previous = _requestTransformCallable;
+    final callable = ffi.NativeCallable<_RequestTransformNative>.listener((
+      ffi.Pointer<ffi.Void> _,
+      int requestId,
+      int kind,
+      ffi.Pointer<ffi.Char> url,
+    ) {
+      // Ownership of `url` came with the call; release it whatever happens.
+      String original = '';
+      try {
+        original = url == ffi.nullptr ? '' : url.cast<Utf8>().toDartString();
+      } finally {
+        if (url != ffi.nullptr) bindings.mbl_string_free(url);
+      }
+      var answer = original;
+      try {
+        answer = transform(CoreResourceKind.fromCode(kind), original);
+      } on Object {
+        answer = original; // declining beats stranding the request
+      }
+      using((arena) {
+        bindings.mbl_transform_reply(
+          requestId,
+          answer.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+        );
+      });
+    });
+    _requestTransformCallable = callable;
+    final installed =
+        bindings.mbl_set_request_transform(
+          callable.nativeFunction,
+          ffi.nullptr,
+        ) !=
+        0;
+    previous?.close();
+    if (!installed) {
+      callable.close();
+      _requestTransformCallable = null;
+    }
+    return installed;
+  }
+
   /// The cache path actually in force — so a caller can report what it got
   /// rather than what it asked for. `:memory:` means there is no cache.
   static String get cachePath {
@@ -216,6 +282,28 @@ abstract final class MapLibreCoreSettings {
     } finally {
       bindings.mbl_string_free(out);
     }
+  }
+}
+
+/// What is being requested. Mirrors `MblResourceKind` / `mbgl::Resource::Kind`.
+enum CoreResourceKind {
+  unknown(0),
+  style(1),
+  source(2),
+  tile(3),
+  glyphs(4),
+  spriteImage(5),
+  spriteJson(6),
+  image(7);
+
+  const CoreResourceKind(this.code);
+  final int code;
+
+  static CoreResourceKind fromCode(int code) {
+    for (final kind in values) {
+      if (kind.code == code) return kind;
+    }
+    return CoreResourceKind.unknown;
   }
 }
 
@@ -2138,6 +2226,15 @@ class MapLibreCoreMap {
 
 // --- Offline regions ----------------------------------------------------------
 
+/// The `MblRequestTransformCallback` signature.
+typedef _RequestTransformNative =
+    ffi.Void Function(
+      ffi.Pointer<ffi.Void>,
+      ffi.Uint64,
+      ffi.Int32,
+      ffi.Pointer<ffi.Char>,
+    );
+
 /// The `MblOfflineProgressCallback` signature.
 typedef _OfflineProgressNative =
     ffi.Void Function(
@@ -2255,6 +2352,11 @@ typedef CoreOfflineError = ({
   bool isTileCountLimit,
   String message,
 });
+
+/// The registered URL rewriter, held here and not in a local: a NativeCallable
+/// only a local refers to can be collected while the engine still holds its
+/// function pointer, and every request would then stall (CLAUDE.md §5e).
+ffi.NativeCallable<_RequestTransformNative>? _requestTransformCallable;
 
 /// The registered observers, by region id.
 ///

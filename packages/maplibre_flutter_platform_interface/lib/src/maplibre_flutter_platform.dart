@@ -79,6 +79,14 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
   bool setHttpHeaders(Map<String, Map<String, String>> rulesByUrlPrefix) =>
       false;
 
+  /// Rewrites every resource URL before it is fetched. Null removes it.
+  ///
+  /// Returns false on a tier that cannot do it. See
+  /// `MapLibreSettings.setRequestTransform` for the full contract.
+  bool setRequestTransform(
+    String Function(MapLibreResourceKind kind, String url)? transform,
+  ) => false;
+
   /// The cache path in force, or null on a tier that has no cache. `:memory:`
   /// means there IS no persistent cache.
   String? get cachePath => null;

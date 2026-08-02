@@ -31,6 +31,7 @@
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/offline.hpp>
 #include <mbgl/storage/resource_options.hpp>
+#include <mbgl/storage/resource_transform.hpp>
 #include <mbgl/util/tile_server_options.hpp>
 #include <mbgl/style/image_impl.hpp>
 #include <mbgl/style/style.hpp>
@@ -875,15 +876,18 @@ mbgl::ResourceOptions &resourceOptionsLocked() {
 // to nothing and silently look like it had.
 std::atomic<int> g_liveMaps{0};
 
-// Whether the offline DatabaseFileSource has been built (see offlineDatabase(),
-// at the end of this file). It is exactly the same "too late" condition as a
-// live map, and it is a SEPARATE flag because it is a separate way to be too
-// late: touching offline before configuring bakes ResourceOptions::Default()'s
-// `:memory:` path into a file source that is then held for the process
-// lifetime, so every region would be written to a database that dies with the
-// process while every map used the real one. Nothing about that is visible to a
-// caller, which is why mbl_configure has to refuse rather than half-work.
-std::atomic<bool> g_offlineDatabaseBuilt{false};
+// Whether anything has PINNED a file source — the offline database, or the
+// online source a request transform is installed on. Both hold a strong
+// reference for the process lifetime, which bakes the current ResourceOptions
+// into it, so this is exactly the same "too late" condition as a live map and
+// mbl_configure must refuse for it too.
+//
+// It is a separate flag from the live-map count because it is a separate way to
+// be too late, and an invisible one: touching offline or a transform before
+// configuring would leave regions in the `:memory:` database, or the transform
+// on a source no map uses, while every map used the real one. Nothing about
+// that is visible to a caller.
+std::atomic<bool> g_fileSourcePinned{false};
 
 // A copy, so callers cannot mutate the shared value by accident.
 mbgl::ResourceOptions currentResourceOptions() {
@@ -1317,7 +1321,7 @@ void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
 int mbl_configure(const char *cache_path, uint64_t max_cache_bytes,
                   const char *api_key) {
   if (g_liveMaps.load(std::memory_order_relaxed) > 0) return 0;
-  if (g_offlineDatabaseBuilt.load(std::memory_order_relaxed)) return 0;
+  if (g_fileSourcePinned.load(std::memory_order_relaxed)) return 0;
   std::lock_guard<std::mutex> lk(g_resourceMutex);
   auto &options = resourceOptionsLocked();
   if (cache_path != nullptr && *cache_path != '\0') {
@@ -3680,7 +3684,7 @@ std::shared_ptr<mbgl::DatabaseFileSource> offlineDatabase() {
     // The options are baked in now and this source is held for the process
     // lifetime, so mbl_configure must refuse from here on — see the flag's
     // declaration for what configuring afterwards would silently do.
-    g_offlineDatabaseBuilt.store(true, std::memory_order_relaxed);
+    g_fileSourcePinned.store(true, std::memory_order_relaxed);
   }
   return state.db;
 }
@@ -4287,7 +4291,7 @@ void mbl_offline_reset_database(MblOfflineRegionCallback callback, void *user) {
 
 int mbl_configure_tile_server(int32_t server) {
   if (g_liveMaps.load(std::memory_order_relaxed) > 0) return 0;
-  if (g_offlineDatabaseBuilt.load(std::memory_order_relaxed)) return 0;
+  if (g_fileSourcePinned.load(std::memory_order_relaxed)) return 0;
   mbgl::TileServerOptions options;
   switch (server) {
     case MBL_TILE_SERVER_MAPTILER:
@@ -4408,4 +4412,123 @@ char *mbl_http_headers_for_url(const char *url) {
   }
   if (out.empty()) return nullptr;
   return dupToHeap(out);
+}
+
+namespace {
+
+// The URL rewriter, and the replies in flight.
+//
+// Leaked like the rest of the process-wide state. `pending` maps a request id to
+// the engine's FinishedCallback: mbgl hands one per request and it may be called
+// from any thread, later, or after the request has been cancelled — it routes
+// through an actor mailbox that drops late messages — so holding them here is
+// safe and needs no lifetime dance of its own.
+struct MblTransformState {
+  std::mutex mutex;
+  MblRequestTransformCallback callback = nullptr;
+  void *user = nullptr;
+  uint64_t nextId = 1;
+  std::unordered_map<uint64_t, mbgl::ResourceTransform::FinishedCallback> pending;
+
+  // A STRONG reference, held for the process lifetime once a transform is
+  // installed. FileSourceManager remembers file sources weakly, so without this
+  // the source we set the transform on is destroyed the moment this function
+  // returns — and the next map builds a fresh one with no transform on it. The
+  // symptom is a transform that installs, reports success, and is never called.
+  std::shared_ptr<mbgl::FileSource> network;
+};
+
+MblTransformState &transformState() {
+  static auto *state = new MblTransformState();
+  return *state;
+}
+
+int32_t resourceKindToAbi(mbgl::Resource::Kind kind) {
+  switch (kind) {
+    case mbgl::Resource::Kind::Style: return MBL_RESOURCE_STYLE;
+    case mbgl::Resource::Kind::Source: return MBL_RESOURCE_SOURCE;
+    case mbgl::Resource::Kind::Tile: return MBL_RESOURCE_TILE;
+    case mbgl::Resource::Kind::Glyphs: return MBL_RESOURCE_GLYPHS;
+    case mbgl::Resource::Kind::SpriteImage: return MBL_RESOURCE_SPRITE_IMAGE;
+    case mbgl::Resource::Kind::SpriteJSON: return MBL_RESOURCE_SPRITE_JSON;
+    case mbgl::Resource::Kind::Image: return MBL_RESOURCE_IMAGE;
+    case mbgl::Resource::Kind::Unknown:
+    default: return MBL_RESOURCE_UNKNOWN;
+  }
+}
+
+} // namespace
+
+int mbl_set_request_transform(MblRequestTransformCallback callback,
+                              void *user) {
+  // The NETWORK source, not the resource loader a map talks to. Only
+  // OnlineFileSource overrides setResourceTransform; every other subclass
+  // inherits an empty body, so installing it on the obvious handle compiles,
+  // links, runs and drops the callback on the floor.
+  auto fs = mbgl::FileSourceManager::get()->getFileSource(
+      mbgl::FileSourceType::Network, currentResourceOptions(),
+      mbgl::ClientOptions());
+  if (fs == nullptr) return 0;
+
+  auto &state = transformState();
+  {
+    std::lock_guard<std::mutex> lk(state.mutex);
+    state.callback = callback;
+    state.user = user;
+    if (callback == nullptr) {
+      state.pending.clear();
+    } else {
+      state.network = fs;
+      g_fileSourcePinned.store(true, std::memory_order_relaxed);
+    }
+  }
+
+  if (callback == nullptr) {
+    fs->setResourceTransform({});
+    return 1;
+  }
+
+  fs->setResourceTransform(mbgl::ResourceTransform(
+      [](mbgl::Resource::Kind kind, const std::string &url,
+         mbgl::ResourceTransform::FinishedCallback finished) {
+        auto &state = transformState();
+        MblRequestTransformCallback callback = nullptr;
+        void *user = nullptr;
+        uint64_t id = 0;
+        {
+          std::lock_guard<std::mutex> lk(state.mutex);
+          callback = state.callback;
+          user = state.user;
+          if (callback != nullptr) {
+            id = state.nextId++;
+            state.pending.emplace(id, std::move(finished));
+          }
+        }
+        if (callback == nullptr) {
+          // Removed between the install and this call: answer with the URL
+          // unchanged rather than stranding the resource forever.
+          finished(url);
+          return;
+        }
+        // Outside the lock: this hops to the Dart isolate, and a handler that
+        // called back in here synchronously would deadlock on a mutex the
+        // engine's own thread holds.
+        callback(user, id, resourceKindToAbi(kind), dupToHeap(url));
+      }));
+  return 1;
+}
+
+void mbl_transform_reply(uint64_t request_id, const char *url) {
+  mbgl::ResourceTransform::FinishedCallback finished;
+  {
+    auto &state = transformState();
+    std::lock_guard<std::mutex> lk(state.mutex);
+    const auto it = state.pending.find(request_id);
+    if (it == state.pending.end()) return; // already answered, or cancelled
+    finished = std::move(it->second);
+    state.pending.erase(it);
+  }
+  // Released first: the engine may run the request inline from here, and it
+  // would then be doing so under our lock.
+  if (finished) finished(url != nullptr ? std::string(url) : std::string());
 }
