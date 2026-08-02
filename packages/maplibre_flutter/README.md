@@ -185,6 +185,15 @@ MapLibre Style Spec** vendored in this repo — all 10 layer types, all 6 source
 and all 84 expression operators (`CircleLayer`, `SymbolLayer`, `GeoJsonSource`, `Expr.match`, …) —
 with raw Style Spec JSON still accepted as an escape hatch.
 
+**Authentication** — three ways, because providers use three.
+`MapLibreSettings.configure(apiKey: …, tileServer: MapLibreTileServer.mapTiler)` puts a key in the
+query string of the style *and* of the sprite, glyph and tile sub-requests it names — the half an
+app cannot do by hand, since it never sees those URLs.
+`MapLibreSettings.setHttpHeaders({'https://tiles.example.com/': {'Authorization': 'Bearer …'}})`
+attaches headers, scoped by URL prefix so a token cannot leak to a third-party host a style
+references, and is callable at any time so an expiring token can be rotated.
+`MapLibreSettings.setRequestTransform` rewrites each URL, for signed URLs and per-tenant hosts.
+
 **Offline regions** — `MapLibreOfflineManager.instance.createRegion(...)` downloads a style, its
 tiles, glyphs and sprites for a bounding box and zoom range into the same database the tile cache
 uses, and keeps them until deleted. Progress and errors arrive as streams on the region handle. On

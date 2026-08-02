@@ -105,6 +105,14 @@ Opt-in renderer packages (§3), all working: `maplibre_flutter_android_sdk` (jni
   asking what else there is unchecked — a null `Response::data` dereferenced for a no-content
   style response, and `tileset.tiles[0]` read with `operator[]` on a possibly-empty vector.
   → `docs/upstream-offline-url-regex/`.
+- **Upstream PR not opened** for the embedder-header patches
+  (`patches/http-embedder-headers-{curl,darwin}.patch`). They add one hook to each platform HTTP
+  source so an embedder can attach request headers — the only way to authenticate to a provider
+  that wants `Authorization` rather than a query key, which mbgl cannot express today because
+  `ResourceTransform` hands back a URL and nothing else. Weaker upstream case than the other
+  three (it is a feature, not a defect) and it would need reshaping — upstream would want a
+  first-class `setRequestHeaders` on `ResourceOptions` rather than an `extern "C"` the embedder
+  defines. Worth proposing as an issue first.
 - ~~Known failing test: `"pinch zoom freezes its anchor…"`~~ — FIXED 2026-07-31, and it was never
   a stale test: two anchor fixes had collided and left a live touch bug where a two-finger pinch
   anchored on whichever finger moved last. `melos run test` had been red because of it, and
@@ -634,6 +642,16 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   glyph URL canonicalising to `maplibre://fonts`), and **a `regex_error` rather than a match failure
   means a pattern was CONSTRUCTED from bad data** — which is what narrows the search from "somewhere
   in mbgl" to "where does mbgl build a pattern out of data".
+- **`FileSourceManager` remembers file sources WEAKLY.** `getFileSource(…)`, configure it, return —
+  and it is destroyed on the way out, so the next map builds a fresh one without your change. This
+  has now cost two debugging sessions (the offline `DatabaseFileSource`, then the request
+  transform) and it presents identically both times: the call reports success and the thing never
+  fires. Hold a strong reference for the process lifetime, and remember that doing so BAKES IN the
+  current `ResourceOptions` — which is why `mbl_configure` refuses once anything has pinned one.
+- **Only `OnlineFileSource` honours `setResourceTransform`.** Every other `FileSource` subclass
+  inherits an empty body — not pure virtual, not logged — so installing it on the source a map
+  actually talks to (the resource loader) compiles, links, runs and silently drops your callback.
+  Ask for `FileSourceType::Network`.
 - **Anything mbgl gives you that owns a thread must not be destroyed at static-destruction time.**
   A namespace-scope `shared_ptr<DatabaseFileSource>` releasing its last reference at exit joins the
   database thread while the runtime is tearing itself down: `system_error: mutex lock failed:
@@ -684,6 +702,13 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - **`createTicker()` does an inherited-widget lookup**, so a lazy `late final _ticker = …`
   constructs it inside `dispose()` when it never ran, asserting on a deactivated element. Create
   tickers in `initState`.
+- **Adding a recognizer to the map's gesture arena changes gestures that already work.** A
+  `DoubleTapGestureRecognizer` beside the map's scale recognizer stops a drag made of a SINGLE move
+  event then release from panning — the scale recognizer has not been declared the winner when the
+  pointer goes up, and Flutter does not replay the move. Real drags produce a move per frame so it
+  is invisible on a device. Recognise extra gestures on the raw `Listener` the gesture layer
+  already has, and keep the drag helper in `gesture_settings_test.dart` at ONE move: that is what
+  notices.
 - **`RenderRepaintBoundary.toImage()` waits on a real raster-pipeline callback** that
   `flutter_test`'s fake async never delivers. Rasterizer tests **must** use `tester.runAsync` or
   they hang to the 10-minute timeout.

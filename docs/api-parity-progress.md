@@ -258,7 +258,8 @@ subset of the spec; this file's own bar is "every P0 and P1 row implemented or e
 rejected". A 2026-08-02 audit checked all 229 of them against the code, one reader per spec
 domain, every verdict cited to a file and line:
 
-**137 implemented, 92 outstanding, 5 of them P0.**
+**137 implemented, 92 outstanding, 5 of them P0** — as measured on 2026-08-02, before 10.1-10.5.
+Those closed 9 rows and 4 of the 5 P0s; only 10.4 (runtime DPR) is left of them.
 
 | Domain | Done | Left |
 | --- | --- | --- |
@@ -281,20 +282,23 @@ upstream-API coverage, not plumbing — which is why most of what is left is Dar
       not name); `controller.snapshot()` / `.snapshotImage()` over a new `MapLibreMapCapture`
       capability; `MapGestureSettings` + `MapLibreMap.gestures` + `interactive: false`. Closes
       four P0 rows. See the run log.
-- [ ] 10.2 **Double-tap zoom** — P0, and a straight regression: Android and iOS had it from the
-      SDK before the core-primary inversion and lost it. Needs a C ABI entry point
-      (`mbl_map_scale_by_animated`), because an instant `scaleBy(2)` reads as a snap and every
-      upstream animates it. The same entry point unblocks quick-zoom and two-finger-tap zoom-out.
-- [ ] 10.3 **`TileServerOptions` is never constructed anywhere.** The API-key half of 8.2 shipped
-      without it, so `maptiler://` style URIs do not resolve and the key is never appended to
-      sprite/glyph sub-requests. A keyed provider only works if the app hand-expands the URL.
+- [x] 10.2 **Double-tap zoom** — P0, a straight regression from the core-primary inversion. Needed
+      NO new C ABI in the end: `easeTo(CameraOptions(zoom:, anchor:))` was already plumbed, and the
+      spec's `mbl_map_scale_by_animated` budget predates the camera commands. Recognised on the raw
+      Listener rather than with a `DoubleTapGestureRecognizer` — see the run log for the arena
+      regression that choice avoids. Quick-zoom and two-finger-tap zoom-out are still open.
+- [x] 10.3 **`TileServerOptions`** — `MapLibreSettings.configure(tileServer:)`. The finding was
+      worse than "not constructed": the api key reached NOTHING, not even the style URL, behind
+      three independent gates. `tile_server_probe` pins the before and after.
 - [ ] 10.4 **Runtime DPR** — P0. mbgl has no `setPixelRatio`, so honouring it means rebuilding the
       map or patching upstream. All five tiers currently ACCEPT AND DISCARD the argument, which is
       worse than not taking it: decide, and either implement it or narrow the contract to
       `resize(Size)` and document DPR as fixed at creation.
-- [ ] 10.5 **`transformRequest` / auth headers** — P0. Needs a custom `FileSource` plus four
-      platform HTTP edits. Worth stating plainly: there is no way for a consumer to add an
-      `Authorization` header today.
+- [x] 10.5 **Auth** — all three mechanisms, as three calls rather than gl-js's one because mbgl's
+      transform hands back a URL and only a URL. `configure(apiKey:, tileServer:)` for a query
+      key; `setHttpHeaders` for an `Authorization` header, scoped by URL prefix, over two new
+      engine patches and the Android JNI bridge; `setRequestTransform` for signed URLs, over
+      `mbgl::ResourceTransform`.
 - [ ] 10.6 The rest, by domain, worst first: gestures (15), models and `light` (16), events
       (hover, long-press, `isSourceLoaded`, `areTilesLoaded`), sources (`promoteId`, `generateId`),
       annotations (compass, scale bar, marker tap).
@@ -1605,3 +1609,64 @@ their widget tree.
   container forever. Null means "not specified", and `effectiveGestures` layers them on top.
 - **Gates:** analyze clean / format clean / 20 new widget tests / `test --no-select` green /
   `test:native` green (90) / matrix regenerated.
+
+### 2026-08-02 — Stage 10 (10.2, 10.3, 10.5) — auth, and a gesture that needed no engine work
+
+- **The api key had never reached a single request, and that is the finding.** Not a subtle edge
+  case: three independent gates close it under the default configuration, each sufficient alone —
+  an ordinary `https://…` URL is not canonical so `normalize*URL` returns it before the key is
+  consulted; `MapLibreConfiguration` (which `ResourceOptions::Default()` applies implicitly, so it
+  is what we have always run) declares `requiresApiKey(false)`; and its key parameter name is the
+  empty string. There is no `{key}` substitution anywhere in mbgl either. The workaround everyone
+  used — key in the style URL — works and **cannot** reach the sprite, glyph and tile
+  sub-requests, whose URLs come out of the style document rather than from the app. A shipped
+  feature that does nothing is worse than a missing one, because nobody goes looking.
+- **Three auth mechanisms, three calls, deliberately.** gl-js has one (`transformRequest`) because
+  its callback can return headers. mbgl's cannot — `ResourceTransform` hands back a `std::string`
+  and nothing else — so headers are not expressible through it at any price, and pretending
+  otherwise would have meant one call that silently ignored half its arguments.
+- **Headers required patching the engine in two places and the JNI bridge in a third**, because
+  each platform builds its own request: mbgl's curl source (Windows + Linux), Apple's
+  NSURLSession `.mm`, and our own Android source. Both patches declare
+  `mbl_http_headers_for_url` `extern "C"` rather than including our header, so mbgl gains no
+  include dependency on the embedder — only a link-time one, and only on the arms that use those
+  files.
+- **The URL prefix on a header rule is mandatory, against both upstreams.** Apple applies headers
+  to a whole `NSURLSession` and Android to the whole OkHttp client, so both send an
+  `Authorization` header to every host a style names — and a style routinely names hosts the app
+  does not own, for sprites, glyphs, or a basemap from another vendor. There is a test for the
+  leak, not only for the feature. An app that genuinely wants every host passes `"https://"`.
+- **Header names and values carrying CR, LF or any control character are refused**, and so is a
+  `:` in a name. A token read from a config file would otherwise splice arbitrary headers — or a
+  whole second request — into every URL the rule matches. A rejected document leaves the previous
+  rules exactly as they were, because half-applied auth is worse than a rejected change.
+- **The weak file-source cache caught us a second time.** `FileSourceManager` remembers sources
+  weakly, so `getFileSource(Network, …)`, `setResourceTransform(...)`, return destroys the source
+  and the next map builds a fresh one with no transform. Identical to the offline
+  `DatabaseFileSource` trap and it presented identically — install reports success, callback never
+  fires once. Both now hold a strong reference, and `mbl_configure`'s "too late" flag is renamed
+  `g_fileSourcePinned` because that is what it actually means.
+- **Only `OnlineFileSource` honours a resource transform.** Every other subclass inherits an empty
+  body — not pure virtual, not logged — so installing it on the handle a map talks to (the
+  resource loader) compiles, links, runs and drops the callback. The natural choice is the wrong
+  one.
+- **Double-tap needed no C ABI at all.** The spec budgeted `mbl_map_scale_by_animated` on the
+  grounds that an instant `scaleBy(2)` reads as a snap; that was written before the camera commands
+  landed, and `easeTo(CameraOptions(zoom:, anchor:))` was already plumbed end to end. Worth
+  re-reading a spec row against today's code before costing it.
+- **The anchor survives only because no centre is set**, and the test says so. mbgl discards
+  `CameraOptions::anchor` whenever `center` is present (CLAUDE.md §11), so the obvious
+  implementation — read the camera, ease to a full one with the zoom bumped — zooms about the
+  middle of the screen. A test anchored on the centre could never tell the two apart, so this one
+  asserts `anchor == the tap` AND `center == null`.
+- **A DoubleTapGestureRecognizer in the map's arena is a real regression, and the test caught it
+  by being minimal.** With one alongside the scale recogniser, a drag made of a SINGLE move event
+  then release stops panning: the scale recogniser has not been declared the winner when the
+  pointer goes up, and Flutter does not replay the move. Real drags produce a move per frame, so it
+  never shows on a device. The first fix was to make `_dragAcross` a realistic three-step drag —
+  which is tuning the test until it passes. It is back to one move, with a comment saying why it
+  must stay minimal, and the recogniser moved to the raw Listener where it perturbs no arena.
+- **Gates:** analyze clean / format clean / `test --no-select` green / `test:native` green (101,
+  was 91) / `test:harness:hermetic` green (4, was 3) / matrix regenerated. One flake seen once and
+  not reproduced: `projection is exact under bearing + pitch`, which is network-dependent and was
+  not touched by this work.
