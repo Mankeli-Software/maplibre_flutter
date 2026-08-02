@@ -1513,6 +1513,52 @@ recording so it is not "corrected" a second time:
 
 ---
 
+## Testing your own map
+
+A texture-backed semantics tree is **invisible by construction**: there is no DOM to inspect, and
+CLAUDE.md §11 already records that screenshots lie about what a texture composites. Three things
+make it checkable.
+
+**The example app's Accessibility page** (`packages/maplibre_flutter/example/lib/accessibility_page.dart`,
+reachable from the demo's app bar) wires every knob — semantics on/off, spoken centre and bearing,
+controls present/expanded, keyboard, simulated reduce-motion and high-contrast, announcement mode,
+and the alternative list — so the whole matrix is exercisable on one machine without going into
+System Settings between cases.
+
+**Flutter's own `SemanticsDebugger`**, toggled on that page, draws the real semantics rects over the
+map. We deliberately did not write our own: the gap was discoverability, not tooling.
+
+**In your own tests**, assert content rather than existence — "a node came back" is this domain's
+version of "a frame came back":
+
+```dart
+expect(
+  find.semantics.byLabel('Helsinki Cathedral').evaluate().single,
+  isSemantics(label: 'Helsinki Cathedral', isButton: true, hasTapAction: true),
+);
+await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
+await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+```
+
+Three traps this repo hit, so you do not have to:
+
+- **`find.bySemanticsLabel` is a WIDGET finder.** It matches any widget whose configuration carries
+  the label, including an ancestor spanning the whole screen — so `tester.tap` on it can hit the map
+  instead of the button. Use `find.semantics.byLabel` and `tester.semantics.tap`, which is also what
+  an assistive technology actually does.
+- **A second `pumpWidget` in one test reuses the element**, so `createMap` never runs again and a
+  freshly-made fake platform stays empty. One pump per test.
+- **`debugDefaultTargetPlatformOverride` must be reset inline in a `finally`.** The binding verifies
+  foundation debug vars are unset *before* `tearDown` runs.
+
+**The manual pass nobody has run.** Everything above is device-free. Before any of this is described
+as working: VoiceOver on macOS and on a physical iPhone, TalkBack on a **physical** Android device
+(the emulator is useless here), NVDA on Windows, Orca on Ubuntu, and NVDA+Chrome on web — with dates
+and versions recorded in this file. The diagnostic for a missing Android node is an Accessibility
+Scanner dump, never a screenshot.
+
+---
+
 ## 10. References
 
 ### This repository

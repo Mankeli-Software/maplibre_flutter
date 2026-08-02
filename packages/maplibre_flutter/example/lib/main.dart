@@ -6,6 +6,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 
+import 'accessibility_page.dart';
+
 // Conditional: the engine reads a real filesystem path, which web does not
 // have. Without this split the unconditional `dart:io` import made the whole
 // example unbuildable for web — so the one app that demonstrates the plugin
@@ -26,6 +28,9 @@ class ExampleApp extends StatelessWidget {
     return MaterialApp(
       title: 'maplibre_flutter example',
       home: const MapDemoPage(),
+      routes: <String, WidgetBuilder>{
+        '/accessibility': (_) => const AccessibilityDemoPage(),
+      },
     );
   }
 }
@@ -2197,7 +2202,16 @@ class _MapDemoPageState extends State<MapDemoPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('maplibre_flutter')),
+      appBar: AppBar(
+        title: const Text('maplibre_flutter'),
+        actions: <Widget>[
+          IconButton(
+            icon: const Icon(Icons.accessibility_new),
+            tooltip: 'Accessibility',
+            onPressed: () => Navigator.pushNamed(context, '/accessibility'),
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           Positioned.fill(
