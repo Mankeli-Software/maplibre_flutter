@@ -771,6 +771,13 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
   target_link_libraries(offline_url_probe PRIVATE maplibre_flutter_core mbgl-core)
   target_include_directories(offline_url_probe PRIVATE "${MLN_ROOT}/src" "${MLN_ROOT}/include")
 
+  # What selecting a tile server buys: the api key is inert under the default
+  # configuration and live under a named one. Same shape as offline_url_probe —
+  # mbgl's own URL normalisation, no map, no GPU, no network.
+  add_executable(tile_server_probe tile_server_probe.cpp)
+  target_link_libraries(tile_server_probe PRIVATE maplibre_flutter_core mbgl-core)
+  target_include_directories(tile_server_probe PRIVATE "${MLN_ROOT}/src" "${MLN_ROOT}/include")
+
   # Renders a model at four points around a circular path, to check its facing
   # against its direction of travel.
   add_executable(drive_probe drive_probe.cpp)
@@ -804,6 +811,9 @@ if(MAPLIBRE_FLUTTER_BUILD_HARNESS)
 
   add_test(NAME offline_url_probe COMMAND offline_url_probe)
   set_tests_properties(offline_url_probe PROPERTIES LABELS "hermetic" TIMEOUT 60)
+
+  add_test(NAME tile_server_probe COMMAND tile_server_probe)
+  set_tests_properties(tile_server_probe PROPERTIES LABELS "hermetic" TIMEOUT 60)
 
   if(EXISTS "${_demo_glb}")
     add_test(NAME gltf_probe COMMAND gltf_probe "${_demo_glb}")

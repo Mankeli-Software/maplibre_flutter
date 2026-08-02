@@ -48,6 +48,45 @@ external int mbl_configure(
 @ffi.Native<ffi.Pointer<ffi.Char> Function()>()
 external ffi.Pointer<ffi.Char> mbl_get_cache_path();
 
+@ffi.Native<ffi.Int Function(ffi.Int32)>()
+external int mbl_configure_tile_server(int server);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Char>)>()
+external int mbl_set_http_headers(ffi.Pointer<ffi.Char> rules_json);
+
+@ffi.Native<
+  ffi.Int Function(
+    ffi.Pointer<
+      ffi.NativeFunction<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void> user,
+          ffi.Uint64 request_id,
+          ffi.Int32 kind,
+          ffi.Pointer<ffi.Char> url,
+        )
+      >
+    >,
+    ffi.Pointer<ffi.Void>,
+  )
+>()
+external int mbl_set_request_transform(
+  ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Void Function(
+        ffi.Pointer<ffi.Void> user,
+        ffi.Uint64 request_id,
+        ffi.Int32 kind,
+        ffi.Pointer<ffi.Char> url,
+      )
+    >
+  >
+  callback,
+  ffi.Pointer<ffi.Void> user,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Uint64, ffi.Pointer<ffi.Char>)>()
+external void mbl_transform_reply(int request_id, ffi.Pointer<ffi.Char> url);
+
 @ffi.Native<
   ffi.Void Function(
     ffi.Pointer<ffi.Char>,

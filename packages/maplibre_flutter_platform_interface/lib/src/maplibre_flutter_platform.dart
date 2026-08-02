@@ -3,6 +3,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'maplibre_map_controller.dart';
 import 'map_options.dart';
 import 'offline_store.dart';
+import 'tile_server.dart';
 import 'snapshot.dart';
 
 /// The interface every platform implementation of `maplibre_flutter` extends.
@@ -67,6 +68,7 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
     String? cachePath,
     int? maximumCacheBytes,
     String? apiKey,
+    MapLibreTileServer? tileServer,
   }) => false;
 
   /// The cache path in force, or null on a tier that has no cache. `:memory:`

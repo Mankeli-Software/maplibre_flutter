@@ -25,3 +25,4 @@ export 'src/projector.dart';
 export 'src/render_handle.dart';
 export 'src/rotate_handler.dart';
 export 'src/style_layers.dart';
+export 'src/tile_server.dart';

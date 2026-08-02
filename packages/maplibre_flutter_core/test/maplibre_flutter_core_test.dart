@@ -1358,6 +1358,32 @@ void main() {
         isFalse,
       );
       expect(MapLibreCoreSettings.cachePath, before);
+      // Same rule for the tile server, and for the same reason: it lives in the
+      // ResourceOptions the file sources were built from.
+      expect(
+        MapLibreCoreSettings.configureTileServer(CoreTileServer.maptiler),
+        isFalse,
+      );
+    });
+
+    test('a tile server can be selected while no map is ALIVE', () {
+      // Not "before the first map", which is what the refusal above reads as:
+      // the gate is a live-map COUNT, so it reopens once every map is disposed.
+      // This test runs after two maps have existed and been torn down, which is
+      // exactly why it can assert anything at all.
+      //
+      // Restored immediately: the setting is process-wide, and leaving MapTiler
+      // in force would change how every later group's URLs canonicalise. What
+      // the selection actually BUYS is asserted hermetically and exhaustively
+      // by src/tile_server_probe.cpp — this is only the ABI round-trip.
+      expect(
+        MapLibreCoreSettings.configureTileServer(CoreTileServer.maptiler),
+        isTrue,
+      );
+      expect(
+        MapLibreCoreSettings.configureTileServer(CoreTileServer.maplibre),
+        isTrue,
+      );
     });
   });
 

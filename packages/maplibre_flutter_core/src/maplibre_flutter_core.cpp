@@ -31,6 +31,7 @@
 #include <mbgl/storage/file_source_manager.hpp>
 #include <mbgl/storage/offline.hpp>
 #include <mbgl/storage/resource_options.hpp>
+#include <mbgl/util/tile_server_options.hpp>
 #include <mbgl/style/image_impl.hpp>
 #include <mbgl/style/style.hpp>
 #include <mbgl/style/style_impl.hpp>
@@ -4276,4 +4277,31 @@ void mbl_offline_reset_database(MblOfflineRegionCallback callback, void *user) {
   db->resetDatabase([callback, user](std::exception_ptr error) {
     offlineCompleteFromExceptionPtr(callback, user, 0, error);
   });
+}
+
+// --- Authenticating to a tile provider ----------------------------------------
+//
+// Contract in the header. At the end of the translation unit for the reason the
+// offline block is (CLAUDE.md §11: an extern "C" definition inside one of this
+// file's anonymous namespaces is dead-stripped).
+
+int mbl_configure_tile_server(int32_t server) {
+  if (g_liveMaps.load(std::memory_order_relaxed) > 0) return 0;
+  if (g_offlineDatabaseBuilt.load(std::memory_order_relaxed)) return 0;
+  mbgl::TileServerOptions options;
+  switch (server) {
+    case MBL_TILE_SERVER_MAPTILER:
+      options = mbgl::TileServerOptions::MapTilerConfiguration();
+      break;
+    case MBL_TILE_SERVER_MAPBOX:
+      options = mbgl::TileServerOptions::MapboxConfiguration();
+      break;
+    case MBL_TILE_SERVER_MAPLIBRE:
+    default:
+      options = mbgl::TileServerOptions::MapLibreConfiguration();
+      break;
+  }
+  std::lock_guard<std::mutex> lk(g_resourceMutex);
+  resourceOptionsLocked().withTileServerOptions(std::move(options));
+  return 1;
 }

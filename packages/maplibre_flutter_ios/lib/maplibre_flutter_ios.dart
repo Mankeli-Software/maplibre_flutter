@@ -45,11 +45,25 @@ class MapLibreFlutterIos extends MapLibreFlutterPlatform {
     String? cachePath,
     int? maximumCacheBytes,
     String? apiKey,
-  }) => MapLibreCoreSettings.configure(
-    cachePath: cachePath,
-    maximumCacheBytes: maximumCacheBytes,
-    apiKey: apiKey,
-  );
+    MapLibreTileServer? tileServer,
+  }) {
+    // The tile server FIRST: it decides whether the api key is read at all, and
+    // both are refused once a map exists, so applying half of the pair would
+    // leave a key set against the wrong URL conventions.
+    if (tileServer != null &&
+        !MapLibreCoreSettings.configureTileServer(switch (tileServer) {
+          MapLibreTileServer.mapLibre => CoreTileServer.maplibre,
+          MapLibreTileServer.mapTiler => CoreTileServer.maptiler,
+          MapLibreTileServer.mapbox => CoreTileServer.mapbox,
+        })) {
+      return false;
+    }
+    return MapLibreCoreSettings.configure(
+      cachePath: cachePath,
+      maximumCacheBytes: maximumCacheBytes,
+      apiKey: apiKey,
+    );
+  }
 
   @override
   String? get cachePath => MapLibreCoreSettings.cachePath;

@@ -38,17 +38,32 @@ abstract final class MapLibreSettings {
   ///
   /// [maximumCacheBytes] null keeps mbgl's default (50 MB).
   ///
-  /// [apiKey] is substituted for `{key}` in tile URLs, which is how MapTiler,
-  /// Stadia and other keyed providers authenticate. It does NOT add an
-  /// Authorization header — see the package README for providers that need one.
+  /// [apiKey] is how MapTiler, Mapbox and other keyed providers authenticate —
+  /// **but only together with [tileServer]**. The engine reads the key on
+  /// exactly one path, rewriting a URL under the configured scheme, and the
+  /// default configuration declares that it requires no key and names no
+  /// parameter for it. A key passed on its own is stored and never read; the
+  /// two are one setting wearing two names.
+  ///
+  /// [tileServer] selects those URL conventions. Pass it whenever the style is
+  /// a short scheme URL (`maptiler://maps/streets`) or whenever [apiKey] is set.
+  /// An app whose style URL is a plain `https://…` with the key already in the
+  /// query string needs neither — that path is left untouched — though it also
+  /// never reaches the sprite, glyph and tile sub-requests, whose URLs come out
+  /// of the style document rather than from the app.
+  ///
+  /// Neither adds an `Authorization` header; see the package README for
+  /// providers that need one.
   static bool configure({
     String? cachePath,
     int? maximumCacheBytes,
     String? apiKey,
+    MapLibreTileServer? tileServer,
   }) => MapLibreFlutterPlatform.instance.configureResources(
     cachePath: cachePath,
     maximumCacheBytes: maximumCacheBytes,
     apiKey: apiKey,
+    tileServer: tileServer,
   );
 
   /// The cache path actually in force, so an app can log what it got rather

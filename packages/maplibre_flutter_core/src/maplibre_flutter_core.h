@@ -146,6 +146,117 @@ FFI_PLUGIN_EXPORT int mbl_configure(const char *cache_path,
 // report what it actually got rather than what it asked for.
 FFI_PLUGIN_EXPORT char *mbl_get_cache_path(void);
 
+// --- Authenticating to a tile provider ----------------------------------------
+//
+// Three mechanisms, because providers use three: a key in the query string, a
+// header, and a signed URL. They are here together because they are one
+// question — "how does this request prove who it is" — and because the first of
+// them does not work without mbl_configure_tile_server.
+
+// The tile servers mbgl knows the URL shapes of.
+typedef enum {
+  MBL_TILE_SERVER_MAPLIBRE = 0,
+  MBL_TILE_SERVER_MAPTILER = 1,
+  MBL_TILE_SERVER_MAPBOX = 2,
+} MblTileServer;
+
+// Select the tile server whose URL conventions apply. Returns 1, or 0 if it is
+// too late (see mbl_configure — same rule, same reason).
+//
+// **Without this the API key passed to mbl_configure does nothing at all**, and
+// that is not an overstatement of a subtle case. mbgl reaches the key through
+// exactly one path — rewriting a CANONICAL URL, one under the configured
+// scheme, e.g. `maptiler://maps/streets` — and three separate gates close it by
+// default: an ordinary `https://…` URL is not canonical so it is returned
+// untouched; the default configuration (MapLibre) declares
+// `requiresApiKey=false`; and its api-key parameter name is the empty string.
+// There is also no `{key}` token substitution anywhere in mbgl. So a key set
+// without this call is stored and never read.
+//
+// What selecting a server buys, precisely:
+//   * `maptiler://maps/streets` and `mapbox://styles/…` resolve at all;
+//   * the key is appended to every URL derived from one of those — the style,
+//     and the sprite, glyph and tile sub-requests it names, which is the half
+//     an app cannot do by hand because it never sees those URLs;
+//   * offline regions canonicalise against the right templates
+//     (see docs/upstream-offline-url-regex/ for why that path is delicate).
+//
+// An app whose style URL is a plain `https://…` with the key already in the
+// query string needs none of this — that path never consults these options.
+FFI_PLUGIN_EXPORT int mbl_configure_tile_server(int32_t server);
+
+// Per-request HTTP headers, as a JSON array of rules:
+//
+//   [{"urlPrefix":"https://tiles.example.com/",
+//     "headers":{"Authorization":"Bearer …"}}, …]
+//
+// REPLACE-ALL, and that is the whole update protocol: rotating an expiring
+// token is one more call with the new value, and there is no partial update to
+// race. Pass NULL or `[]` to clear.
+//
+// **Callable at any time**, unlike mbl_configure — deliberately. Headers are
+// not part of ResourceOptions and nothing caches them, so they are read fresh
+// when each request is built. A bearer token that expires in an hour is the
+// normal case, and an API that could only be set before the first map would be
+// useless for it.
+//
+// **`urlPrefix` is required on every rule, and that is a deliberate divergence
+// from upstream.** Apple applies its headers to a whole NSURLSession and
+// Android to the whole OkHttp client, so both send your Authorization header to
+// every host a style names — and a style routinely names hosts you do not own,
+// for sprites, glyphs or a basemap from another vendor. Scoping by prefix is
+// how a credential stops leaking to them. An app that genuinely wants every
+// host can pass `"https://"`, which is explicit, greppable, and its own choice.
+//
+// Matching is a plain case-sensitive prefix over the full URL, evaluated in
+// array order; every matching rule contributes, and a later rule wins a header
+// name a earlier one also set. Returns 1, or 0 if the JSON is malformed — in
+// which case NOTHING changed, because a half-applied auth rule is worse than a
+// rejected one.
+FFI_PLUGIN_EXPORT int mbl_set_http_headers(const char *rules_json);
+
+// The kind of resource being requested. Mirrors `mbgl::Resource::Kind`.
+typedef enum {
+  MBL_RESOURCE_UNKNOWN = 0,
+  MBL_RESOURCE_STYLE = 1,
+  MBL_RESOURCE_SOURCE = 2,
+  MBL_RESOURCE_TILE = 3,
+  MBL_RESOURCE_GLYPHS = 4,
+  MBL_RESOURCE_SPRITE_IMAGE = 5,
+  MBL_RESOURCE_SPRITE_JSON = 6,
+  MBL_RESOURCE_IMAGE = 7,
+} MblResourceKind;
+
+// Asks the app to rewrite a URL — gl-js `transformRequest`, for signed URLs and
+// per-tenant hosts.
+//
+// `url` is a heap string TRANSFERRED to the callee (mbl_string_free). Fires on
+// mbgl's file-source thread, so a Dart handler must be a
+// `NativeCallable.listener`.
+//
+// **The reply is asynchronous and MUST arrive**, exactly once, via
+// mbl_transform_reply with the same `request_id`. Replying from another thread
+// is safe, replying later is safe, and replying after the request has been
+// cancelled is safe — mbgl routes it through an actor mailbox that drops late
+// messages. Never replying stalls that ONE resource forever, which for a style
+// is a blank map.
+typedef void (*MblRequestTransformCallback)(void *user, uint64_t request_id,
+                                            int32_t kind, char *url);
+
+// Install (or, with NULL, remove) the URL rewriter. Returns 1, or 0 if the
+// online file source could not be reached.
+//
+// Only mbgl's NETWORK file source honours a resource transform; the one a map
+// actually talks to (the resource loader) inherits an empty implementation and
+// would drop it silently, which is the trap this function exists to hide.
+FFI_PLUGIN_EXPORT int mbl_set_request_transform(
+    MblRequestTransformCallback callback, void *user);
+
+// Deliver the rewritten URL for `request_id`. Passing the URL unchanged is the
+// correct way to decline. A `request_id` that has already been answered, or
+// that belongs to a cancelled request, is ignored.
+FFI_PLUGIN_EXPORT void mbl_transform_reply(uint64_t request_id, const char *url);
+
 // --- Offline regions ----------------------------------------------------------
 //
 // Download a style and everything it needs for a bounding box and zoom range,

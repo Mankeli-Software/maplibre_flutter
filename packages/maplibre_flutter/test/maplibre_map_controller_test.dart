@@ -500,10 +500,15 @@ void main() {
         cachePath: '/tmp/tiles.db',
         maximumCacheBytes: 1024,
         apiKey: 'secret',
+        tileServer: MapLibreTileServer.mapTiler,
       );
       expect(platform.lastCachePath, '/tmp/tiles.db');
       expect(platform.lastMaxBytes, 1024);
       expect(platform.lastApiKey, 'secret');
+      // The key and the server are one setting wearing two names: without the
+      // server the engine never reads the key at all, so a configure that drops
+      // it on the floor is the bug this argument exists to fix.
+      expect(platform.lastTileServer, MapLibreTileServer.mapTiler);
     });
   });
 }
@@ -513,16 +518,19 @@ class _RecordingSettingsPlatform extends _FakePlatform {
   String? lastCachePath;
   int? lastMaxBytes;
   String? lastApiKey;
+  MapLibreTileServer? lastTileServer;
 
   @override
   bool configureResources({
     String? cachePath,
     int? maximumCacheBytes,
     String? apiKey,
+    MapLibreTileServer? tileServer,
   }) {
     lastCachePath = cachePath;
     lastMaxBytes = maximumCacheBytes;
     lastApiKey = apiKey;
+    lastTileServer = tileServer;
     return true;
   }
 }

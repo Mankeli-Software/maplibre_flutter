@@ -49,6 +49,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapLibreModelHost,
         MapLibreRotateHandler,
         MapLibreStyleLayers,
+        MapLibreTileServer,
         // Offline. The store itself is a platform capability apps never touch —
         // MapLibreOfflineManager is the app-facing form — but every value type
         // it exchanges is public API.

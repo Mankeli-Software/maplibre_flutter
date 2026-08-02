@@ -153,6 +153,21 @@ abstract final class MapLibreCoreSettings {
         0;
   });
 
+  /// Selects the tile server whose URL conventions apply.
+  ///
+  /// Returns false when it is too late — the same rule as [configure].
+  ///
+  /// **Without this the [configure] api key does nothing at all.** mbgl reaches
+  /// the key through exactly one path — rewriting a URL under the configured
+  /// scheme, e.g. `maptiler://maps/streets` — and three gates close it by
+  /// default: an ordinary `https://…` URL is not canonical so it is returned
+  /// untouched, the default configuration declares that it requires no api key,
+  /// and its key parameter name is empty. There is no `{key}` substitution
+  /// anywhere in the engine either. A key set without this is stored and never
+  /// read.
+  static bool configureTileServer(CoreTileServer server) =>
+      bindings.mbl_configure_tile_server(server.code) != 0;
+
   /// The cache path actually in force — so a caller can report what it got
   /// rather than what it asked for. `:memory:` means there is no cache.
   static String get cachePath {
@@ -164,6 +179,20 @@ abstract final class MapLibreCoreSettings {
       bindings.mbl_string_free(out);
     }
   }
+}
+
+/// The tile servers mbgl knows the URL shapes of. Mirrors `MblTileServer`.
+enum CoreTileServer {
+  /// The engine default: demotiles, the `maplibre://` scheme, and **no api
+  /// key** — its own configuration declares it needs none.
+  maplibre(0),
+  maptiler(1),
+  mapbox(2);
+
+  const CoreTileServer(this.code);
+
+  /// The `MblTileServer` value.
+  final int code;
 }
 
 /// A geographic point, as a record — this package has no Flutter dependency, so
