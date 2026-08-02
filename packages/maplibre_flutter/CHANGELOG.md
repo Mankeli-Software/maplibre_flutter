@@ -1,3 +1,17 @@
+## Unreleased
+
+ - **FEAT**(a11y): accessibility support — a labelled, adjustable map region with a spoken value;
+   accessible markers; single-pointer controls on by default for WCAG 2.5.1 / 2.5.7; a keyboard
+   model copied from maplibre-gl-js; reduced motion on every camera verb; high-contrast chrome;
+   and `MapLibreFeatureList` as the accessible alternative. No other Flutter map package ships
+   accessible map content. See `docs/accessibility.md`.
+ - **FIX**(a11y): attribution links carry a link role, and each link is its own node — previously
+   a two-link credit merged into one node announcing the wrong URL.
+ - **FIX**(a11y): markers culled by the viewport no longer publish semantics nodes at the overlay's
+   layout origin, which read to a screen reader as a pile of off-screen markers at (0, 0).
+ - **FIX**: `addWidgetIcon` no longer hardcodes `TextDirection.ltr` and a bare `MediaQueryData`, so
+   an RTL widget icon lays out correctly and `textScaler` reaches it.
+
 ## 0.0.3
 
  - **REFACTOR**(maplibre_flutter): extract embed helper methods into widget classes. ([de96d2a5](https://github.com/Mankeli-Software/maplibre_flutter/commit/de96d2a52e2a384fe5d8b934940750386dc15be3))

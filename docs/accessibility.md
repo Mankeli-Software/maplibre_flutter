@@ -5,26 +5,48 @@ engine `77e2e94772`) at `/Users/juhotorkkeli/development/flutter`, and maplibre-
 Every platform-lowering claim is read from engine source; **none has been observed in VoiceOver,
 TalkBack, NVDA or Orca.** §9 lists what that leaves uncertain._
 
-> **Build status, 2026-08-02** — on branch `feat/accessibility`. Phase 0 and the Phase 1 locale +
-> formatters are **built and tested**; everything from the map node onwards is still design.
-> Two things this document said that turned out to be wrong, both caught by a test rather than by
-> reading:
+> **Build status, 2026-08-02** — on branch `feat/accessibility`, 445 tests green,
+> `dart analyze --fatal-infos` clean across the workspace.
 >
-> 1. **`scrollDown` moves the camera NORTH, so latitude increases** — §7 said it decreases. Flutter
->    documents `onScrollDown` as "a user moving their finger across the screen from top to bottom",
->    and `camera.panBy` takes a finger delta (`maplibre_map_controller.dart`, "does what dragging
->    100 px to the right does"). Both are finger conventions and they agree; the doc had reasoned
->    from viewport motion instead.
-> 2. **Annotating an attribution link with `Semantics(link: true)` merges it into the enclosing
->    paragraph**, so a two-link credit became ONE node labelled with the whole line, carrying one
->    tap action — the second link unreachable, the first announcing the wrong URL. `container: true`
->    is required. §5's other in-paragraph annotations need the same treatment.
+> **Built and tested:** the latent fixes (attribution link roles, the `Flow` cull
+> leak, the puck label); `MapLibreLocale` and the two pure formatters; the map
+> semantics node with the Android increase/scroll branch, integer zoom snap and
+> the four pan actions; `MapLoadState`; reduced motion across every camera verb;
+> `MapControls` on by default; the keyboard model; marker semantics and the
+> assistive-technology nudge; high contrast and pinned colour ratios;
+> `MapLibreFeatureList`; `providesOwnSemantics` on the render handle.
 >
-> Sections drafted but **not yet integrated** (kept in `.a11y-pending/`): user populations
-> (switch / voice / braille / magnification), map load state, the settle-storm hardening, reduced
-> motion for spinning models, colour and contrast, snapshotter/offline/model labels, developer
-> experience, Phase 0 rephasing, and the upstream table — the last of which is already written up
-> in full at `docs/upstream-apple-a11y-vendor-gate/`.
+> **Designed, not built:** virtual feature nodes over `queryRenderedFeatures`
+> (§5.2), the announcement router and haptics (§5.7), snapshot alt text, and the
+> whole of Phase 6 — **no claim here has been observed in VoiceOver, TalkBack,
+> NVDA or Orca.** Every platform-lowering statement below is a source read.
+>
+> **Five things this document asserted that turned out to be wrong**, each caught
+> by a test rather than by re-reading:
+>
+> 1. **`scrollDown` moves the camera NORTH**, so latitude increases — §7 said it
+>    decreases. Flutter documents `onScrollDown` as "a user moving their finger
+>    across the screen from top to bottom" and `camera.panBy` takes a finger
+>    delta; both are finger conventions and they agree. The doc had reasoned from
+>    viewport motion.
+> 2. **`Semantics(link: true)` inside a `WidgetSpan` merges into the enclosing
+>    paragraph.** A two-link credit became ONE node labelled with the whole line
+>    carrying a single tap action — second link unreachable, first announcing the
+>    wrong URL. `container: true` is required.
+> 3. **A marker nudge is screen-space, where north is a NEGATIVE dy** — the
+>    opposite sign from `panBy`. Two conventions in one feature.
+> 4. **The blue focus ring clears 3:1 against black** (3.65:1), not only against
+>    white. The claim that high contrast existed to compensate was wrong; it
+>    exists for the chrome fills.
+> 5. **A tier reporting no engine events must report `ready`, not `loading`** —
+>    otherwise a working map announces "Map loading." for its entire life, which
+>    is confidently wrong rather than merely quiet.
+>
+> Sections drafted but **not yet integrated** (kept in `.a11y-pending/`): user
+> populations, the settle-storm hardening, reduced motion for spinning models,
+> snapshotter/offline/model labels, developer experience, and the phasing rewrite.
+> The upstream table is already written up in full at
+> `docs/upstream-apple-a11y-vendor-gate/`.
 
 ---
 

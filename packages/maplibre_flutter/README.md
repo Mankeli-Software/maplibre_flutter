@@ -120,6 +120,49 @@ Gestures work out of the box: a shared Dart gesture tier drives pan / zoom / fly
 engine on every platform (the engine owns gestures itself on web). The opt-in native-SDK and
 maplibre-gl-js renderers use their own native gestures instead.
 
+## Accessibility
+
+**No other Flutter map package ships accessible map content.** `google_maps_flutter`,
+`maplibre_gl`, `maplibre`, `flutter_map` and `mapbox_maps_flutter` publish no `Semantics` for
+what is on the map; flutter/flutter#114895 ("custom semantic label for each map marker") is open,
+unassigned and has no PR. The only real implementation anywhere is Apple's `MLNMapView`, and the
+richest half of it is gated behind an `isMapboxStreets` check that makes it dead on every MapLibre
+style ([write-up](docs/upstream-apple-a11y-vendor-gate/)).
+
+This package treats that as a feature, not a footnote. Out of the box:
+
+| | |
+| --- | --- |
+| **Screen readers** | The map is one labelled region with a spoken value — zoom, marker count, and load state, so a failed style does not sound like an empty ocean. Adjustable to zoom; pan, rotate and tilt as actions. |
+| **Markers** | `semanticLabel`, `semanticValue`, `semanticHint` and `onTap`. With no label your child's own tree is left exactly as you built it. |
+| **Pointer alternatives** | Zoom, compass, pan pad and tilt controls, **on by default** — WCAG 2.2 SC 2.5.1 (A) and 2.5.7 (AA) are pointer criteria that no amount of `Semantics` discharges, and the obligation comes from the gestures this widget itself ships. |
+| **Keyboard** | maplibre-gl-js's binding table: arrows pan, `Shift`+arrows turn and tilt, `+`/`-` zoom. Tab is never trapped. A visible focus ring, which gl-js has none of. |
+| **Reduced motion** | Every camera verb honours it, including your own imperative `flyTo`, with gl-js's `essential` opt-out. |
+| **High contrast** | Opaque chrome, heavier strokes, and every shipped colour pinned by a contrast test. |
+| **An accessible alternative** | `MapLibreFeatureList` — the pattern the standards actually ask for, and the surface a braille display can read. |
+
+```dart
+MapLibreMap(
+  style: 'https://demotiles.maplibre.org/style.json',
+  markers: [
+    MapLibreMarker(
+      point: const LatLng(60.17, 24.94),
+      semanticLabel: 'Helsinki Cathedral',
+      onTap: showDetails,
+      child: const Icon(Icons.place),
+    ),
+  ],
+  // Opt out and SC 2.5.1 / 2.5.7 become yours to satisfy:
+  // controls: MapControls.none(),
+)
+```
+
+**What is not claimed.** None of it has been run against VoiceOver, TalkBack, NVDA or Orca yet —
+every platform-lowering behaviour is read from engine source and covered by device-free tests.
+Rendered map *features* (roads, places) are not yet exposed as nodes. See
+[`docs/accessibility.md`](docs/accessibility.md) for the full survey, the design, and an honest
+list of what is unverified.
+
 ## Packages
 
 This is a federated plugin. App code uses only the first package; the rest are implementation

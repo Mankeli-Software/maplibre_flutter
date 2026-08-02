@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
-import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 const _markers = <MapLibreMarker>[
   MapLibreMarker(
