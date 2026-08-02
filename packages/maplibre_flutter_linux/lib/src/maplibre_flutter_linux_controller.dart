@@ -39,7 +39,8 @@ class MapLibreFlutterLinuxController
         MapLibreStyleLayers,
         MapLibreModelHost,
         MapLibreMapEvents,
-        MapLibreCameraCommands {
+        MapLibreCameraCommands,
+        MapLibreMapCapture {
   MapLibreFlutterLinuxController._(this._coreMap, this._textureId) {
     _startUp();
   }
@@ -369,6 +370,24 @@ class MapLibreFlutterLinuxController
     // didUpdateWidget, which can land during teardown.
     if (_disposed) return;
     _coreMap.setStyle(styleUri);
+  }
+
+  /// The frame on screen, as RGBA.
+  ///
+  /// The channel swap lives in `copyFrameRgba`, not here, because this tier and
+  /// its four siblings do not agree on the byte order the engine emits — macOS
+  /// and iOS keep BGRA for their CVPixelBuffer path while the other three ask
+  /// for RGBA — and five copies of a conditional swap is five chances to get it
+  /// backwards on the two platforms where a map's greys and greens hide it.
+  @override
+  Future<MapSnapshot?> captureFrame() async {
+    final pixels = _coreMap.copyFrameRgba();
+    if (pixels == null) return null;
+    return MapSnapshot(
+      pixels: pixels,
+      width: _coreMap.width,
+      height: _coreMap.height,
+    );
   }
 
   @override

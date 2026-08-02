@@ -36,8 +36,17 @@ class MapLibreMap extends StatefulWidget {
     this.models = const <MapLibreModel>[],
     this.onTap,
     this.onStyleLoaded,
-    this.rotateGesturesEnabled = true,
-    this.tiltGesturesEnabled = true,
+    this.gestures = const MapGestureSettings(),
+    @Deprecated(
+      'Use gestures: MapGestureSettings(rotateGesturesEnabled: …). '
+      'Will be removed in the next minor release.',
+    )
+    this.rotateGesturesEnabled,
+    @Deprecated(
+      'Use gestures: MapGestureSettings(tiltGesturesEnabled: …). '
+      'Will be removed in the next minor release.',
+    )
+    this.tiltGesturesEnabled,
     this.retainRuntimeStyle = false,
     this.showAttribution = true,
     this.onAttributionTap,
@@ -112,22 +121,44 @@ class MapLibreMap extends StatefulWidget {
   /// ([MapLibreCapabilities.events]).
   final VoidCallback? onStyleLoaded;
 
-  /// Whether the user can turn the map — a two-finger twist, or a
-  /// secondary-button / ctrl drag with a mouse.
+  /// Which gestures the map responds to, including whether it responds to any
+  /// ([MapGestureSettings.interactive]).
   ///
   /// A widget prop rather than a [MapOptions] field, per the three-bucket rule:
   /// this is mutable, declarative and low-frequency. [MapOptions] is init-only
   /// and is handed to `createMap`, so it never reaches the gesture layer, which
   /// lives entirely in the widget.
   ///
-  /// Has no effect on tiers whose renderer handles its own gestures.
-  final bool rotateGesturesEnabled;
+  /// Has no effect on tiers whose renderer handles its own gestures (the
+  /// opt-in native-SDK and gl-js packages).
+  final MapGestureSettings gestures;
 
-  /// Whether the user can tilt the map — a two-finger vertical "shove", or the
-  /// vertical component of a secondary-button / ctrl drag.
+  /// Whether the user can turn the map.
+  @Deprecated(
+    'Use gestures: MapGestureSettings(rotateGesturesEnabled: …). '
+    'Will be removed in the next minor release.',
+  )
+  final bool? rotateGesturesEnabled;
+
+  /// Whether the user can tilt the map.
+  @Deprecated(
+    'Use gestures: MapGestureSettings(tiltGesturesEnabled: …). '
+    'Will be removed in the next minor release.',
+  )
+  final bool? tiltGesturesEnabled;
+
+  /// [gestures], with the two deprecated props applied on top when set.
   ///
-  /// The engine clamps pitch to 0..60 degrees.
-  final bool tiltGesturesEnabled;
+  /// They win when specified, so code written against them keeps behaving
+  /// exactly as it did while the container becomes the way to say everything
+  /// else. Both are null by default, which is what makes "did the caller
+  /// actually ask for this?" answerable at all — with a `bool` default of true
+  /// there is no way to tell a deliberate `true` from an unset one, and the
+  /// deprecated prop would silently override the container forever.
+  MapGestureSettings get effectiveGestures => gestures.copyWith(
+    rotateGesturesEnabled: rotateGesturesEnabled,
+    tiltGesturesEnabled: tiltGesturesEnabled,
+  );
 
   /// Optional externally-owned controller for driving the map imperatively.
   ///
@@ -479,8 +510,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
           controller: _controller,
           markers: _markersWithPuck(context),
           onTap: widget.onTap,
-          rotateGesturesEnabled: widget.rotateGesturesEnabled,
-          tiltGesturesEnabled: widget.tiltGesturesEnabled,
+          gestures: widget.effectiveGestures,
         );
         if (!widget.showAttribution) return embed;
         // ABOVE the marker overlay: a credit hidden behind a cluster of pins is
@@ -507,15 +537,13 @@ class _MapEmbed extends StatelessWidget {
     required this.controller,
     this.markers = const <MapLibreMarker>[],
     this.onTap,
-    this.rotateGesturesEnabled = true,
-    this.tiltGesturesEnabled = true,
+    this.gestures = const MapGestureSettings(),
   });
 
   final MapLibreMapController controller;
   final List<MapLibreMarker> markers;
   final ValueChanged<MapTapEvent>? onTap;
-  final bool rotateGesturesEnabled;
-  final bool tiltGesturesEnabled;
+  final MapGestureSettings gestures;
 
   @override
   Widget build(BuildContext context) {
@@ -526,8 +554,7 @@ class _MapEmbed extends StatelessWidget {
         map = _TextureMapView(
           controller: controller,
           textureId: textureId,
-          rotateGesturesEnabled: rotateGesturesEnabled,
-          tiltGesturesEnabled: tiltGesturesEnabled,
+          gestures: gestures,
         );
       case PlatformViewHandle():
         map = _PlatformView(handle: handle);
@@ -597,14 +624,12 @@ class _TextureMapView extends StatefulWidget {
   const _TextureMapView({
     required this.controller,
     required this.textureId,
-    this.rotateGesturesEnabled = true,
-    this.tiltGesturesEnabled = true,
+    this.gestures = const MapGestureSettings(),
   });
 
   final MapLibreMapController controller;
   final int textureId;
-  final bool rotateGesturesEnabled;
-  final bool tiltGesturesEnabled;
+  final MapGestureSettings gestures;
 
   @override
   State<_TextureMapView> createState() => _TextureMapViewState();
@@ -680,15 +705,20 @@ class _TextureMapViewState extends State<_TextureMapView> {
           );
         }
 
-        if (widget.controller.gestureHandler case final gestures?) {
+        // `interactive: false` skips the layer entirely rather than gating each
+        // gesture inside it: that also skips the GLOBAL pointer route the
+        // gesture state installs, so a non-interactive map costs nothing per
+        // pointer event anywhere on screen. Taps are unaffected — they are
+        // wired in _MapEmbed, above this.
+        final handler = widget.controller.gestureHandler;
+        if (widget.gestures.interactive && handler != null) {
           map = _DesktopMapGestures(
-            handler: gestures,
+            handler: handler,
             onCameraMove: widget.controller.reportCameraMove,
             // Null on a tier without the capability, which simply means no
             // rotate or tilt — pan and zoom are unaffected.
             rotator: widget.controller.rotateHandler,
-            rotateEnabled: widget.rotateGesturesEnabled,
-            tiltEnabled: widget.tiltGesturesEnabled,
+            gestures: widget.gestures,
             child: map,
           );
         }
@@ -801,15 +831,13 @@ class _DesktopMapGestures extends StatefulWidget {
     required this.handler,
     required this.child,
     this.rotator,
-    this.rotateEnabled = true,
-    this.tiltEnabled = true,
+    this.gestures = const MapGestureSettings(),
     this.onCameraMove,
   });
 
   final MapLibreGestureHandler handler;
   final MapLibreRotateHandler? rotator;
-  final bool rotateEnabled;
-  final bool tiltEnabled;
+  final MapGestureSettings gestures;
 
   /// Reports the start and end of a user-driven camera change, and WHY.
   ///
@@ -1145,6 +1173,16 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     return true;
   }
 
+  // The two toggles, read at the point of ACTION rather than gating the
+  // recognizers.
+  //
+  // Disabling a recognizer instead would hand the gesture to whatever is behind
+  // the map — a `scrollGesturesEnabled: false` map inside a ListView would
+  // scroll the list when dragged, which is not what "the map does not pan"
+  // means. Recognising it and doing nothing keeps the map opaque to input.
+  bool get _panAllowed => widget.gestures.scrollGesturesEnabled;
+  bool get _zoomAllowed => widget.gestures.zoomGesturesEnabled;
+
   void _onScaleUpdate(ScaleUpdateDetails details) {
     // A secondary-button / ctrl drag is handled entirely on the raw Listener
     // (see [_isRotateDrag]). The scale recognizer still receives it, so without
@@ -1166,9 +1204,9 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
     // --- latch the mode on the first threshold crossing ----------------------
     if (_mode == _GestureMode.none && rotator != null) {
-      if (widget.tiltEnabled && _isShove(details)) {
+      if (widget.gestures.tiltGesturesEnabled && _isShove(details)) {
         _mode = _GestureMode.shove;
-      } else if (widget.rotateEnabled &&
+      } else if (widget.gestures.rotateGesturesEnabled &&
           _rotationAccum.abs() > _kRotateDeadzoneDegrees * math.pi / 180) {
         _mode = _GestureMode.rotate;
         // Freeze the anchor at the latch. _zoomAnchor keeps tracking the focal
@@ -1235,7 +1273,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       final gain = _panGain;
       final pdx = dx * gain;
       final pdy = dy * gain;
-      if (pdx != 0 || pdy != 0) {
+      if (_panAllowed && (pdx != 0 || pdy != 0)) {
         _reportReason(MapCameraChangeReason.gesturePan);
         widget.handler.moveBy(pdx, pdy);
       }
@@ -1276,8 +1314,10 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         final anchor = (_anchorOnCursor && _lastPointerPos != Offset.zero)
             ? _lastPointerPos
             : _zoomAnchor;
-        _reportReason(MapCameraChangeReason.gesturePinch);
-        widget.handler.scaleBy(relative, anchor.dx, anchor.dy);
+        if (_zoomAllowed) {
+          _reportReason(MapCameraChangeReason.gesturePinch);
+          widget.handler.scaleBy(relative, anchor.dx, anchor.dy);
+        }
       }
       _lastScale = details.scale;
     }
@@ -1294,6 +1334,9 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     // (not after a pause) and fast enough, using our tracked velocity, not the
     // unreliable details.velocity.
     if (_gestureHadScale) return;
+    // A map that does not pan does not glide either; without this the drag is
+    // ignored and then the release slides it anyway.
+    if (!_panAllowed) return;
     final sinceMoveUs = _clock.elapsedMicroseconds - _lastMoveUs;
     if (sinceMoveUs > 100000) return; // released after a pause → no fling
     var velocity = _dragVelocity;
@@ -1423,14 +1466,14 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       if (!zooming) {
         final pdx = event.panDelta.dx * _panGain;
         final pdy = event.panDelta.dy * _panGain;
-        if (pdx != 0 || pdy != 0) {
+        if (_panAllowed && (pdx != 0 || pdy != 0)) {
           _reportReason(MapCameraChangeReason.gesturePan);
           widget.handler.moveBy(pdx, pdy);
         }
       }
       if (event.scale > 0) {
         final relative = event.scale / _blockedLastScale;
-        if (relative != 1.0) {
+        if (_zoomAllowed && relative != 1.0) {
           _reportReason(MapCameraChangeReason.gesturePinch);
           widget.handler.scaleBy(
             relative,
@@ -1445,7 +1488,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       // class this fallback exists for: a gesture that works over the map but
       // silently does nothing once an overlay covers the cursor.
       final rotator = widget.rotator;
-      if (rotator != null && widget.rotateEnabled) {
+      if (rotator != null && widget.gestures.rotateGesturesEnabled) {
         final deltaRadians = _normalizeAngle(
           event.rotation - _blockedLastRotation,
         );
@@ -1476,7 +1519,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _stopInertia();
       final anchor = cursor - origin;
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
-      if (factor != 1.0) {
+      if (_zoomAllowed && factor != 1.0) {
         // A wheel notch is a whole gesture: report it and end it at once, since
         // there is no release event to hang an end on.
         _reportReason(MapCameraChangeReason.gesturePinch);
@@ -1514,7 +1557,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _stopInertia(); // a scroll-zoom cancels any in-flight pan glide
       // Scroll up (negative dy) zooms in, about the pointer.
       final factor = math.pow(2.0, -event.scrollDelta.dy / 120.0).toDouble();
-      if (factor != 1.0) {
+      if (_zoomAllowed && factor != 1.0) {
         // A wheel notch is a whole gesture — start and end together, since a
         // scroll has no release event to hang an end on.
         _reportReason(MapCameraChangeReason.gesturePinch);
@@ -1565,7 +1608,8 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // gesture recognizer would pan the map underneath the rotation.
   bool _isRotateDrag(PointerDownEvent e) =>
       widget.rotator != null &&
-      (widget.rotateEnabled || widget.tiltEnabled) &&
+      (widget.gestures.rotateGesturesEnabled ||
+          widget.gestures.tiltGesturesEnabled) &&
       (e.buttons & kSecondaryMouseButton != 0 ||
           (e.buttons & kPrimaryMouseButton != 0 &&
               HardwareKeyboard.instance.isControlPressed));
@@ -1589,7 +1633,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       final delta = e.localPosition - _dragRotateLast;
       _dragRotateLast = e.localPosition;
       if (rotator == null) return;
-      if (widget.rotateEnabled && delta.dx != 0) {
+      if (widget.gestures.rotateGesturesEnabled && delta.dx != 0) {
         // Dragging RIGHT turns the content clockwise, matching gl-js.
         _reportReason(MapCameraChangeReason.gestureRotate);
         rotator.rotateBy(
@@ -1598,7 +1642,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
           _lastPointerPos.dy,
         );
       }
-      if (widget.tiltEnabled && delta.dy != 0) {
+      if (widget.gestures.tiltGesturesEnabled && delta.dy != 0) {
         // Dragging UP tilts toward the horizon.
         _reportReason(MapCameraChangeReason.gestureTilt);
         rotator.pitchBy(-delta.dy * _kDragPitchDegreesPerPixel);

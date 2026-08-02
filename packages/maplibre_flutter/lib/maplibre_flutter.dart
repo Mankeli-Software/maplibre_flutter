@@ -19,16 +19,32 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapUserTrackingMode,
         AttributionLink,
         MapCamera,
+        MapGestureSettings,
         MapCameraChangeReason,
         MapCameraChangeReasons,
         MapLibreCapabilities,
         MapLibreModel,
         MapOptions,
+        // The error hierarchy behind `controller.onError`. Exporting the whole
+        // sealed family is the point, not tidiness: `MapLibreError` is sealed
+        // so a handler can `switch` over it exhaustively and have the compiler
+        // check the arms (CLAUDE.md §9). With the subclasses unexported an app
+        // could name the stream's element type and nothing else, so the one
+        // thing the adaptation was for did not compile.
+        MapLibreError,
+        MapStyleError,
+        MapGlyphsError,
+        MapSpriteError,
+        MapRenderError,
+        MapCommandError,
+        MapEngineError,
         // The capability interfaces, so an app can feature-detect with `is`.
         // They are implemented by platform packages, never by apps — see
         // MapLibreCapabilities.
         MapLibreCameraCommands,
         MapLibreGestureHandler,
+        MapLibreMapCapture,
+        MapLibreMapEvents,
         MapLibreMapProjector,
         MapLibreModelHost,
         MapLibreRotateHandler,

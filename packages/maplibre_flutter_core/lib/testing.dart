@@ -215,7 +215,10 @@ class RecordingCoreMap implements MapLibreCoreMap {
   bool isZeroCopyActive() => false;
 
   @override
-  void setPixelFormatBgra(bool bgra) {}
+  void setPixelFormatBgra(bool bgra) => pixelFormatIsBgra = bgra;
+
+  @override
+  bool pixelFormatIsBgra = true;
 
   @override
   void setStyle(String styleUri) => styles.add(styleUri);
@@ -440,6 +443,22 @@ class RecordingCoreMap implements MapLibreCoreMap {
 
   @override
   Uint8List? copyFrame() => frame;
+
+  /// Swaps like the real one, so a test can catch a tier that set the wrong
+  /// format — returning [frame] unchanged here would make the channel order
+  /// untestable, which is the bug this method exists to prevent.
+  @override
+  Uint8List? copyFrameRgba() {
+    final source = frame;
+    if (source == null || !pixelFormatIsBgra) return source;
+    final out = Uint8List.fromList(source);
+    for (var i = 0; i + 3 < out.length; i += 4) {
+      final b = out[i];
+      out[i] = out[i + 2];
+      out[i + 2] = b;
+    }
+    return out;
+  }
 
   @override
   bool writePng(String path) => true;

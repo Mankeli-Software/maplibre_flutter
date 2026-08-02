@@ -476,7 +476,33 @@ class MapLibreCoreMap {
   /// the zero-copy IOSurface path. Set once at setup.
   void setPixelFormatBgra(bool bgra) {
     _checkAlive();
+    _pixelFormatIsBgra = bgra;
     bindings.mbl_map_set_pixel_format_bgra(_handle, bgra ? 1 : 0);
+  }
+
+  /// Whether [copyFrame] emits BGRA. Defaults to true, matching the engine.
+  bool get pixelFormatIsBgra => _pixelFormatIsBgra;
+  bool _pixelFormatIsBgra = true;
+
+  /// The latest frame as tightly-packed **RGBA**, whatever byte order this map
+  /// was configured to emit — or null if no frame exists yet.
+  ///
+  /// Exists so callers do not each have to remember which tier set which
+  /// format: macOS and iOS leave it BGRA for the CVPixelBuffer path while
+  /// Android, Windows and Linux ask for RGBA, so a caller that assumed either
+  /// one gets red and blue swapped on exactly two platforms — silently, because
+  /// a map is full of greys and greens where the swap is easy to miss, and
+  /// invisible to any test whose fixture colours have R equal to B. That
+  /// mistake has already been made once in this repo's own test helper.
+  Uint8List? copyFrameRgba() {
+    final frame = copyFrame();
+    if (frame == null || !_pixelFormatIsBgra) return frame;
+    for (var i = 0; i + 3 < frame.length; i += 4) {
+      final b = frame[i];
+      frame[i] = frame[i + 2];
+      frame[i + 2] = b;
+    }
+    return frame;
   }
 
   /// Replaces the active style (URL, file path, or inline JSON).

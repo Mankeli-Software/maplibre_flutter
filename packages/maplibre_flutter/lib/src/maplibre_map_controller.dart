@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui show Image, PixelFormat, decodeImageFromPixels;
 import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:flutter/animation.dart' show Cubic;
@@ -538,6 +539,48 @@ class MapLibreMapController {
     if (platform is MapLibreModelHost) {
       (platform as MapLibreModelHost).updateModel(model);
     }
+  }
+
+  /// The map as it is on screen right now, as raw RGBA pixels — a screenshot.
+  ///
+  /// Null before the first frame, and null on a tier that cannot do it (the web
+  /// tiers, where the map is a DOM canvas Flutter never sees the pixels of).
+  /// Await [onReady] first — or [onIdle], if you want a view whose tiles have
+  /// all arrived, since a Continuous map will happily hand back a frame that is
+  /// still streaming.
+  ///
+  /// This is NOT `MapLibreSnapshotter`, and the difference decides which one you
+  /// want: the snapshotter renders a NEW off-screen map from a style and a
+  /// camera, so it costs a full load and can point anywhere. This returns the
+  /// frame the user is looking at, which is what "share this view" means and
+  /// what no amount of re-rendering reproduces exactly.
+  ///
+  /// For a PNG, use [snapshotImage] and `toByteData(format: png)` — Flutter
+  /// already owns that encoder, so this API does not grow a format enum to
+  /// wrap it.
+  Future<MapSnapshot?> snapshot() async {
+    final platform = _platform;
+    return platform is MapLibreMapCapture
+        ? (platform as MapLibreMapCapture).captureFrame()
+        : null;
+  }
+
+  /// [snapshot], decoded into a `ui.Image` ready to draw or encode.
+  ///
+  /// Mirrors `MapLibreSnapshotter.takeImage`, so the two snapshot paths hand
+  /// back the same thing.
+  Future<ui.Image?> snapshotImage() async {
+    final shot = await snapshot();
+    if (shot == null) return null;
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      shot.pixels,
+      shot.width,
+      shot.height,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
+    return completer.future;
   }
 
   /// Frames the RENDERER has published, or null on tiers that cannot report it.

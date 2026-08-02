@@ -19,6 +19,7 @@ Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this ta
 | --- | --- | --- | --- | --- | --- | --- |
 | `MapLibreCameraCommands` (11 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreGestureHandler` (2 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| `MapLibreMapCapture` (1 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreMapEvents` (6 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | `MapLibreMapProjector` (3 members) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MapLibreModelHost` (7 members) | ✅ | ✅ | ✅ | ✅ | ✅ | — |

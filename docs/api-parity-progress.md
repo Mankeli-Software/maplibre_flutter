@@ -251,6 +251,54 @@ Highest row count in the backlog, correctly last among the core stages.
 - [x] 9.2 `FEATURE_MATRIX.md` cut from 723 lines to ~110: the nine tables and the stale legend are
       gone, the judgement-bearing prose stays.
 
+### Stage 10 — Close the gap the stages left — **OPEN**
+
+Stages 0–9 are closed, and that is **not** the same as done. They were a curated
+subset of the spec; this file's own bar is "every P0 and P1 row implemented or explicitly
+rejected". A 2026-08-02 audit checked all 229 of them against the code, one reader per spec
+domain, every verdict cited to a file and line:
+
+**137 implemented, 92 outstanding, 5 of them P0.**
+
+| Domain | Done | Left |
+| --- | --- | --- |
+| Gestures & user interaction | 4 | **19** (4 P0 after 10.1) |
+| 3D, terrain, atmosphere & models | 5 | 16 (2 P0) |
+| Events & queries | 23 | 14 |
+| Sources | 7 | 9 |
+| Map creation, options, resources & lifecycle | 17 | 8 (2 P0) |
+| Annotations, markers & controls | 5 | 7 |
+| Camera, bounds & projection | 22 | 6 |
+| Offline, caching, location & snapshotter | 16 | 6 |
+| Layers / Expressions / Images | 24 / 9 / 5 | 3 / 3 / 2 |
+
+**The C ABI is not the bottleneck.** All 87 entry points reach the Dart core and 81 reach the
+public API; of the four that stop short, one is a debug fixture that should. The gap is
+upstream-API coverage, not plumbing — which is why most of what is left is Dart.
+
+- [x] 10.1 The three cheapest, done together. `MapLibreError` and its six subclasses plus
+      `MapLibreMapEvents` exported (`controller.onError` handed back a sealed type an app could
+      not name); `controller.snapshot()` / `.snapshotImage()` over a new `MapLibreMapCapture`
+      capability; `MapGestureSettings` + `MapLibreMap.gestures` + `interactive: false`. Closes
+      four P0 rows. See the run log.
+- [ ] 10.2 **Double-tap zoom** — P0, and a straight regression: Android and iOS had it from the
+      SDK before the core-primary inversion and lost it. Needs a C ABI entry point
+      (`mbl_map_scale_by_animated`), because an instant `scaleBy(2)` reads as a snap and every
+      upstream animates it. The same entry point unblocks quick-zoom and two-finger-tap zoom-out.
+- [ ] 10.3 **`TileServerOptions` is never constructed anywhere.** The API-key half of 8.2 shipped
+      without it, so `maptiler://` style URIs do not resolve and the key is never appended to
+      sprite/glyph sub-requests. A keyed provider only works if the app hand-expands the URL.
+- [ ] 10.4 **Runtime DPR** — P0. mbgl has no `setPixelRatio`, so honouring it means rebuilding the
+      map or patching upstream. All five tiers currently ACCEPT AND DISCARD the argument, which is
+      worse than not taking it: decide, and either implement it or narrow the contract to
+      `resize(Size)` and document DPR as fixed at creation.
+- [ ] 10.5 **`transformRequest` / auth headers** — P0. Needs a custom `FileSource` plus four
+      platform HTTP edits. Worth stating plainly: there is no way for a consumer to add an
+      `Authorization` header today.
+- [ ] 10.6 The rest, by domain, worst first: gestures (15), models and `light` (16), events
+      (hover, long-press, `isSourceLoaded`, `areTilesLoaded`), sources (`promoteId`, `generateId`),
+      annotations (compass, scale bar, marker tap).
+
 ## Run log
 
 Append one entry per run. Newest last.
@@ -1506,3 +1554,54 @@ their widget tree.
   that widening the scan introduced no false positives.
 - **Gates:** `analyze` clean / `test --no-select` green (+24 new) / `test:native` green (89, was 77)
   / `test:harness:hermetic` green (3, was 2) / matrix regenerated.
+
+### 2026-08-02 — Stage 10 (10.1) — the three cheapest, and what the audit found
+
+- **The ledger read as finished and was not, which is the finding worth keeping.** Stages 0–9 were
+  all `[x]` or `[-]`, but the stages were a curated subset of the spec's 703 rows while this file's
+  own definition of done is every P0 and P1 row. Checked properly — one reader per spec domain,
+  every verdict cited — it is 137 of 229, with five P0s open. A checklist whose items are all
+  ticked is not evidence that the goal behind it is met; the goal has to be measured on its own
+  terms, periodically.
+- **`controller.onError` returned a type an app could not name.** `MapLibreError` is `sealed`
+  precisely so a handler can `switch` exhaustively and have the compiler check the arms — the
+  adaptation CLAUDE.md §9 records as deliberate — and the sealed family was never added to the
+  public show-list. So the one thing it was chosen for did not compile outside this repo, while
+  everything about the feature looked present: the C++ dispatch, all five tiers, the stream.
+  **The test that closes it imports the public library and nothing else**, because adding the
+  platform-interface import makes it compile regardless and puts the hole straight back.
+- **A capability can be unreachable while every layer under it exists.** `mbl_map_write_png` and
+  `copyFrame`, their Dart wrappers and their tests had all shipped, used by nothing but the core's
+  own suite. `controller.snapshot()` is a capability interface, five forwards and a method — no
+  ffigen, no C++.
+- **Those five forwards were NOT identical, which is the trap in "just forward it".** macOS and iOS
+  leave the engine emitting BGRA for their CVPixelBuffer path; Android, Windows and Linux ask for
+  RGBA. Five copies of a conditional swap is five chances to hand back a red/blue-swapped
+  screenshot on exactly two platforms — invisible in a map full of greys and greens, and invisible
+  to any test whose fixture colours have R equal to B, which is a mistake this repo has already
+  made once in its own test helper. The swap lives in `MapLibreCoreMap.copyFrameRgba`, which is
+  the only place that knows the format, and the fake in `testing.dart` swaps too so a wrong tier
+  is detectable at all.
+- **`MapGestureSettings` uses Android `UiSettings` names, against the spec row, on purpose.** The
+  row proposes gl-js's `dragPan`/`scrollZoom`/`doubleClickZoom`; CLAUDE.md §9 settled that gesture
+  toggles take Android's `…GesturesEnabled` because gl-js's names describe *mouse* input and mean
+  nothing on a phone. §9 is the operative policy and the spec row predates it — surfaced rather
+  than silently diverged, per CLAUDE.md's preamble.
+- **The container ships only the toggles that exist.** No `doubleTapZoomEnabled`, no
+  `quickZoomEnabled`: neither gesture is implemented (10.2), and a toggle for a gesture that never
+  fires reads as a feature and does nothing — the same rot as a legend for symbols nobody emits.
+- **`interactive: false` skips the gesture layer rather than gating inside it**, so it also drops
+  the global pointer route and a non-interactive map costs nothing per pointer event anywhere on
+  screen. **Taps still fire**, which is what every upstream does and the useful behaviour: the
+  reason to build one — a locator in a form, a thumbnail in a list — is usually that tapping it
+  opens a real map.
+- **The per-gesture toggles gate the ACTION, not the recogniser.** Disabling the recogniser would
+  hand the drag to whatever is behind the map, so a `scrollGesturesEnabled: false` map inside a
+  `ListView` would scroll the list — which is not what "the map does not pan" means. There is a
+  test for the release too: gating the updates but not the fling leaves the map gliding after a
+  drag it ignored.
+- **The deprecated props are `bool?`, not `bool`.** With a `bool` defaulting to true there is no
+  way to tell a deliberate `true` from an unset one, so the deprecated prop would override the
+  container forever. Null means "not specified", and `effectiveGestures` layers them on top.
+- **Gates:** analyze clean / format clean / 20 new widget tests / `test --no-select` green /
+  `test:native` green (90) / matrix regenerated.
