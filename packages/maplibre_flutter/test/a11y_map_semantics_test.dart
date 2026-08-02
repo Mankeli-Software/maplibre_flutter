@@ -977,4 +977,73 @@ void main() {
       node.dispose();
     });
   });
+
+  group('announcements and refused steps', () {
+    Future<_A11yController> pumpAt(
+      WidgetTester tester, {
+      MapCameraConstraints? constraints,
+      MapLibreSemantics semantics = const MapLibreSemantics(),
+    }) async {
+      final platform = _Platform(initialConstraints: constraints);
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: MediaQuery(
+            data: const MediaQueryData(),
+            child: MapLibreMap(
+              style: _style,
+              options: _options,
+              semantics: semantics,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 150));
+      await tester.pumpAndSettle();
+      return platform.last!;
+    }
+
+    // "Nothing happened because you are at the edge" and "nothing happened
+    // because it is broken" are the same silence otherwise, and only the first
+    // is something a user can act on.
+    testWidgets('a zoom past the maximum is refused, not clamped silently', (
+      tester,
+    ) async {
+      final controller = await pumpAt(
+        tester,
+        constraints: const MapCameraConstraints(maxZoom: 12.4),
+      );
+      tester.semantics.performAction(
+        find.semantics.byLabel('Map'),
+        SemanticsAction.increase,
+      );
+      await tester.pumpAndSettle();
+      expect(controller.jumps, isEmpty);
+    });
+
+    testWidgets('a zoom within the limits still goes through', (tester) async {
+      final controller = await pumpAt(
+        tester,
+        constraints: const MapCameraConstraints(maxZoom: 20),
+      );
+      tester.semantics.performAction(
+        find.semantics.byLabel('Map'),
+        SemanticsAction.increase,
+      );
+      await tester.pumpAndSettle();
+      expect(controller.jumps.single.zoom, 13.0);
+    });
+
+    testWidgets('excluded() turns announcements and haptics off too', (
+      tester,
+    ) async {
+      const excluded = MapLibreSemantics.excluded();
+      expect(excluded.announcements, MapSemanticsAnnouncements.never);
+      expect(excluded.haptics, isFalse);
+      await pumpAt(tester, semantics: excluded);
+      expect(find.semantics.byLabel('Map'), findsNothing);
+    });
+  });
 }

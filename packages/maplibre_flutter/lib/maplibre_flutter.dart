@@ -35,6 +35,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
         MapLibreStyleLayers;
 
 export 'geojson.dart';
+export 'src/a11y/announcer.dart';
 export 'src/a11y/feature_list.dart';
 export 'src/a11y/formatters.dart';
 export 'src/a11y/locale.dart';

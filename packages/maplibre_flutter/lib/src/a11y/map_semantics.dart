@@ -2,11 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/semantics.dart'
-    show CustomSemanticsAction, SemanticsBinding, SemanticsRole;
+    show Assertiveness, CustomSemanticsAction, SemanticsBinding, SemanticsRole;
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 import '../maplibre_map_controller.dart';
+import 'announcer.dart';
 import 'formatters.dart';
 import 'locale.dart';
 
@@ -197,6 +198,8 @@ class MapLibreSemantics {
     this.hint,
     this.identifier = 'maplibre.map',
     this.value = const MapCameraSummaryValue(),
+    this.announcements = MapSemanticsAnnouncements.accessibilityActions,
+    this.haptics = true,
     this.zoomStep = 1.0,
     this.scrollStep = 0.5,
     this.bearingStep = 15.0,
@@ -212,6 +215,8 @@ class MapLibreSemantics {
       hint = null,
       identifier = 'maplibre.map',
       value = const MapNoValue(),
+      announcements = MapSemanticsAnnouncements.never,
+      haptics = false,
       zoomStep = 1.0,
       scrollStep = 0.5,
       bearingStep = 15.0,
@@ -236,6 +241,14 @@ class MapLibreSemantics {
 
   /// What the node speaks as its value.
   final MapSemanticsValue value;
+
+  /// When the map speaks unprompted. Defaults to Apple's model: only after an
+  /// assistive-technology or keyboard action, never after a gesture.
+  final MapSemanticsAnnouncements announcements;
+
+  /// Whether an assistive-technology camera step gives a haptic pulse, with a
+  /// distinct one when the step is refused at a zoom limit.
+  final bool haptics;
 
   /// Zoom levels per increase/decrease. The result is snapped to an integer, as
   /// Apple does (`round(zoomLevel) + log2(scaleFactor)`), so repeated swipes
@@ -262,6 +275,8 @@ class MapLibreSemantics {
         hint: hint ?? this.hint,
         identifier: identifier,
         value: value,
+        announcements: announcements,
+        haptics: haptics,
         zoomStep: zoomStep,
         scrollStep: scrollStep,
         bearingStep: bearingStep,
@@ -311,6 +326,11 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
       ? MapLoadState.loading
       : MapLoadState.ready;
   Timer? _settle;
+
+  /// Armed by an assistive-technology or keyboard action and consumed by the
+  /// next recompute — Apple's pending-flag model, verbatim. It is what makes a
+  /// swipe-to-zoom speak while a two-finger pan stays silent.
+  bool _announcePending = false;
   final List<StreamSubscription<void>> _subs = <StreamSubscription<void>>[];
   bool _refreshing = false;
 
@@ -396,19 +416,49 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
       final camera = await widget.controller.camera.getCamera();
       if (!mounted) return;
       final size = context.size ?? Size.zero;
-      setState(() {
-        _summary = MapSemanticsSummary(
-          camera: camera,
-          viewport: size,
-          visibleMarkerCount: widget.markerCount,
-          loadState: _loadState,
-        );
-      });
+      final summary = MapSemanticsSummary(
+        camera: camera,
+        viewport: size,
+        visibleMarkerCount: widget.markerCount,
+        loadState: _loadState,
+      );
+      setState(() => _summary = summary);
+      _maybeAnnounce(summary);
     } on Object {
       // A controller torn down mid-flight is not an accessibility failure.
     } finally {
       _refreshing = false;
     }
+  }
+
+  void _maybeAnnounce(MapSemanticsSummary summary) {
+    final mode = widget.semantics.announcements;
+    final wanted =
+        mode == MapSemanticsAnnouncements.always ||
+        (mode == MapSemanticsAnnouncements.accessibilityActions &&
+            _announcePending);
+    _announcePending = false;
+    if (!wanted || !mounted) return;
+    final message = _describe(summary);
+    if (message.isEmpty) return;
+    // A failed load is the one case that earns an interruption, and it is not
+    // gesture-triggered, so it does not violate the restraint above.
+    MapLibreSemanticsAnnouncer.announce(
+      context,
+      message,
+      assertiveness: summary.loadState == MapLoadState.failed
+          ? Assertiveness.assertive
+          : Assertiveness.polite,
+    );
+  }
+
+  /// Arms the announcement and confirms the step in the hand.
+  void _armFeedback({bool refused = false}) {
+    _announcePending = true;
+    if (!widget.semantics.haptics) return;
+    refused
+        ? MapLibreSemanticsAnnouncer.refuseStep()
+        : MapLibreSemanticsAnnouncer.confirmStep();
   }
 
   String _describe(MapSemanticsSummary summary) =>
@@ -437,22 +487,32 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
   }
 
   void _pan(Offset fingerDelta) {
+    _armFeedback();
     unawaited(widget.controller.camera.panBy(fingerDelta));
   }
 
   Future<void> _zoomBy(double levels) async {
     final camera = await widget.controller.camera.getCamera();
+    final limits = await widget.controller.camera.getConstraints();
+    final target = camera.zoom.roundToDouble() + levels;
+    final refused =
+        (limits?.maxZoom != null && target > limits!.maxZoom!) ||
+        (limits?.minZoom != null && target < limits!.minZoom!);
+    _armFeedback(refused: refused);
+    if (refused) return;
     // Snap to an integer first, exactly as Apple does, so repeated swipes land
     // on clean levels rather than drifting by whatever fraction a pinch left.
-    await widget.controller.camera.zoomTo(camera.zoom.roundToDouble() + levels);
+    await widget.controller.camera.zoomTo(target);
   }
 
   Future<void> _rotateBy(double degrees) async {
+    _armFeedback();
     final camera = await widget.controller.camera.getCamera();
     await widget.controller.camera.rotateTo(camera.bearing + degrees);
   }
 
   Future<void> _pitchBy(double degrees) async {
+    _armFeedback();
     final camera = await widget.controller.camera.getCamera();
     await widget.controller.camera.easeTo(
       CameraOptions(pitch: (camera.pitch + degrees).clamp(0.0, 60.0)),
