@@ -1,7 +1,8 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/semantics.dart'
     show CustomSemanticsAction, SemanticsAction, SemanticsNode;
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/maplibre_flutter.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -771,6 +772,209 @@ void main() {
       await expectLater(tester, meetsGuideline(androidTapTargetGuideline));
       await expectLater(tester, meetsGuideline(iOSTapTargetGuideline));
       await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+    });
+  });
+
+  group('keyboard', () {
+    Future<(_A11yController, FocusNode)> pumpFocused(
+      WidgetTester tester, {
+      MapKeyboard keyboard = const MapKeyboard(),
+      NavigationMode navigationMode = NavigationMode.traditional,
+    }) async {
+      final platform = _Platform();
+      MapLibreFlutterPlatform.instance = platform;
+      final node = FocusNode();
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: MediaQuery(
+            data: MediaQueryData(navigationMode: navigationMode),
+            child: MapLibreMap(
+              style: _style,
+              options: _options,
+              keyboard: keyboard,
+              focusNode: node,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      node.requestFocus();
+      await tester.pumpAndSettle();
+      return (platform.last!, node);
+    }
+
+    Future<void> shifted(WidgetTester tester, LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pumpAndSettle();
+    }
+
+    // ABSOLUTE directions. An arrow key that pans the wrong way renders exactly
+    // as plausibly as one that pans the right way.
+    testWidgets('the arrows pan the compass directions they name', (
+      tester,
+    ) async {
+      final (controller, node) = await pumpFocused(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.latitude, greaterThan(0));
+
+      controller.eases.clear();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.latitude, lessThan(0));
+
+      controller.eases.clear();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.longitude, greaterThan(0));
+
+      controller.eases.clear();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.center!.longitude, lessThan(0));
+      node.dispose();
+    });
+
+    testWidgets('shift turns and tilts, by gl-js\'s steps', (tester) async {
+      final (controller, node) = await pumpFocused(tester);
+
+      await shifted(tester, LogicalKeyboardKey.arrowRight);
+      expect(controller.eases.single.bearing, 15);
+
+      controller.eases.clear();
+      await shifted(tester, LogicalKeyboardKey.arrowLeft);
+      expect(controller.eases.single.bearing, -15);
+
+      controller.eases.clear();
+      await shifted(tester, LogicalKeyboardKey.arrowUp);
+      expect(controller.eases.single.pitch, 10);
+      node.dispose();
+    });
+
+    testWidgets('plus and minus zoom, and shift doubles the step', (
+      tester,
+    ) async {
+      final (controller, node) = await pumpFocused(tester);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.zoom, 13.4);
+
+      controller.eases.clear();
+      await tester.sendKeyEvent(LogicalKeyboardKey.minus);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.zoom, 11.4);
+
+      controller.eases.clear();
+      await shifted(tester, LogicalKeyboardKey.equal);
+      expect(controller.eases.single.zoom, 14.4);
+      node.dispose();
+    });
+
+    // gl-js's very first statement, and what keeps OS and browser shortcuts
+    // working over a focused map.
+    testWidgets('a modifier chord is left alone', (tester) async {
+      final (controller, node) = await pumpFocused(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+      expect(controller.eases, isEmpty);
+      node.dispose();
+    });
+
+    // SC 2.1.2, No Keyboard Trap. Asserting only that the map ignores Tab
+    // would pass against a map with nowhere to tab TO; this puts a real
+    // neighbour after it and watches focus actually leave.
+    testWidgets('Tab is never consumed, so focus can leave the map', (
+      tester,
+    ) async {
+      final platform = _Platform();
+      MapLibreFlutterPlatform.instance = platform;
+      final mapNode = FocusNode(debugLabel: 'map');
+      final nextNode = FocusNode(debugLabel: 'next');
+      // A real app ancestor, deliberately: Tab traversal comes from
+      // WidgetsApp's default shortcuts and actions, so a bare tree would make
+      // this test pass or fail for reasons that have nothing to do with the
+      // map.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Column(
+            children: <Widget>[
+              Expanded(
+                child: MapLibreMap(
+                  style: _style,
+                  options: _options,
+                  focusNode: mapNode,
+                ),
+              ),
+              Focus(
+                focusNode: nextNode,
+                child: const SizedBox(width: 40, height: 40),
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      mapNode.requestFocus();
+      await tester.pumpAndSettle();
+      expect(mapNode.hasFocus, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+
+      expect(nextNode.hasPrimaryFocus, isTrue);
+      expect(mapNode.hasPrimaryFocus, isFalse);
+      expect(platform.last!.eases, isEmpty);
+      mapNode.dispose();
+      nextNode.dispose();
+    });
+
+    // On a TV the arrows belong to directional focus traversal; stealing them
+    // strands the user on the map.
+    testWidgets('directional navigation keeps its arrows', (tester) async {
+      final (controller, node) = await pumpFocused(
+        tester,
+        navigationMode: NavigationMode.directional,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(controller.eases, isEmpty);
+
+      // Zoom still works — it is not a traversal key.
+      await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+      await tester.pumpAndSettle();
+      expect(controller.eases.single.zoom, 13.4);
+      node.dispose();
+    });
+
+    testWidgets('disabled() handles nothing', (tester) async {
+      final (controller, node) = await pumpFocused(
+        tester,
+        keyboard: const MapKeyboard.disabled(),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+      await tester.pumpAndSettle();
+      expect(controller.eases, isEmpty);
+      node.dispose();
+    });
+
+    testWidgets('rotateEnabled: false leaves shift chords alone', (
+      tester,
+    ) async {
+      final (controller, node) = await pumpFocused(
+        tester,
+        keyboard: const MapKeyboard(rotateEnabled: false),
+      );
+      await shifted(tester, LogicalKeyboardKey.arrowRight);
+      expect(controller.eases, isEmpty);
+      node.dispose();
     });
   });
 }

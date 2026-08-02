@@ -15,6 +15,7 @@ import 'attribution_bar.dart';
 import 'user_location_puck.dart';
 import 'a11y/locale.dart';
 import 'a11y/map_controls.dart';
+import 'a11y/map_keyboard.dart';
 import 'a11y/map_semantics.dart';
 import 'marker_overlay.dart';
 
@@ -50,6 +51,9 @@ class MapLibreMap extends StatefulWidget {
     this.semantics = const MapLibreSemantics(),
     this.locale = const MapLibreLocale(),
     this.controls = const MapControls(),
+    this.keyboard = const MapKeyboard(),
+    this.focusNode,
+    this.autofocus = false,
   });
 
   /// The MapLibre style, in any of three forms:
@@ -230,6 +234,20 @@ class MapLibreMap extends StatefulWidget {
   /// true for a licence condition. [MapControls.none] opts out and hands both
   /// criteria to the app.
   final MapControls controls;
+
+  /// Keyboard control of the camera — gl-js's binding table, on by default.
+  ///
+  /// Without it the map is unreachable by keyboard on every desktop tier and on
+  /// web, which is a WCAG 2.2 SC 2.1.1 (Level A) failure on its own.
+  final MapKeyboard keyboard;
+
+  /// An externally-owned focus node for the map surface, if the app wants to
+  /// drive focus itself. Omit and the widget owns one.
+  final FocusNode? focusNode;
+
+  /// Whether the map takes focus on mount. Off by default: stealing focus from
+  /// an app's own first field is worse than one extra Tab.
+  final bool autofocus;
 
   /// The strings every accessibility label, hint and action is drawn from.
   ///
@@ -599,7 +617,13 @@ class _MapLibreMapState extends State<MapLibreMap> with WidgetsBindingObserver {
           semantics: widget.semantics,
           locale: widget.locale,
           markerCount: markers.length,
-          child: content,
+          child: MapLibreMapKeyboard(
+            controller: _controller,
+            keyboard: widget.keyboard,
+            focusNode: widget.focusNode,
+            autofocus: widget.autofocus,
+            child: content,
+          ),
         );
       },
     );
