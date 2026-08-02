@@ -2,12 +2,19 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/semantics.dart'
-    show Assertiveness, CustomSemanticsAction, SemanticsBinding, SemanticsRole;
+    show
+        Assertiveness,
+        CustomSemanticsAction,
+        SemanticsBinding,
+        SemanticsProperties,
+        SemanticsRole;
 import 'package:flutter/widgets.dart';
+import 'package:maplibre_flutter_platform_interface/geojson.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
 
 import '../maplibre_map_controller.dart';
 import 'announcer.dart';
+import 'feature_semantics.dart';
 import 'formatters.dart';
 import 'locale.dart';
 
@@ -198,6 +205,7 @@ class MapLibreSemantics {
     this.hint,
     this.identifier = 'maplibre.map',
     this.value = const MapCameraSummaryValue(),
+    this.features,
     this.announcements = MapSemanticsAnnouncements.accessibilityActions,
     this.haptics = true,
     this.zoomStep = 1.0,
@@ -215,6 +223,7 @@ class MapLibreSemantics {
       hint = null,
       identifier = 'maplibre.map',
       value = const MapNoValue(),
+      features = null,
       announcements = MapSemanticsAnnouncements.never,
       haptics = false,
       zoomStep = 1.0,
@@ -241,6 +250,10 @@ class MapLibreSemantics {
 
   /// What the node speaks as its value.
   final MapSemanticsValue value;
+
+  /// Exposes the map's own rendered content as nodes. Null (the default) means
+  /// none — see [MapFeatureSemantics] for why there is no default allowlist.
+  final MapFeatureSemantics? features;
 
   /// When the map speaks unprompted. Defaults to Apple's model: only after an
   /// assistive-technology or keyboard action, never after a gesture.
@@ -275,6 +288,7 @@ class MapLibreSemantics {
         hint: hint ?? this.hint,
         identifier: identifier,
         value: value,
+        features: features,
         announcements: announcements,
         haptics: haptics,
         zoomStep: zoomStep,
@@ -331,6 +345,7 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
   /// next recompute — Apple's pending-flag model, verbatim. It is what makes a
   /// swipe-to-zoom speak while a two-finger pan stays silent.
   bool _announcePending = false;
+  List<MapSemanticFeature> _features = const <MapSemanticFeature>[];
   final List<StreamSubscription<void>> _subs = <StreamSubscription<void>>[];
   bool _refreshing = false;
 
@@ -422,13 +437,79 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
         visibleMarkerCount: widget.markerCount,
         loadState: _loadState,
       );
-      setState(() => _summary = summary);
+      final features = _queryFeatures(size);
+      setState(() {
+        _summary = summary;
+        _features = features;
+      });
       _maybeAnnounce(summary);
     } on Object {
       // A controller torn down mid-flight is not an accessibility failure.
     } finally {
       _refreshing = false;
     }
+  }
+
+  /// Queries the visible features once per settle.
+  ///
+  /// Per LAYER rather than all at once, because [QueriedFeature] carries no
+  /// layer id — the engine flattens per-layer results — and the describer needs
+  /// to know which layer matched to make sense of a schema.
+  List<MapSemanticFeature> _queryFeatures(Size size) {
+    final cfg = widget.semantics.features;
+    final projector = widget.controller.projector;
+    if (cfg == null || projector == null || size.isEmpty) {
+      return const <MapSemanticFeature>[];
+    }
+    final found = <MapSemanticFeature>[];
+    final seen = <String>{};
+    final viewport = Offset.zero & size;
+    for (final layerId in cfg.layerIds) {
+      final List<QueriedFeature> hits;
+      try {
+        hits = widget.controller.style.queryRenderedFeatures(
+          viewport,
+          layerIds: <String>[layerId],
+        );
+      } on Object {
+        continue;
+      }
+      for (final hit in hits) {
+        final described =
+            cfg.describe?.call(hit, layerId) ??
+            describeMapLibreFeature(
+              hit,
+              layerId,
+              locale: widget.locale,
+              labelProperties: cfg.labelProperties,
+            );
+        if (described == null) continue;
+        // Dedupe on the feature id where there is one, as Apple does, and fall
+        // back to (label, layer) where there is not — OpenMapTiles road
+        // segments frequently carry no id, and Apple has no fallback at all, so
+        // one road announces once per segment there.
+        final key = '${described.id ?? described.label}|$layerId';
+        if (!seen.add(key)) continue;
+        found.add(described);
+      }
+    }
+    if (found.isEmpty) return const <MapSemanticFeature>[];
+
+    // Nearest the centre first, as Apple sorts — but computed ONCE per settle
+    // and kept, not re-sorted on every element access as Apple does.
+    final centre = size.center(Offset.zero);
+    final points = <LatLng>[for (final f in found) f.point];
+    final screen = List<Offset>.filled(points.length, Offset.zero);
+    projector.project(points, screen);
+    final order = <int>[for (var i = 0; i < found.length; i++) i]
+      ..sort(
+        (a, b) => (screen[a] - centre).distanceSquared.compareTo(
+          (screen[b] - centre).distanceSquared,
+        ),
+      );
+    return <MapSemanticFeature>[
+      for (final i in order.take(cfg.maxNodes)) found[i],
+    ];
   }
 
   void _maybeAnnounce(MapSemanticsSummary summary) {
@@ -629,9 +710,85 @@ class _MapLibreMapSemanticsState extends State<MapLibreMapSemantics> {
         ): () =>
             unawaited(widget.controller.camera.resetPitch()),
       },
-      child: widget.child,
+      child: _features.isEmpty
+          ? widget.child
+          : Stack(
+              fit: StackFit.expand,
+              children: <Widget>[
+                widget.child,
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: _FeatureNodesPainter(
+                        _features,
+                        widget.controller.projector!,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
+}
+
+/// Emits one semantics node per visible feature and paints nothing.
+///
+/// `RenderCustomPaint` reconciles KEYED nodes by moving them rather than
+/// recreating them, so a feature that survives a pan keeps its `SemanticsNode`
+/// and assistive-technology focus does not jump mid-utterance. That is the same
+/// guarantee Apple's element cache buys — and the one it silently loses whenever
+/// the host app implements neither region-did-change delegate method.
+class _FeatureNodesPainter extends CustomPainter {
+  const _FeatureNodesPainter(this.features, this.projector);
+
+  final List<MapSemanticFeature> features;
+  final MapLibreMapProjector projector;
+
+  /// 44x44, not Apple's 10x10 — which is below WCAG 2.5.8's 24 and its own
+  /// platform's 44.
+  static const Size _minimumTarget = Size(44, 44);
+
+  @override
+  void paint(Canvas canvas, Size size) {}
+
+  @override
+  bool shouldRepaint(_FeatureNodesPainter old) =>
+      !identical(old.features, features);
+
+  @override
+  SemanticsBuilderCallback get semanticsBuilder => (Size size) {
+    if (features.isEmpty) return const <CustomPainterSemantics>[];
+    final points = <LatLng>[for (final f in features) f.point];
+    final screen = List<Offset>.filled(points.length, Offset.zero);
+    final visible = List<bool>.filled(points.length, true);
+    if (projector.project(points, screen, visible: visible) == 0) {
+      return const <CustomPainterSemantics>[];
+    }
+    final viewport = Offset.zero & size;
+    final out = <CustomPainterSemantics>[];
+    for (var i = 0; i < features.length; i++) {
+      if (!visible[i]) continue;
+      final rect = Rect.fromCenter(
+        center: screen[i],
+        width: _minimumTarget.width,
+        height: _minimumTarget.height,
+      );
+      if (!rect.overlaps(viewport)) continue;
+      out.add(
+        CustomPainterSemantics(
+          key: ValueKey<Object>(features[i].id ?? features[i].label),
+          rect: rect,
+          properties: SemanticsProperties(
+            label: features[i].label,
+            value: features[i].value,
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+      );
+    }
+    return out;
+  };
 }
 
 MapCamera _withZoom(MapCamera camera, double zoom) => MapCamera(

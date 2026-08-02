@@ -37,6 +37,7 @@ export 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_in
 export 'geojson.dart';
 export 'src/a11y/announcer.dart';
 export 'src/a11y/feature_list.dart';
+export 'src/a11y/feature_semantics.dart';
 export 'src/a11y/formatters.dart';
 export 'src/a11y/locale.dart';
 export 'src/a11y/map_controls.dart' hide MapLibreMapControls;
