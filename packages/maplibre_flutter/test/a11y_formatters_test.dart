@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/src/a11y/formatters.dart';
 import 'package:maplibre_flutter/src/a11y/locale.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
-    show LatLng;
+    show LatLng, MapCamera;
 
 /// These two formatters are where a sign flip goes unnoticed, so every
 /// assertion here is against an ABSOLUTE direction from an ASYMMETRIC fixture —
@@ -147,6 +147,35 @@ void main() {
         formatCoordinate(const LatLng(60.17, 24.94), locale: locale),
         contains('pohjoista'),
       );
+    });
+  });
+
+  group('describeCamera', () {
+    test('names where the map is, how close, and who to credit', () {
+      final alt = describeCamera(
+        const MapCamera(center: LatLng(60.17, 24.94), zoom: 12.4),
+        attribution: '© OpenStreetMap contributors',
+      );
+      // Absolute hemispheres, not a round trip.
+      expect(alt, contains('north'));
+      expect(alt, contains('east'));
+      expect(alt, contains('Zoom 12.'));
+      // Licence condition and SC 1.1.1 discharged by the same string.
+      expect(alt, contains('© OpenStreetMap contributors'));
+    });
+
+    test('a turned camera says which way it faces', () {
+      final alt = describeCamera(
+        const MapCamera(center: LatLng(0, 0), zoom: 3, bearing: 90),
+      );
+      expect(alt, contains('Facing east.'));
+    });
+
+    test('a north-up camera does not', () {
+      final alt = describeCamera(
+        const MapCamera(center: LatLng(0, 0), zoom: 3),
+      );
+      expect(alt, isNot(contains('Facing')));
     });
   });
 }

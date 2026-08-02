@@ -1,5 +1,5 @@
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
-    show LatLng;
+    show LatLng, MapCamera;
 
 import 'locale.dart';
 
@@ -169,4 +169,56 @@ String _formatDegrees(
 double _wrap(double value, double min, double max) {
   final range = max - min;
   return ((value - min) % range + range) % range + min;
+}
+
+/// Alt text for a still image of the map at [camera].
+///
+/// **A snapshot is the most common real-world map-accessibility failure**: an
+/// image of a map in a share card, a list tile, an export or a PDF, with no text
+/// alternative at all. It is also the easiest to fix, because the camera and the
+/// style are both known at the moment the image is made — and it is the one case
+/// [MapLibreFeatureList] cannot reach, since that binds to a live controller and
+/// a snapshot has none.
+///
+/// Apple's `MLNMapSnapshot` carries `attributionInfos` for the same reason. Pass
+/// [attribution] and the credit is part of the alt text, which discharges the
+/// licence condition and SC 1.1.1 in one string.
+///
+/// ```dart
+/// final image = await snapshotter.takeImage(...);
+/// Image(
+///   image: ...,
+///   semanticLabel: describeCamera(camera, attribution: '© OpenStreetMap'),
+/// );
+/// ```
+String describeCamera(
+  MapCamera camera, {
+  String? attribution,
+  MapLibreLocale locale = const MapLibreLocale(),
+}) {
+  final facts = <String>[
+    locale.getUIString(
+      'Map.ValueCenter',
+      args: <String, Object?>{
+        'coordinate': formatCoordinate(
+          camera.center,
+          zoom: camera.zoom,
+          locale: locale,
+        ),
+      },
+    ),
+    locale.getUIString(
+      'Map.ValueZoom',
+      args: <String, Object?>{'zoom': camera.zoom.round()},
+    ),
+    if (camera.bearing % 360 != 0)
+      locale.getUIString(
+        'Map.ValueBearing',
+        args: <String, Object?>{
+          'direction': compassDirectionName(camera.bearing, locale: locale),
+        },
+      ),
+    if (attribution != null && attribution.isNotEmpty) attribution,
+  ];
+  return facts.join(' ');
 }
