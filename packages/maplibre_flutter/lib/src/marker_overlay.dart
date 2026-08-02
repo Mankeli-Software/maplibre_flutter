@@ -1,9 +1,11 @@
 import 'package:flutter/scheduler.dart' show SchedulerBinding, Ticker;
-import 'package:flutter/semantics.dart' show SemanticsBinding;
+import 'package:flutter/semantics.dart'
+    show CustomSemanticsAction, SemanticsBinding;
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart'
     show LatLng, MapLibreMapProjector;
 
+import 'a11y/locale.dart';
 import 'marker.dart';
 
 /// Composites [markers] above the map, each glued to its geographic point.
@@ -24,10 +26,14 @@ class MarkerOverlay extends StatefulWidget {
     super.key,
     required this.projector,
     required this.markers,
+    this.locale = const MapLibreLocale(),
   });
 
   final MapLibreMapProjector projector;
   final List<MapLibreMarker> markers;
+
+  /// Strings for the marker hint and the assistive-technology nudge actions.
+  final MapLibreLocale locale;
 
   @override
   State<MarkerOverlay> createState() => _MarkerOverlayState();
@@ -202,6 +208,20 @@ class _MarkerOverlayState extends State<MarkerOverlay>
     );
   }
 
+  /// Moves a draggable marker by [delta] logical pixels and reports it exactly
+  /// as a pointer drag would, so an app needs no second code path.
+  void _nudge(int i, Offset delta) {
+    final marker = widget.markers[i];
+    if (!marker.draggable) return;
+    final from = _projectOne(marker.point);
+    marker.onDragStart?.call(marker.point);
+    final to = widget.projector.unproject(from + delta);
+    if (to == null) return;
+    marker
+      ..onDragUpdate?.call(to)
+      ..onDragEnd?.call(to);
+  }
+
   Widget _wrap(int i, MapLibreMarker marker) {
     Widget child = marker.child;
     // Cache the child's painting in its own layer so a camera tick only moves
@@ -215,6 +235,47 @@ class _MarkerOverlayState extends State<MarkerOverlay>
         onPanUpdate: (d) => _onDragUpdate(i, d.delta),
         onPanEnd: (_) => _onDragEnd(i),
         onPanCancel: () => _onDragEnd(i),
+        child: child,
+      );
+    }
+    // A label turns the marker into ONE node. Without one the child's own tree
+    // is left exactly as the app built it — gl-js's stated boundary for custom
+    // marker elements, and not-wrapping is a stronger guarantee than
+    // not-clobbering.
+    if (marker.semanticLabel case final label?) {
+      final locale = widget.locale;
+      child = Semantics(
+        container: true,
+        label: label,
+        value: marker.semanticValue,
+        hint: marker.onTap == null
+            ? marker.semanticHint
+            : marker.semanticHint ?? locale.getUIString('ANNOTATION_A11Y_HINT'),
+        button: marker.onTap != null,
+        onTap: marker.onTap,
+        // The SC 2.5.7 discharge: a path-free way to move a draggable marker.
+        // Screen y grows downward, so "north" is a NEGATIVE dy here — this is a
+        // screen-space nudge, not the finger delta panBy takes.
+        customSemanticsActions: marker.draggable
+            ? <CustomSemanticsAction, VoidCallback>{
+                CustomSemanticsAction(
+                  label: locale.getUIString('Action.PanNorth'),
+                ): () =>
+                    _nudge(i, Offset(0, -marker.keyboardStep)),
+                CustomSemanticsAction(
+                  label: locale.getUIString('Action.PanSouth'),
+                ): () =>
+                    _nudge(i, Offset(0, marker.keyboardStep)),
+                CustomSemanticsAction(
+                  label: locale.getUIString('Action.PanEast'),
+                ): () =>
+                    _nudge(i, Offset(marker.keyboardStep, 0)),
+                CustomSemanticsAction(
+                  label: locale.getUIString('Action.PanWest'),
+                ): () =>
+                    _nudge(i, Offset(-marker.keyboardStep, 0)),
+              }
+            : null,
         child: child,
       );
     }

@@ -1,4 +1,6 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter/semantics.dart'
+    show CustomSemanticsAction, SemanticsAction;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maplibre_flutter/src/attribution_bar.dart';
 import 'package:maplibre_flutter/src/marker.dart';
@@ -284,6 +286,129 @@ void main() {
 
       expect(find.semantics.byLabel('steady').evaluate().single.id, before);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('marker semantics', () {
+    Future<_FakeProjector> pumpMarkers(
+      WidgetTester tester,
+      List<MapLibreMarker> markers,
+    ) async {
+      final projector = _FakeProjector();
+      await tester.pumpWidget(
+        _app(
+          Center(
+            child: SizedBox(
+              width: 200,
+              height: 200,
+              child: MarkerOverlay(projector: projector, markers: markers),
+            ),
+          ),
+        ),
+      );
+      await _settle(tester);
+      return projector;
+    }
+
+    // gl-js's stated boundary for custom marker elements, and not-wrapping is a
+    // stronger guarantee in Flutter than not-clobbering is in the DOM.
+    testWidgets('without a label the child tree is left exactly alone', (
+      tester,
+    ) async {
+      await pumpMarkers(tester, const <MapLibreMarker>[
+        MapLibreMarker(point: LatLng(0, 0), child: Text('the app said this')),
+      ]);
+      expect(find.semantics.byLabel('the app said this'), findsOne);
+    });
+
+    testWidgets('a label makes the marker one activatable node', (
+      tester,
+    ) async {
+      var taps = 0;
+      await pumpMarkers(tester, <MapLibreMarker>[
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          semanticLabel: 'Helsinki Cathedral',
+          semanticValue: 'Landmark',
+          onTap: () => taps++,
+          child: const SizedBox(width: 20, height: 20),
+        ),
+      ]);
+
+      expect(
+        find.semantics.byLabel('Helsinki Cathedral').evaluate().single,
+        isSemantics(
+          label: 'Helsinki Cathedral',
+          value: 'Landmark',
+          // Apple's ANNOTATION_A11Y_HINT, applied because onTap is given.
+          hint: 'Shows more info',
+          isButton: true,
+          hasTapAction: true,
+        ),
+      );
+
+      tester.semantics.tap(find.semantics.byLabel('Helsinki Cathedral'));
+      expect(taps, 1);
+    });
+
+    // SC 2.5.7: a path-free way to move a marker. Screen y grows downward, so
+    // "north" is a NEGATIVE dy in this screen-space nudge — the opposite sign
+    // from panBy, which takes a finger delta.
+    testWidgets('a draggable marker can be moved without dragging', (
+      tester,
+    ) async {
+      LatLng? ended;
+      final starts = <LatLng>[];
+      await pumpMarkers(tester, <MapLibreMarker>[
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          semanticLabel: 'Pin',
+          draggable: true,
+          onDragStart: starts.add,
+          onDragEnd: (p) => ended = p,
+          child: const SizedBox(width: 20, height: 20),
+        ),
+      ]);
+
+      final node = find.semantics.byLabel('Pin').evaluate().single;
+      final action = node
+          .getSemanticsData()
+          .customSemanticsActionIds!
+          .map(CustomSemanticsAction.getAction)
+          .firstWhere((a) => a!.label == 'Pan north')!;
+      tester.semantics.performAction(
+        find.semantics.byLabel('Pin'),
+        SemanticsAction.customAction,
+        args: CustomSemanticsAction.getIdentifier(action),
+      );
+      await tester.pumpAndSettle();
+
+      // The SAME callback sequence a pointer drag fires, so an app needs no
+      // second code path.
+      expect(starts, hasLength(1));
+      expect(ended, isNotNull);
+      expect(ended!.latitude, greaterThan(0));
+    });
+
+    testWidgets('a marker that cannot be dragged offers no nudge', (
+      tester,
+    ) async {
+      await pumpMarkers(tester, const <MapLibreMarker>[
+        MapLibreMarker(
+          point: LatLng(0, 0),
+          semanticLabel: 'Fixed',
+          child: SizedBox(width: 20, height: 20),
+        ),
+      ]);
+      expect(
+        find.semantics
+            .byLabel('Fixed')
+            .evaluate()
+            .single
+            .getSemanticsData()
+            .customSemanticsActionIds,
+        anyOf(isNull, isEmpty),
+      );
     });
   });
 }

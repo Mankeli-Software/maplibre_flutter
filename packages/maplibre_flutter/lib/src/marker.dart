@@ -26,10 +26,50 @@ class MapLibreMarker {
     this.onDragEnd,
     this.key,
     this.repaintBoundary = false,
+    this.semanticLabel,
+    this.semanticValue,
+    this.semanticHint,
+    this.onTap,
+    this.keyboardStep = 20,
   });
 
   /// The geographic point the marker is anchored to.
   final LatLng point;
+
+  /// What a screen reader calls this marker — Apple `MLNAnnotation.title`.
+  ///
+  /// **Null leaves the child's own semantics completely alone**, which is
+  /// deliberate and is maplibre-gl-js's stated boundary for custom marker
+  /// elements: *"it's up to the user to handle it"*. Not-wrapping is a stronger
+  /// guarantee in Flutter than not-clobbering is in the DOM — an app whose
+  /// marker child is already a labelled `IconButton` keeps exactly the tree it
+  /// built.
+  ///
+  /// Supply it and the marker becomes one labelled node instead, which is what
+  /// makes a pin made of bare `CustomPaint` reachable at all.
+  final String? semanticLabel;
+
+  /// Extra detail read after the label — Apple `MLNAnnotation.subtitle`.
+  final String? semanticValue;
+
+  /// What activating it does. Defaults to Apple's `ANNOTATION_A11Y_HINT`
+  /// ("Shows more info") when [onTap] is given.
+  final String? semanticHint;
+
+  /// Called when the marker is activated, by tap or by assistive technology.
+  ///
+  /// Distinct from a `GestureDetector` inside [child]: this one is also what
+  /// VoiceOver, TalkBack and a keyboard reach.
+  final VoidCallback? onTap;
+
+  /// Logical pixels a [draggable] marker moves per assistive-technology nudge.
+  ///
+  /// This is the SC 2.5.7 (Dragging Movements) discharge for markers: without
+  /// it the only way to move one is a path-based drag, which is exactly what
+  /// that criterion forbids as the sole mechanism. The nudge fires the same
+  /// [onDragStart]/[onDragUpdate]/[onDragEnd] sequence a pointer drag does, so
+  /// an app needs no second code path.
+  final double keyboardStep;
 
   /// The widget drawn at [point].
   final Widget child;

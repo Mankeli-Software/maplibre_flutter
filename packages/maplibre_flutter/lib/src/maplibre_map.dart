@@ -556,6 +556,7 @@ class _MapLibreMapState extends State<MapLibreMap> with WidgetsBindingObserver {
         final markers = _markersWithPuck(context);
         final embed = _MapEmbed(
           controller: _controller,
+          locale: widget.locale,
           markers: markers,
           onTap: widget.onTap,
           rotateGesturesEnabled: widget.rotateGesturesEnabled,
@@ -635,6 +636,7 @@ class _MapLibreMapState extends State<MapLibreMap> with WidgetsBindingObserver {
 class _MapEmbed extends StatelessWidget {
   const _MapEmbed({
     required this.controller,
+    required this.locale,
     this.markers = const <MapLibreMarker>[],
     this.onTap,
     this.rotateGesturesEnabled = true,
@@ -642,6 +644,7 @@ class _MapEmbed extends StatelessWidget {
   });
 
   final MapLibreMapController controller;
+  final MapLibreLocale locale;
   final List<MapLibreMarker> markers;
   final ValueChanged<MapTapEvent>? onTap;
   final bool rotateGesturesEnabled;
@@ -704,7 +707,11 @@ class _MapEmbed extends StatelessWidget {
       children: [
         map,
         Positioned.fill(
-          child: MarkerOverlay(projector: projector, markers: markers),
+          child: MarkerOverlay(
+            projector: projector,
+            markers: markers,
+            locale: locale,
+          ),
         ),
       ],
     );
