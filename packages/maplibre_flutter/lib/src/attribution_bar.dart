@@ -34,9 +34,15 @@ class MapLibreAttributionBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (attributions.isEmpty) return const SizedBox.shrink();
-    final style = DefaultTextStyle.of(
-      context,
-    ).style.copyWith(fontSize: 10, color: const Color(0xDD000000));
+    // Under high contrast the credit goes fully opaque and black-on-white.
+    // The translucent default composites over whatever the map happens to be
+    // showing, so its measured ratio is a property of the TILES rather than of
+    // this widget — which is exactly why it cannot be relied on to pass 1.4.3.
+    final highContrast = MediaQuery.highContrastOf(context);
+    final style = DefaultTextStyle.of(context).style.copyWith(
+      fontSize: 10,
+      color: highContrast ? const Color(0xFF000000) : const Color(0xDD000000),
+    );
     return Align(
       alignment: alignment,
       child: Padding(
@@ -50,8 +56,13 @@ class MapLibreAttributionBar extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: const Color(0xCCFFFFFF),
+              color: highContrast
+                  ? const Color(0xFFFFFFFF)
+                  : const Color(0xCCFFFFFF),
               borderRadius: BorderRadius.circular(3),
+              border: highContrast
+                  ? Border.all(color: const Color(0xFF000000))
+                  : null,
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
