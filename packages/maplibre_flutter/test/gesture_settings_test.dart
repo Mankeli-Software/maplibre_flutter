@@ -36,6 +36,7 @@ class _RecordingController extends _FakeController
     implements
         MapLibreGestureHandler,
         MapLibreRotateHandler,
+        MapLibreCameraCommands,
         MapLibreMapProjector {
   final List<Offset> moves = <Offset>[];
   final List<double> scales = <double>[];
@@ -52,6 +53,22 @@ class _RecordingController extends _FakeController
       rotations.add(degrees);
   @override
   void pitchBy(double degrees) => pitches.add(degrees);
+
+  /// Every eased camera the double tap asked for.
+  final List<CameraOptions> eases = <CameraOptions>[];
+
+  @override
+  Future<void> easeTo(
+    CameraOptions camera, {
+    CameraAnimation? animation,
+  }) async => eases.add(camera);
+
+  @override
+  Future<MapCamera> getCamera() async =>
+      const MapCamera(center: LatLng(0, 0), zoom: 4.5);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   static const _degreesPerPixel = 0.01;
 
@@ -110,6 +127,15 @@ Future<_RecordingController> _pumpMap(
   return platform.last!;
 }
 
+/// A single move then release — deliberately the MINIMAL drag.
+///
+/// It is the shape that breaks if a recogniser is ever added to the map's
+/// gesture arena: with a DoubleTapGestureRecognizer alongside the scale one,
+/// the scale recogniser has not been declared the winner when the pointer goes
+/// up, Flutter does not replay the move, and the map does not pan. Real drags
+/// produce a move per frame so it never shows on a device — which is exactly
+/// what makes it the kind of gesture regression that ships. Keeping the helper
+/// minimal is what makes this file notice.
 Future<void> _dragAcross(WidgetTester tester) async {
   final gesture = await tester.startGesture(const Offset(400, 300));
   await gesture.moveBy(const Offset(-60, 0));
@@ -302,6 +328,81 @@ void main() {
       await tester.pumpAndSettle();
       final widget = tester.widget<MapLibreMap>(find.byType(MapLibreMap));
       expect(widget.effectiveGestures.rotateGesturesEnabled, isFalse);
+    });
+  });
+
+  group('double-tap zoom', () {
+    Future<void> doubleTapAt(WidgetTester tester, Offset at) async {
+      await tester.tapAt(at);
+      await tester.pump(kDoubleTapMinTime);
+      await tester.tapAt(at);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('zooms in one level ABOUT THE TAPPED POINT', (tester) async {
+      final map = await _pumpMap(tester);
+      await doubleTapAt(tester, const Offset(200, 150));
+
+      expect(map.eases, hasLength(1));
+      final eased = map.eases.single;
+      expect(eased.zoom, 5.5, reason: 'one level above the current 4.5');
+
+      // The assertion that matters, and the one a centre-anchored test could
+      // never make: mbgl DISCARDS CameraOptions.anchor whenever center is set
+      // (CLAUDE.md §11), so an implementation that read the camera and eased to
+      // a full one would zoom about the middle of the screen instead. The
+      // anchor must be the tap, and the centre must be absent.
+      expect(eased.anchor, const Offset(200, 150));
+      expect(
+        eased.center,
+        isNull,
+        reason: 'a centre would silently void the anchor',
+      );
+    });
+
+    testWidgets('doubleTapZoomEnabled: false stops it', (tester) async {
+      final map = await _pumpMap(
+        tester,
+        gestures: const MapGestureSettings(doubleTapZoomEnabled: false),
+      );
+      await doubleTapAt(tester, const Offset(200, 150));
+      expect(map.eases, isEmpty);
+    });
+
+    testWidgets('zoomGesturesEnabled: false stops it too', (tester) async {
+      // Android gates the gesture on both toggles; a map that "does not zoom"
+      // must not zoom on a double tap either.
+      final map = await _pumpMap(
+        tester,
+        gestures: const MapGestureSettings(zoomGesturesEnabled: false),
+      );
+      await doubleTapAt(tester, const Offset(200, 150));
+      expect(map.eases, isEmpty);
+    });
+
+    testWidgets('interactive: false stops it', (tester) async {
+      final map = await _pumpMap(tester, gestures: MapGestureSettings.none);
+      await doubleTapAt(tester, const Offset(200, 150));
+      expect(map.eases, isEmpty);
+    });
+
+    testWidgets('a single tap does not zoom', (tester) async {
+      // The double-tap recogniser shares an arena with the scale one, so the
+      // risk is either eating a plain tap or never firing at all.
+      final taps = <MapTapEvent>[];
+      final map = await _pumpMap(tester, taps: taps);
+      await tester.tapAt(const Offset(200, 150));
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+
+      expect(map.eases, isEmpty);
+      expect(taps, hasLength(1), reason: 'and the tap still reaches the app');
+    });
+
+    testWidgets('a drag does not zoom', (tester) async {
+      final map = await _pumpMap(tester);
+      await _dragAcross(tester);
+      expect(map.eases, isEmpty);
+      expect(map.moves, isNotEmpty);
     });
   });
 }

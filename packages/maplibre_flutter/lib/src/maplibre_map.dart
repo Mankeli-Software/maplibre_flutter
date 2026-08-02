@@ -714,6 +714,7 @@ class _TextureMapViewState extends State<_TextureMapView> {
         if (widget.gestures.interactive && handler != null) {
           map = _DesktopMapGestures(
             handler: handler,
+            onDoubleTapZoom: widget.controller.zoomInAbout,
             onCameraMove: widget.controller.reportCameraMove,
             // Null on a tier without the capability, which simply means no
             // rotate or tilt — pan and zoom are unaffected.
@@ -832,12 +833,21 @@ class _DesktopMapGestures extends StatefulWidget {
     required this.child,
     this.rotator,
     this.gestures = const MapGestureSettings(),
+    this.onDoubleTapZoom,
     this.onCameraMove,
   });
 
   final MapLibreGestureHandler handler;
   final MapLibreRotateHandler? rotator;
   final MapGestureSettings gestures;
+
+  /// Zooms in one level about a point, animated. Null on a tier without the
+  /// camera-command capability, which simply means no double-tap zoom.
+  ///
+  /// Deliberately a callback rather than the capability itself: the anchored
+  /// ease belongs to the camera, and this layer knowing how to drive one would
+  /// put camera policy in the gesture recogniser.
+  final Future<void> Function(Offset anchor)? onDoubleTapZoom;
 
   /// Reports the start and end of a user-driven camera change, and WHY.
   ///
@@ -1182,6 +1192,42 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   // means. Recognising it and doing nothing keeps the map opaque to input.
   bool get _panAllowed => widget.gestures.scrollGesturesEnabled;
   bool get _zoomAllowed => widget.gestures.zoomGesturesEnabled;
+
+  /// Both toggles, following Android — Apple gates double-tap on its single
+  /// zoom toggle, but a double tap is the gesture most likely to collide with
+  /// an app's own, so it gets its own switch.
+  bool get _doubleTapEnabled =>
+      widget.onDoubleTapZoom != null &&
+      _zoomAllowed &&
+      widget.gestures.doubleTapZoomEnabled;
+
+  // Double-tap state, tracked on the RAW LISTENER rather than through a
+  // DoubleTapGestureRecognizer.
+  //
+  // Putting one in the GestureDetector alongside onScaleStart/Update works, and
+  // costs something this codebase has already paid for once: with both in the
+  // arena, a drag made of a SINGLE move event followed by release stops panning,
+  // because the scale recogniser has not been declared the winner when the
+  // pointer goes up and Flutter does not replay the move. Real drags produce a
+  // move per frame so it does not show on a device — which is exactly what makes
+  // it the kind of gesture regression that ships (CLAUDE.md §11). Recognising it
+  // here perturbs no arena at all.
+  Offset? _tapDownPos;
+  int _tapDownUs = 0;
+  Offset? _lastTapPos;
+  int _lastTapUs = 0;
+  bool _tapMoved = false;
+
+  static const int _kDoubleTapWindowUs = 300000; // Flutter's kDoubleTapTimeout
+  static const double _kTapSlop = 18; // kDoubleTapTouchSlop
+
+  void _onDoubleTap(Offset anchor) {
+    // Inertia from a preceding pan would fight the ease and land somewhere
+    // neither asked for.
+    _stopInertia();
+    _reportReason(MapCameraChangeReason.gestureZoomIn);
+    unawaited(widget.onDoubleTapZoom!(anchor).whenComplete(_endReasons));
+  }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
     // A secondary-button / ctrl drag is handled entirely on the raw Listener
@@ -1617,6 +1663,16 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   void _onPointerDown(PointerDownEvent e) {
     _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
+    // One finger only: a second pointer means a pinch, and a pinch that happens
+    // to start twice quickly is not a double tap.
+    if (_pointers.length == 1) {
+      _tapDownPos = e.localPosition;
+      _tapDownUs = _clock.elapsedMicroseconds;
+      _tapMoved = false;
+    } else {
+      _tapDownPos = null;
+      _lastTapPos = null;
+    }
     if (_dragRotatePointer == null && _isRotateDrag(e)) {
       _dragRotatePointer = e.pointer;
       _dragRotateLast = e.localPosition;
@@ -1627,6 +1683,10 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   void _onPointerMove(PointerMoveEvent e) {
     _pointers[e.pointer] = e.localPosition;
     _lastPointerPos = e.localPosition;
+    final downAt = _tapDownPos;
+    if (downAt != null && (e.localPosition - downAt).distance > _kTapSlop) {
+      _tapMoved = true; // a drag, not a tap
+    }
 
     if (e.pointer == _dragRotatePointer) {
       final rotator = widget.rotator;
@@ -1656,10 +1716,41 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       _dragRotatePointer = null;
       _endReasons(); // the secondary-drag rotate ends with its own pointer
     }
+    _settleTap(e.localPosition);
+  }
+
+  /// Completes a tap, and fires the zoom when it is the second of a pair.
+  ///
+  /// A tap counts only if the pointer never travelled past the slop and no
+  /// other finger was down — so a pinch, a pan and a rotate drag can none of
+  /// them become one, however quickly they are repeated.
+  void _settleTap(Offset at) {
+    final downAt = _tapDownPos;
+    _tapDownPos = null;
+    if (downAt == null || _tapMoved || _dragRotatePointer != null) {
+      _lastTapPos = null;
+      return;
+    }
+    final nowUs = _clock.elapsedMicroseconds;
+    final previous = _lastTapPos;
+    if (previous != null &&
+        nowUs - _lastTapUs <= _kDoubleTapWindowUs &&
+        (at - previous).distance <= _kTapSlop) {
+      _lastTapPos = null; // a triple tap is two gestures, not three
+      if (_doubleTapEnabled) _onDoubleTap(at);
+      return;
+    }
+    _lastTapPos = at;
+    _lastTapUs = nowUs;
+    // Silences the unused-field warning while keeping the down time recorded:
+    // it is what a future long-press recogniser will read.
+    assert(_tapDownUs >= 0);
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
     _pointers.remove(e.pointer);
+    _tapDownPos = null;
+    _lastTapPos = null;
     if (e.pointer == _dragRotatePointer) {
       _dragRotatePointer = null;
       _endReasons();

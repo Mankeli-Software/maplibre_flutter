@@ -541,6 +541,31 @@ class MapLibreMapController {
     }
   }
 
+  /// Zooms in one level about a screen point, animated — what a double tap
+  /// does.
+  ///
+  /// `@internal` because the gesture layer is its caller; an app wanting this
+  /// has `camera.easeTo(CameraOptions(zoom: …, anchor: …))`, which is what this
+  /// is.
+  ///
+  /// **The anchor survives only because no centre is set.** mbgl discards
+  /// `CameraOptions::anchor` whenever `center` is present (CLAUDE.md §11), so
+  /// reading the camera and easing to a full one would zoom about the middle of
+  /// the screen instead of the tapped point — and a test anchored on the centre
+  /// could never tell the difference.
+  ///
+  /// 300 ms and one zoom level, which is what Apple, Android and gl-js all use.
+  /// Unlike Apple this does not round to an integer zoom: gl-js and Android do
+  /// not, and rounding makes the first double tap on a fractional zoom travel a
+  /// different distance from every one after it.
+  @internal
+  Future<void> zoomInAbout(Offset anchor) async {
+    final camera = await this.camera.getCamera();
+    await this.camera.easeTo(
+      CameraOptions(zoom: camera.zoom + 1, anchor: anchor),
+    );
+  }
+
   /// The map as it is on screen right now, as raw RGBA pixels — a screenshot.
   ///
   /// Null before the first frame, and null on a tier that cannot do it (the web

@@ -12,8 +12,8 @@ import 'package:flutter/foundation.dart';
 /// `maplibre_gl` have both already converged on `…GesturesEnabled`.
 ///
 /// **Only gestures that actually exist are listed here.** There is deliberately
-/// no `doubleTapZoomEnabled` or `quickZoomEnabled`: neither gesture is
-/// implemented yet, and a toggle for a gesture that never fires is worse than
+/// no `quickZoomEnabled` (the one-finger double-tap-hold-drag): the gesture is
+/// not implemented, and a toggle for a gesture that never fires is worse than
 /// its absence — it reads as a feature and silently does nothing.
 @immutable
 class MapGestureSettings {
@@ -23,6 +23,7 @@ class MapGestureSettings {
     this.zoomGesturesEnabled = true,
     this.rotateGesturesEnabled = true,
     this.tiltGesturesEnabled = true,
+    this.doubleTapZoomEnabled = true,
   });
 
   /// Nothing at all: a map the user cannot pan, zoom, rotate or tilt.
@@ -66,18 +67,28 @@ class MapGestureSettings {
   /// The engine clamps pitch to 0..60 degrees regardless.
   final bool tiltGesturesEnabled;
 
+  /// Whether a double tap zooms in one level about the tapped point.
+  ///
+  /// Separate from [zoomGesturesEnabled], following Android, which gates the
+  /// gesture on both. Apple has only the one toggle; the finer control is worth
+  /// the divergence because a double tap is the gesture most likely to fight an
+  /// app's own — a map inside a gallery where double tap means something else.
+  final bool doubleTapZoomEnabled;
+
   MapGestureSettings copyWith({
     bool? interactive,
     bool? scrollGesturesEnabled,
     bool? zoomGesturesEnabled,
     bool? rotateGesturesEnabled,
     bool? tiltGesturesEnabled,
+    bool? doubleTapZoomEnabled,
   }) => MapGestureSettings(
     interactive: interactive ?? this.interactive,
     scrollGesturesEnabled: scrollGesturesEnabled ?? this.scrollGesturesEnabled,
     zoomGesturesEnabled: zoomGesturesEnabled ?? this.zoomGesturesEnabled,
     rotateGesturesEnabled: rotateGesturesEnabled ?? this.rotateGesturesEnabled,
     tiltGesturesEnabled: tiltGesturesEnabled ?? this.tiltGesturesEnabled,
+    doubleTapZoomEnabled: doubleTapZoomEnabled ?? this.doubleTapZoomEnabled,
   );
 
   @override
@@ -88,7 +99,8 @@ class MapGestureSettings {
           other.scrollGesturesEnabled == scrollGesturesEnabled &&
           other.zoomGesturesEnabled == zoomGesturesEnabled &&
           other.rotateGesturesEnabled == rotateGesturesEnabled &&
-          other.tiltGesturesEnabled == tiltGesturesEnabled;
+          other.tiltGesturesEnabled == tiltGesturesEnabled &&
+          other.doubleTapZoomEnabled == doubleTapZoomEnabled;
 
   @override
   int get hashCode => Object.hash(
@@ -97,11 +109,13 @@ class MapGestureSettings {
     zoomGesturesEnabled,
     rotateGesturesEnabled,
     tiltGesturesEnabled,
+    doubleTapZoomEnabled,
   );
 
   @override
   String toString() =>
       'MapGestureSettings(interactive: $interactive, '
       'scroll: $scrollGesturesEnabled, zoom: $zoomGesturesEnabled, '
-      'rotate: $rotateGesturesEnabled, tilt: $tiltGesturesEnabled)';
+      'rotate: $rotateGesturesEnabled, tilt: $tiltGesturesEnabled, '
+      'doubleTapZoom: $doubleTapZoomEnabled)';
 }
