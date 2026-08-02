@@ -649,6 +649,20 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - **`createTicker()` does an inherited-widget lookup**, so a lazy `late final _ticker = …`
   constructs it inside `dispose()` when it never ran, asserting on a deactivated element. Create
   tickers in `initState`.
+- **`await subscription.cancel()` inside `testWidgets` poisons the fake-async zone.** After it, every
+  later `await` in that test hangs forever — including `await Future.value()`, `tester.pump()` and
+  `await controller.dispose()` — and the test dies on the 10-minute timeout with a stack pointing at
+  whatever it happened to be awaiting. Reproduced with **zero plugin code**: a bare
+  `StreamController.broadcast()`, one `listen`, `await cancel()`, then `await Future<void>.value()`.
+  Identical code in a plain `test()` completes instantly, which is what makes it read as a product
+  bug. It cost most of a session and was twice mis-attributed — first to `controller.dispose()`,
+  then to `StreamController.close()`; neither is involved. **Write `unawaited(sub.cancel())` in
+  widget tests**, or cancel after the last `await`. Verified on Flutter 3.44.2; retest before
+  blaming plugin code for a mystery hang.
+- **A timed-out `testWidgets` poisons the rest of its FILE.** The unfinished guarded call makes every
+  subsequent test fail with "Guarded function conflict", so results after the first timeout are
+  noise. Re-run a suspect test in isolation before believing a cascade — and put a warm-up test
+  first, because the first test in a file also absorbs compile latency and looks like a hang.
 - **`RenderRepaintBoundary.toImage()` waits on a real raster-pipeline callback** that
   `flutter_test`'s fake async never delivers. Rasterizer tests **must** use `tester.runAsync` or
   they hang to the 10-minute timeout.

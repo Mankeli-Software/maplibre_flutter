@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/semantics.dart'
@@ -572,11 +574,15 @@ void main() {
       controller.dispose();
     });
 
-    // The bookends must complete identically in both modes, or an app's state
+    // The bookends must fire identically in both modes, or an app's state
     // machine diverges between a reduced-motion user and everyone else. That is
     // exactly why easeTo is CLAMPED to zero rather than skipped.
+    //
+    // Note `unawaited(sub.cancel())`: awaiting a cancel inside testWidgets
+    // strands the fake-async zone and every later await hangs forever. See
+    // test/controller_dispose_test.dart and CLAUDE.md §11.
     for (final reduced in <bool>[true, false]) {
-      testWidgets('a move still starts and ends with reduceMotion=$reduced', (
+      testWidgets('a move starts and ends the same with reduceMotion=$reduced', (
         tester,
       ) async {
         final controller = MapLibreMapController();
@@ -585,16 +591,24 @@ void main() {
           disableAnimations: reduced,
           controller: controller,
         );
-        expect(controller.isMoving, isFalse);
+        final starts = <Set<MapCameraChangeReason>>[];
+        final ends = <Set<MapCameraChangeReason>>[];
+        final a = controller.onCameraMoveStart.listen(starts.add);
+        final b = controller.onCameraMoveEnd.listen(ends.add);
 
         await controller.camera.flyTo(const CameraOptions(zoom: 9));
         await tester.pumpAndSettle();
 
+        expect(starts, hasLength(1));
+        expect(ends, hasLength(1));
+        expect(starts.single, contains(MapCameraChangeReason.programmatic));
         // Exactly one command either way — reduce motion changes WHICH command,
         // never how many.
         expect(fake.jumps.length + fake.flies.length, 1);
-        // `_reported` fired its end bookend, so the camera is not stuck moving.
         expect(controller.isMoving, isFalse);
+
+        unawaited(a.cancel());
+        unawaited(b.cancel());
       });
     }
   });
