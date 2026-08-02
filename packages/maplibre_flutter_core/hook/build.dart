@@ -365,6 +365,35 @@ const _submodulePatches = [
     marker: 'MBL_OFFLINE_NULL_GUARDS',
     patch: 'patches/offline-download-null-guards.patch',
   ),
+  // Let the embedder add HTTP request headers, scoped by URL prefix — the only
+  // way to authenticate to a provider that wants an `Authorization` header
+  // rather than a query parameter, which is most enterprise deployments.
+  //
+  // mbgl has no hook for this: `ResourceTransform` (the one request-time
+  // callback it does have) hands back a URL string and nothing else, so headers
+  // are simply not expressible through it. Each platform's HTTP source has to
+  // ask, so this is the same three-line change in each — appended LAST in the
+  // request builder so an embedder cannot clobber the conditional-GET headers
+  // mbgl sets for caching.
+  //
+  // Both files call `mbl_http_headers_for_url`, declared `extern "C"` locally
+  // rather than by including our header, so mbgl gains no include dependency on
+  // the embedder — only a link-time one, and only for the arms that use these
+  // sources. Android uses our own HTTP source and needs no patch; it reaches
+  // the same table through the JNI bridge.
+  //
+  // MUST COME AFTER windows-dns-os-resolve.patch: they touch the same curl file
+  // and this one is generated against a tree that already has it.
+  (
+    file: 'platform/default/src/mbgl/storage/http_file_source.cpp',
+    marker: 'MBL_EMBEDDER_HEADERS',
+    patch: 'patches/http-embedder-headers-curl.patch',
+  ),
+  (
+    file: 'platform/darwin/core/http_file_source.mm',
+    marker: 'MBL_EMBEDDER_HEADERS',
+    patch: 'patches/http-embedder-headers-darwin.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.

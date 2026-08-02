@@ -66,6 +66,10 @@ class MapLibreFlutterIos extends MapLibreFlutterPlatform {
   }
 
   @override
+  bool setHttpHeaders(Map<String, Map<String, String>> rulesByUrlPrefix) =>
+      MapLibreCoreSettings.setHttpHeaders(rulesByUrlPrefix);
+
+  @override
   String? get cachePath => MapLibreCoreSettings.cachePath;
 
   /// Offline regions live in the same database `cachePath` names, so the tier

@@ -39,6 +39,8 @@ using SetFrameCallbackFn = void (*)(void* map, MblFrameCallback cb, void* user);
 using MblAndroidHttpStart = void (*)(uint64_t request_id, const char* url, void* user);
 using MblAndroidHttpCancel = void (*)(uint64_t request_id, void* user);
 using SetHttpHandlerFn = void (*)(MblAndroidHttpStart, MblAndroidHttpCancel, void*);
+using HeadersForUrlFn = char* (*)(const char*);
+using StringFreeFn = void (*)(char*);
 using HttpRespondFn = void (*)(uint64_t request_id, int32_t status, const uint8_t* data,
                                size_t len, const char* etag, const char* expires);
 
@@ -51,6 +53,8 @@ JavaVM* g_vm = nullptr;
 
 // Core entry points (resolved once in nativeSetHttpHandler).
 SetHttpHandlerFn g_set_handler = nullptr;
+HeadersForUrlFn g_headers_for_url = nullptr;
+StringFreeFn g_string_free = nullptr;
 HttpRespondFn g_respond = nullptr;
 SetAndroidWindowFn g_set_window = nullptr;
 ClearAndroidWindowFn g_clear_window = nullptr;
@@ -175,9 +179,21 @@ void httpStart(uint64_t requestId, const char* url, void*) {
   JNIEnv* env = attachedEnv();
   if (env == nullptr || g_http_class == nullptr || g_http_start == nullptr) return;
   jstring jurl = env->NewStringUTF(url);
+  // Embedder headers scoped to this URL. Resolved from the core rather than
+  // threaded through MblAndroidHttpStart, so the core's HTTP contract does not
+  // grow a parameter that only this tier uses — and so the same table serves
+  // every tier.
+  jstring jheaders = nullptr;
+  if (g_headers_for_url != nullptr) {
+    if (char* lines = g_headers_for_url(url)) {
+      jheaders = env->NewStringUTF(lines);
+      if (g_string_free != nullptr) g_string_free(lines);
+    }
+  }
   env->CallStaticVoidMethod(g_http_class, g_http_start,
-                            static_cast<jlong>(requestId), jurl);
+                            static_cast<jlong>(requestId), jurl, jheaders);
   if (env->ExceptionCheck()) env->ExceptionClear();
+  if (jheaders != nullptr) env->DeleteLocalRef(jheaders);
   env->DeleteLocalRef(jurl);
 }
 
@@ -205,6 +221,11 @@ void nativeSetHttpHandler(JNIEnv* env, jobject) {
       LOGE("dlsym http symbols failed: %s", dlerror());
       return;
     }
+    // Embedder headers (optional — an older core simply sends none).
+    g_headers_for_url =
+        reinterpret_cast<HeadersForUrlFn>(dlsym(core, "mbl_http_headers_for_url"));
+    g_string_free = reinterpret_cast<StringFreeFn>(dlsym(core, "mbl_string_free"));
+
     // Zero-copy present entry points (optional — CPU present is the fallback).
     g_set_window =
         reinterpret_cast<SetAndroidWindowFn>(dlsym(core, "mbl_map_set_android_window"));
@@ -219,7 +240,8 @@ void nativeSetHttpHandler(JNIEnv* env, jobject) {
       return;
     }
     g_http_class = static_cast<jclass>(env->NewGlobalRef(local));
-    g_http_start = env->GetStaticMethodID(g_http_class, "start", "(JLjava/lang/String;)V");
+    g_http_start = env->GetStaticMethodID(
+        g_http_class, "start", "(JLjava/lang/String;Ljava/lang/String;)V");
     g_http_cancel = env->GetStaticMethodID(g_http_class, "cancel", "(J)V");
     g_set_handler(&httpStart, &httpCancel, nullptr);
     LOGI("http handler registered");

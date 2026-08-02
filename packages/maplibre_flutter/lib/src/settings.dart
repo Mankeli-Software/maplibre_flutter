@@ -66,6 +66,42 @@ abstract final class MapLibreSettings {
     tileServer: tileServer,
   );
 
+  /// Extra HTTP request headers, scoped by URL prefix — how an app
+  /// authenticates to a provider that wants an `Authorization` header rather
+  /// than a key in the query string.
+  ///
+  /// ```dart
+  /// MapLibreSettings.setHttpHeaders({
+  ///   'https://tiles.example.com/': {'Authorization': 'Bearer $token'},
+  /// });
+  /// ```
+  ///
+  /// REPLACE-ALL, which is also the whole token-rotation story: call it again
+  /// with the new value. `{}` clears. Returns false if a header name or value
+  /// is not sendable (a control character, or a `:` in a name) or the tier
+  /// cannot do it — and then **nothing changed**, because half-applied auth is
+  /// worse than a rejected change.
+  ///
+  /// **Callable at any time**, unlike [configure]. Headers are not baked into
+  /// the engine's file sources, so they are read fresh as each request is
+  /// built — which is the only way an hour-long bearer token is usable at all.
+  ///
+  /// **The URL prefix is required, and that is a deliberate divergence from
+  /// upstream.** Apple applies its headers to a whole `NSURLSession` and
+  /// Android to the whole OkHttp client, so both send your credential to every
+  /// host a style names — and a style routinely names hosts you do not own, for
+  /// sprites, glyphs, or a basemap from another vendor. Scoping is what stops
+  /// the token leaking to them. If you genuinely want every host, pass
+  /// `'https://'`: explicit, greppable, and your call.
+  ///
+  /// Matching is a case-sensitive prefix over the whole URL. Every matching
+  /// rule contributes; a later rule wins a name an earlier one also set. Your
+  /// headers are added last but never displace the engine's own — the
+  /// conditional-GET headers it uses for caching, and its `User-Agent`.
+  static bool setHttpHeaders(
+    Map<String, Map<String, String>> rulesByUrlPrefix,
+  ) => MapLibreFlutterPlatform.instance.setHttpHeaders(rulesByUrlPrefix);
+
   /// The cache path actually in force, so an app can log what it got rather
   /// than what it asked for.
   ///

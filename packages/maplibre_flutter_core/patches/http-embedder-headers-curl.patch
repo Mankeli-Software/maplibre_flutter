@@ -1,0 +1,40 @@
+diff --git a/platform/default/src/mbgl/storage/http_file_source.cpp b/platform/default/src/mbgl/storage/http_file_source.cpp
+index 8b6727307d49..2f385e301d2a 100644
+--- a/platform/default/src/mbgl/storage/http_file_source.cpp
++++ b/platform/default/src/mbgl/storage/http_file_source.cpp
+@@ -42,6 +42,10 @@ void handleError(CURLcode code) {
+ }
+ } // namespace
+ 
++// See MBL_EMBEDDER_HEADERS below. Returns a malloc'd, newline-separated list of
++// "Name: value" lines for this URL, or nullptr; the caller frees it.
++extern "C" char *mbl_http_headers_for_url(const char *url);
++
+ namespace mbgl {
+ 
+ class HTTPFileSource::Impl {
+@@ -356,6 +360,24 @@ HTTPRequest::HTTPRequest(HTTPFileSource::Impl *context_, Resource resource_, Fil
+         headers = curl_slist_append(headers, time.c_str());
+     }
+ 
++    // MBL_EMBEDDER_HEADERS: extra request headers from the embedder, scoped by
++    // URL prefix, for providers that authenticate with a header rather than a
++    // query parameter. Declared extern rather than included, so this file gains
++    // no dependency on an embedder header; the symbol lives in the shim that
++    // links this library. Appended LAST so an embedder cannot clobber the
++    // conditional-GET headers above, which would silently defeat caching.
++    if (char *extra = mbl_http_headers_for_url(url.c_str())) {
++        const char *line = extra;
++        while (*line) {
++            const char *end = std::strchr(line, '\n');
++            const std::string header = end ? std::string(line, end) : std::string(line);
++            if (!header.empty()) headers = curl_slist_append(headers, header.c_str());
++            if (!end) break;
++            line = end + 1;
++        }
++        std::free(extra);
++    }
++
+     if (headers) {
+         curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+     }

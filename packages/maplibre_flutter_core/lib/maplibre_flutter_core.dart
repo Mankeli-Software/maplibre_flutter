@@ -168,6 +168,44 @@ abstract final class MapLibreCoreSettings {
   static bool configureTileServer(CoreTileServer server) =>
       bindings.mbl_configure_tile_server(server.code) != 0;
 
+  /// Extra HTTP request headers, scoped by URL prefix.
+  ///
+  /// REPLACE-ALL, and that is the whole update protocol: rotating an expiring
+  /// bearer token is one more call with the new value, and there is no partial
+  /// update to race. Pass `{}` to clear. Returns false if a header name or
+  /// value is not sendable — a control character, or a `:` in a name — in which
+  /// case NOTHING changed.
+  ///
+  /// **Callable at any time**, unlike [configure]: headers are not part of the
+  /// engine's resource options and nothing caches them, so they are read fresh
+  /// as each request is built. A token that expires in an hour is the normal
+  /// case, and a configure-once API would be useless for it.
+  ///
+  /// **The prefix is required on every rule, and that is deliberate.** Upstream
+  /// applies headers to a whole session (Apple) or client (Android), so an
+  /// `Authorization` header goes to every host a style names — and a style
+  /// routinely names hosts the app does not own, for sprites, glyphs or a
+  /// basemap from another vendor. Scoping is what stops a credential leaking to
+  /// them. An app that genuinely wants every host can pass `'https://'`, which
+  /// is explicit and greppable.
+  ///
+  /// Matching is a case-sensitive prefix over the full URL; every matching rule
+  /// contributes, and a later rule wins a name an earlier one also set.
+  static bool setHttpHeaders(
+    Map<String, Map<String, String>> rulesByUrlPrefix,
+  ) {
+    final rules = [
+      for (final entry in rulesByUrlPrefix.entries)
+        {'urlPrefix': entry.key, 'headers': entry.value},
+    ];
+    return using((arena) {
+      return bindings.mbl_set_http_headers(
+            jsonEncode(rules).toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+          ) !=
+          0;
+    });
+  }
+
   /// The cache path actually in force — so a caller can report what it got
   /// rather than what it asked for. `:memory:` means there is no cache.
   static String get cachePath {

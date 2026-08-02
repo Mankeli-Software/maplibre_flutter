@@ -1,0 +1,37 @@
+diff --git a/platform/darwin/core/http_file_source.mm b/platform/darwin/core/http_file_source.mm
+index 23c29c4b300e..03c8ca4c97eb 100644
+--- a/platform/darwin/core/http_file_source.mm
++++ b/platform/darwin/core/http_file_source.mm
+@@ -21,6 +21,10 @@ @interface MBGLBundleCanary : NSObject
+ @implementation MBGLBundleCanary
+ @end
+ 
++// See MBL_EMBEDDER_HEADERS below. Returns a malloc'd, newline-separated list of
++// "Name: value" lines for this URL, or nullptr; the caller frees it.
++extern "C" char *mbl_http_headers_for_url(const char *url);
++
+ namespace mbgl {
+ 
+ // Data that is shared between the requesting thread and the thread running the completion handler.
+@@ -267,6 +271,21 @@ BOOL isValidMapboxEndpoint(NSURL *url) {
+ 
+     [req addValue:impl->userAgent forHTTPHeaderField:@"User-Agent"];
+ 
++    // MBL_EMBEDDER_HEADERS: see the identical block in the curl source. Uses
++    // addValue: rather than setValue: for the same reason the lines above do —
++    // a repeated header name appends rather than replacing, which is what an
++    // embedder setting two values for one name means.
++    if (char *extra = mbl_http_headers_for_url(url.absoluteString.UTF8String)) {
++      NSString *all = @(extra);
++      std::free(extra);
++      for (NSString *line in [all componentsSeparatedByString:@"\n"]) {
++        const NSRange split = [line rangeOfString:@": "];
++        if (split.location == NSNotFound) continue;
++        [req addValue:[line substringFromIndex:split.location + split.length]
++            forHTTPHeaderField:[line substringToIndex:split.location]];
++      }
++    }
++
+     const bool isTile = resource.kind == mbgl::Resource::Kind::Tile;
+ 
+     if (isTile) {

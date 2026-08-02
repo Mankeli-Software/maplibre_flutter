@@ -19,13 +19,29 @@ internal object MapLibreHttp {
     private val client = OkHttpClient()
     private val calls = ConcurrentHashMap<Long, Call>()
 
-    /** Called from native: GET [url], deliver the result under [requestId]. */
+    /**
+     * Called from native: GET [url], deliver the result under [requestId].
+     *
+     * [extraHeaders] is a newline-separated list of `Name: value` lines the
+     * embedder scoped to this URL (see `MapLibreSettings.setHttpHeaders`), or
+     * null. The native side has already rejected any name or value containing a
+     * control character, so these are safe to splice in — but they are applied
+     * with `addHeader`, not `header`, so a caller can legitimately set two
+     * values for one name and so nothing here silently replaces the User-Agent.
+     */
     @JvmStatic
-    fun start(requestId: Long, url: String) {
-        val request = Request.Builder()
+    fun start(requestId: Long, url: String, extraHeaders: String?) {
+        val builder = Request.Builder()
             .url(url)
             .header("User-Agent", "maplibre_flutter (core POC)")
-            .build()
+        if (extraHeaders != null) {
+            for (line in extraHeaders.split('\n')) {
+                val split = line.indexOf(": ")
+                if (split <= 0) continue
+                builder.addHeader(line.substring(0, split), line.substring(split + 2))
+            }
+        }
+        val request = builder.build()
         val call = client.newCall(request)
         calls[requestId] = call
         call.enqueue(object : Callback {

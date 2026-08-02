@@ -4305,3 +4305,107 @@ int mbl_configure_tile_server(int32_t server) {
   resourceOptionsLocked().withTileServerOptions(std::move(options));
   return 1;
 }
+
+namespace {
+
+// The header rules, INTENTIONALLY LEAKED like the offline state and for the
+// same reason (a static destructor racing a live network thread).
+//
+// Read on mbgl's file-source thread while every request is built, written from
+// whatever thread rotates the token. The lock is held only to copy the matching
+// lines out — never across building a request, and never across a
+// FileSource::Callback (CLAUDE.md §11).
+struct MblHeaderRule {
+  std::string urlPrefix;
+  std::vector<std::string> lines; // pre-rendered "Name: value"
+};
+
+struct MblHeaderState {
+  std::mutex mutex;
+  std::vector<MblHeaderRule> rules;
+};
+
+MblHeaderState &headerState() {
+  static auto *state = new MblHeaderState();
+  return *state;
+}
+
+// A header name or value carrying CR or LF would let a caller inject arbitrary
+// headers — or a whole second request — into every URL the rule matches. The
+// value comes from the app rather than a user, so this is not the classic
+// untrusted-input case, but a token read out of a config file or a QR code is
+// close enough that silently splicing it into the wire format is not a defence
+// anyone should have to think about. A name additionally may not contain ':'.
+bool headerTokenIsSafe(const std::string &text, bool isName) {
+  if (text.empty()) return false;
+  for (const char c : text) {
+    if (c == '\r' || c == '\n') return false;
+    if (isName && c == ':') return false;
+    if (static_cast<unsigned char>(c) < 0x20) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+int mbl_set_http_headers(const char *rules_json) {
+  std::vector<MblHeaderRule> parsed;
+  if (rules_json != nullptr && *rules_json != '\0') {
+    mbgl::JSDocument doc;
+    doc.Parse<rapidjson::kParseFullPrecisionFlag>(rules_json);
+    if (doc.HasParseError() || !doc.IsArray()) return 0;
+    for (auto &entry : doc.GetArray()) {
+      if (!entry.IsObject()) return 0;
+      const auto prefix = entry.FindMember("urlPrefix");
+      const auto headers = entry.FindMember("headers");
+      if (prefix == entry.MemberEnd() || !prefix->value.IsString()) return 0;
+      if (headers == entry.MemberEnd() || !headers->value.IsObject()) return 0;
+      MblHeaderRule rule;
+      rule.urlPrefix.assign(prefix->value.GetString(),
+                            prefix->value.GetStringLength());
+      if (rule.urlPrefix.empty()) return 0;
+      for (auto &header : headers->value.GetObject()) {
+        if (!header.value.IsString()) return 0;
+        const std::string name(header.name.GetString(),
+                               header.name.GetStringLength());
+        const std::string value(header.value.GetString(),
+                                header.value.GetStringLength());
+        if (!headerTokenIsSafe(name, true) ||
+            !headerTokenIsSafe(value, false)) {
+          return 0;
+        }
+        rule.lines.push_back(name + ": " + value);
+      }
+      parsed.push_back(std::move(rule));
+    }
+  }
+  // Swapped in whole, only once everything parsed: a rejected document must
+  // leave the previous rules exactly as they were, because half-applied auth is
+  // worse than none.
+  auto &state = headerState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  state.rules = std::move(parsed);
+  return 1;
+}
+
+char *mbl_http_headers_for_url(const char *url) {
+  if (url == nullptr) return nullptr;
+  const std::string target(url);
+  std::string out;
+  {
+    auto &state = headerState();
+    std::lock_guard<std::mutex> lk(state.mutex);
+    if (state.rules.empty()) return nullptr;
+    for (const auto &rule : state.rules) {
+      if (target.compare(0, rule.urlPrefix.size(), rule.urlPrefix) != 0) {
+        continue;
+      }
+      for (const auto &line : rule.lines) {
+        if (!out.empty()) out += '\n';
+        out += line;
+      }
+    }
+  }
+  if (out.empty()) return nullptr;
+  return dupToHeap(out);
+}

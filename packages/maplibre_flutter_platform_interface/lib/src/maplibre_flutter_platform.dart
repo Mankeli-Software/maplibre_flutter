@@ -71,6 +71,14 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
     MapLibreTileServer? tileServer,
   }) => false;
 
+  /// Extra HTTP request headers, scoped by URL prefix. Replace-all.
+  ///
+  /// Returns false when the tier cannot do it, or when a header name or value
+  /// is not sendable — and then NOTHING changed. See
+  /// `MapLibreSettings.setHttpHeaders` for the full contract.
+  bool setHttpHeaders(Map<String, Map<String, String>> rulesByUrlPrefix) =>
+      false;
+
   /// The cache path in force, or null on a tier that has no cache. `:memory:`
   /// means there IS no persistent cache.
   String? get cachePath => null;

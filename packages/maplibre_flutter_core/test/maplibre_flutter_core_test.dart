@@ -1,5 +1,13 @@
 import 'dart:convert';
-import 'dart:io' show Directory, File, sleep;
+import 'dart:io'
+    show
+        ContentType,
+        Directory,
+        File,
+        HttpHeaders,
+        HttpServer,
+        InternetAddress,
+        sleep;
 import 'dart:typed_data';
 
 import 'package:maplibre_flutter_core/maplibre_flutter_core.dart';
@@ -3357,6 +3365,147 @@ void main() {
       expect(await MapLibreCoreOffline.listRegions(), hasLength(1));
       await MapLibreCoreOffline.resetDatabase();
       expect(await MapLibreCoreOffline.listRegions(), isEmpty);
+    });
+  });
+
+  // --- HTTP headers ----------------------------------------------------------
+  //
+  // Served from a real local HTTP server and asserted on what it RECEIVED.
+  // Asserting that the API accepted the headers proves nothing at all: the
+  // whole feature is three separate edits in three different HTTP sources, and
+  // the failure mode is that the engine never asks.
+  group('http headers', () {
+    late HttpServer server;
+    late List<HttpHeaders> received;
+    late String origin;
+
+    setUp(() async {
+      received = [];
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      origin = 'http://127.0.0.1:${server.port}';
+      server.listen((request) {
+        received.add(request.headers);
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write('{"version":8,"sources":{},"layers":[]}');
+        request.response.close();
+      });
+    });
+
+    tearDown(() async {
+      MapLibreCoreSettings.setHttpHeaders({});
+      await server.close(force: true);
+    });
+
+    Future<void> loadStyleFrom(String url) async {
+      final map = MapLibreCoreMap.create(
+        width: 64,
+        height: 64,
+        pixelRatio: 1,
+        styleUri: url,
+      );
+      addTearDown(map.dispose);
+      map.awaitFrame(const Duration(seconds: 10));
+      for (var i = 0; i < 100 && received.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+
+    test('a scoped header reaches the wire', () async {
+      expect(
+        MapLibreCoreSettings.setHttpHeaders({
+          '$origin/': {'Authorization': 'Bearer let-me-in'},
+        }),
+        isTrue,
+      );
+      await loadStyleFrom('$origin/style.json');
+
+      expect(received, isNotEmpty, reason: 'the engine must have requested it');
+      expect(received.first.value('authorization'), 'Bearer let-me-in');
+    });
+
+    test('a header scoped elsewhere does NOT leak to this host', () async {
+      // The reason the prefix is mandatory. A style routinely names hosts the
+      // app does not own — sprites, glyphs, a basemap from another vendor — and
+      // upstream's whole-session headers send the token to all of them.
+      expect(
+        MapLibreCoreSettings.setHttpHeaders({
+          'https://tiles.example.com/': {'Authorization': 'Bearer secret'},
+        }),
+        isTrue,
+      );
+      await loadStyleFrom('$origin/style.json');
+
+      expect(received, isNotEmpty);
+      expect(received.first.value('authorization'), isNull);
+    });
+
+    test('clearing removes them', () async {
+      MapLibreCoreSettings.setHttpHeaders({
+        '$origin/': {'X-Test': 'yes'},
+      });
+      expect(MapLibreCoreSettings.setHttpHeaders({}), isTrue);
+      await loadStyleFrom('$origin/style.json');
+
+      expect(received, isNotEmpty);
+      expect(received.first.value('x-test'), isNull);
+    });
+
+    test('the engine keeps its own headers', () async {
+      // Ours are appended LAST, but must not displace what mbgl sets — the
+      // conditional-GET headers are how caching works, and User-Agent is how a
+      // tile server identifies the client.
+      MapLibreCoreSettings.setHttpHeaders({
+        '$origin/': {'X-Test': 'yes'},
+      });
+      await loadStyleFrom('$origin/style.json');
+
+      expect(received.first.value('x-test'), 'yes');
+      expect(received.first.value('user-agent'), isNotNull);
+    });
+
+    test('an unsendable header is REFUSED, and changes nothing', () {
+      MapLibreCoreSettings.setHttpHeaders({
+        '$origin/': {'X-Good': 'kept'},
+      });
+      // A CR or LF in a value would splice arbitrary headers — or a whole
+      // second request — into every URL the rule matches.
+      expect(
+        MapLibreCoreSettings.setHttpHeaders({
+          '$origin/': {'X-Bad': 'a\r\nInjected: yes'},
+        }),
+        isFalse,
+      );
+      expect(
+        MapLibreCoreSettings.setHttpHeaders({
+          '$origin/': {'X:Bad': 'v'},
+        }),
+        isFalse,
+      );
+      expect(
+        MapLibreCoreSettings.setHttpHeaders({
+          '': {'X-Bad': 'v'},
+        }),
+        isFalse,
+        reason: 'an empty prefix is the leak this API exists to prevent',
+      );
+    });
+
+    test('a refused change leaves the PREVIOUS rules in force', () async {
+      MapLibreCoreSettings.setHttpHeaders({
+        '$origin/': {'X-Good': 'kept'},
+      });
+      MapLibreCoreSettings.setHttpHeaders({
+        '$origin/': {'X-Bad': 'a\r\nInjected: yes'},
+      });
+      await loadStyleFrom('$origin/style.json');
+
+      expect(
+        received.first.value('x-good'),
+        'kept',
+        reason: 'half-applied auth is worse than a rejected change',
+      );
+      expect(received.first.value('injected'), isNull);
     });
   });
 }

@@ -54,6 +54,11 @@ external int mbl_configure_tile_server(int server);
 @ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Char>)>()
 external int mbl_set_http_headers(ffi.Pointer<ffi.Char> rules_json);
 
+@ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.Char>)>()
+external ffi.Pointer<ffi.Char> mbl_http_headers_for_url(
+  ffi.Pointer<ffi.Char> url,
+);
+
 @ffi.Native<
   ffi.Int Function(
     ffi.Pointer<

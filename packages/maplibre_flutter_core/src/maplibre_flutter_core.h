@@ -215,6 +215,17 @@ FFI_PLUGIN_EXPORT int mbl_configure_tile_server(int32_t server);
 // rejected one.
 FFI_PLUGIN_EXPORT int mbl_set_http_headers(const char *rules_json);
 
+// The headers to add to a request for `url`, as a heap string of newline-
+// separated "Name: value" lines, or NULL when no rule matches. Free with
+// mbl_string_free.
+//
+// Called by each platform's HTTP source while it builds a request — including
+// from inside the vendored engine, via patches/http-embedder-headers.patch,
+// which declares this `extern "C"` rather than including this header. It is
+// therefore part of the ABI in a second sense: renaming it silently costs every
+// patched arm its headers, so the patch and this declaration change together.
+FFI_PLUGIN_EXPORT char *mbl_http_headers_for_url(const char *url);
+
 // The kind of resource being requested. Mirrors `mbgl::Resource::Kind`.
 typedef enum {
   MBL_RESOURCE_UNKNOWN = 0,
