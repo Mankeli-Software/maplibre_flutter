@@ -713,6 +713,15 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - **`createTicker()` does an inherited-widget lookup**, so a lazy `late final _ticker = …`
   constructs it inside `dispose()` when it never ran, asserting on a deactivated element. Create
   tickers in `initState`.
+- **What decides whether a widget blocks the map is which SIDE OF THE GESTURE LAYER it is on, not
+  its hit-test behaviour.** A `Card` the app stacks over the map is outside it and must block — an
+  opaque hit stops the stack from testing the map beneath, so the map's recognisers never enter the
+  arena. A MARKER must not block, because dragging from a pin has to pan the map, and pins cover
+  the interesting parts of a map. Both come from the same mechanism, so the marker overlay is
+  composited INSIDE the gesture layer (passed down into `_TextureMapView`, not stacked over it):
+  with the gesture layer an ancestor of the pins, the arena separates tap-selects-pin from
+  drag-pans-map by itself. **Fixing one of these two without a test for the other silently breaks
+  it** — `gestures_over_overlay_test.dart` and `marker_gestures_test.dart` are a pair.
 - **Adding a recognizer to the map's gesture arena changes gestures that already work.** A
   `DoubleTapGestureRecognizer` beside the map's scale recognizer stops a drag made of a SINGLE move
   event then release from panning — the scale recognizer has not been declared the winner when the

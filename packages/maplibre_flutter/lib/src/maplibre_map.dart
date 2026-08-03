@@ -573,6 +573,30 @@ class _MapEmbed extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final handle = controller.renderHandle!;
+    final projector = controller.projector;
+
+    // A MARKER IS PART OF THE MAP, not a panel over it.
+    //
+    // Every map behaves this way: tapping a pin selects it, dragging FROM a pin
+    // pans the map underneath. Both fall out of Flutter's gesture arena — a tap
+    // is won by the marker's recogniser, a drag by the map's — but only if both
+    // are in the hit path, and that means the gesture layer has to be an
+    // ANCESTOR of the markers rather than a sibling beneath them.
+    //
+    // Stacking the overlay on top instead put an opaque pin between the pointer
+    // and the gesture layer, so a drag or a wheel starting on a pin reached
+    // nothing at all. Pins cover the interesting parts of a map, so that made
+    // the map unusable exactly where the user was looking.
+    //
+    // This is the complement of the app-overlay rule, not an exception to it: a
+    // Card the app stacks over the map is OUTSIDE the gesture layer and must
+    // keep blocking (gestures_over_overlay_test.dart). What decides is which
+    // side of the gesture layer a widget is on — which is a structural
+    // question, not a hit-test-behaviour one.
+    final overlay = (projector == null || markers.isEmpty)
+        ? null
+        : MarkerOverlay(projector: projector, markers: markers);
+
     Widget map;
     switch (handle) {
       case TextureHandle(:final textureId):
@@ -580,6 +604,9 @@ class _MapEmbed extends StatelessWidget {
           controller: controller,
           textureId: textureId,
           gestures: gestures,
+          // Handed DOWN rather than stacked on top, so the gesture layer ends
+          // up an ANCESTOR of the markers. See the overlay's own comment there.
+          overlay: overlay,
         );
       case PlatformViewHandle():
         map = _PlatformView(handle: handle);
@@ -599,13 +626,12 @@ class _MapEmbed extends StatelessWidget {
     }
 
     // Anchored widgets need a projector. Absent one (a tier that can't project),
-    // skip the overlay + map-tap entirely — graceful degradation (CLAUDE.md §3).
-    final projector = controller.projector;
+    // there is no overlay and no map-tap — graceful degradation (CLAUDE.md §3).
     if (projector == null) return map;
 
-    // Map taps: a tap on a marker is consumed by the marker (it sits on top of
-    // the Stack, so it is hit-tested first); a tap on empty space falls through
-    // the (transparent) overlay to this detector and reports a LatLng.
+    // Map taps: a tap on a marker is consumed by the marker (it is hit-tested
+    // first, being in front); a tap on empty space falls through the
+    // (transparent) overlay to this detector and reports a LatLng.
     if (onTap case final onTap?) {
       map = GestureDetector(
         onTapUp: (details) {
@@ -620,14 +646,14 @@ class _MapEmbed extends StatelessWidget {
       );
     }
 
-    if (markers.isEmpty) return map;
+    // Only the tiers that could not take it below: a platform/element view owns
+    // its own gestures, so there is no Dart gesture layer to be inside of.
+    if (overlay == null || handle is TextureHandle) return map;
     return Stack(
       fit: StackFit.expand,
       children: [
         map,
-        Positioned.fill(
-          child: MarkerOverlay(projector: projector, markers: markers),
-        ),
+        Positioned.fill(child: overlay),
       ],
     );
   }
@@ -650,11 +676,20 @@ class _TextureMapView extends StatefulWidget {
     required this.controller,
     required this.textureId,
     this.gestures = const MapGestureSettings(),
+    this.overlay,
   });
 
   final MapLibreMapController controller;
   final int textureId;
   final MapGestureSettings gestures;
+
+  /// The marker overlay, composited INSIDE the gesture layer.
+  ///
+  /// It is a parameter rather than something stacked over this widget so that
+  /// the gesture layer is an ancestor of the markers: that is what puts the
+  /// map's recognisers and a marker's own in the same arena, which is what
+  /// makes tap-selects-pin and drag-pans-map both work.
+  final Widget? overlay;
 
   @override
   State<_TextureMapView> createState() => _TextureMapViewState();
@@ -735,6 +770,17 @@ class _TextureMapViewState extends State<_TextureMapView> {
         // gesture state installs, so a non-interactive map costs nothing per
         // pointer event anywhere on screen. Taps are unaffected — they are
         // wired in _MapEmbed, above this.
+        // Inside the gesture wrapper below, and above the texture.
+        if (widget.overlay case final overlay?) {
+          map = Stack(
+            fit: StackFit.expand,
+            children: [
+              map,
+              Positioned.fill(child: overlay),
+            ],
+          );
+        }
+
         final handler = widget.controller.gestureHandler;
         if (widget.gestures.interactive && handler != null) {
           map = _DesktopMapGestures(
