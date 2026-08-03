@@ -626,6 +626,17 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - Raw `CustomLayer` is a dead end off OpenGL (`CustomLayerFactory` is `#ifdef`-gated);
   `CustomDrawableLayer` is the portable escape hatch.
 - Pitch is clamped to `DEFAULT_PITCH_MAX` = 60°.
+- **The device pixel ratio is fixed at construction and there is no setter.**
+  `HeadlessFrontend` takes it in its constructor and stores it privately;
+  `Map` has `setSize` and nothing for the ratio. So a display-scale change — a window dragged
+  between a Retina and a non-Retina monitor, an accessibility zoom — cannot be honoured without
+  destroying and recreating the map, which costs the style, the cached tiles and every app-added
+  layer. `resize` therefore takes a `Size` and nothing else: it used to take a ratio that all five
+  tiers discarded, and **an interface that accepts a parameter it cannot use reads as supported**.
+  What IS worth getting right is the value at construction — `MapOptions.pixelRatio`, filled in by
+  `MapLibreMap` from its own `MediaQuery`. Reading it from `PlatformDispatcher.implicitView`, as
+  the tiers did, is the primary display's, and wrong for a second window or a window opened on a
+  differently-scaled display.
 - **Two of mbgl's own camera primitives are broken; do not use either.**
   `Transform::rotateBy` computes `sqrt(pow(2, offset.x) + pow(2, offset.y))` — 2ˣ+2ʸ, not x²+y² —
   so its centre-nudge heuristic always fires left/above centre and never right/below.

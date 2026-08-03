@@ -290,10 +290,15 @@ upstream-API coverage, not plumbing — which is why most of what is left is Dar
 - [x] 10.3 **`TileServerOptions`** — `MapLibreSettings.configure(tileServer:)`. The finding was
       worse than "not constructed": the api key reached NOTHING, not even the style URL, behind
       three independent gates. `tile_server_probe` pins the before and after.
-- [ ] 10.4 **Runtime DPR** — P0. mbgl has no `setPixelRatio`, so honouring it means rebuilding the
-      map or patching upstream. All five tiers currently ACCEPT AND DISCARD the argument, which is
-      worse than not taking it: decide, and either implement it or narrow the contract to
-      `resize(Size)` and document DPR as fixed at creation.
+- [x] 10.4 **Runtime DPR** — decided, and it turned out to be two problems. `resize` is narrowed to
+      `resize(Size)`: mbgl consumes the ratio in `HeadlessFrontend`'s constructor and has no setter,
+      so it could never have been honoured, and all five tiers were discarding it. The half nobody
+      had noticed is that CREATION read it from `PlatformDispatcher.implicitView` — the primary
+      display's — so a map in a second window or on a differently-scaled display was wrong from its
+      first frame, with no resize involved. `MapOptions.pixelRatio` now carries it and `MapLibreMap`
+      fills it in from its own `MediaQuery`. Honouring a LIVE change is documented as an engine
+      ceiling (CLAUDE.md §11) rather than left open: it needs a destroy-and-recreate that costs the
+      style, the tiles and every app-added layer.
 - [x] 10.5 **Auth** — all three mechanisms, as three calls rather than gl-js's one because mbgl's
       transform hands back a URL and only a URL. `configure(apiKey:, tileServer:)` for a query
       key; `setHttpHeaders` for an `Authorization` header, scoped by URL prefix, over two new
@@ -1670,3 +1675,34 @@ their widget tree.
   was 91) / `test:harness:hermetic` green (4, was 3) / matrix regenerated. One flake seen once and
   not reproduced: `projection is exact under bearing + pitch`, which is network-dependent and was
   not touched by this work.
+
+### 2026-08-03 — Stage 10 (10.4) — the DPR row was two bugs, and the smaller one was the live one
+
+- **The audit framed this as a binary — honour the resize ratio or drop it — and both arms missed
+  the defect that has users behind it.** Creation read the ratio from
+  `PlatformDispatcher.instance.implicitView`, which is the PRIMARY display's. A map in a second
+  window, or in a window opened on a differently-scaled monitor, was therefore built at the wrong
+  ratio from its first frame, with no display-scale change and no resize involved. That is the
+  common case; dragging a window between monitors is the rare one. `MapOptions.pixelRatio` now
+  carries it, `MapLibreMap` fills it in from its own `MediaQuery`, and the implicit view survives
+  only as a last resort for a platform package driven without the widget.
+- **`resize` could never have honoured it.** `HeadlessFrontend` takes the ratio in its constructor
+  and stores it privately; `Map` exposes `setSize` and nothing else. All five tiers took the
+  argument and discarded it, each with the same comment. Narrowed to `resize(Size)` — an interface
+  that accepts a parameter it cannot use reads as supported, which is worse than not offering it.
+- **One tier really was using the argument, and checking first was worth it.** The web core
+  controller passed it to the WASM shim, which reassigns `pixelRatio_` and sizes the canvas backing
+  store from it in `present()`. But mbgl there was constructed with the ORIGINAL ratio and never
+  told, so a display-scale change moved the destination without the source and the blit scaled.
+  Half-honoured. It now reads `web.window.devicePixelRatio` itself — the browser's own number for
+  a DOM canvas, and one it already used at creation — so narrowing the shared contract cost it
+  nothing.
+- **The attach moved from `initState` to `didChangeDependencies`**, because `MediaQuery` is not
+  readable from the former and the ratio has to be resolved before `createMap`. Guarded by a flag,
+  since dependencies change more than once — a DPR change is itself one of the things that
+  re-triggers it, which is exactly where a future recreate-on-change would hook in.
+- **A test asserts the map is NOT recreated when the DPR changes.** It would be easy to "fix" the
+  ceiling by rebuilding, and that silently drops the style, the cached tiles and every app-added
+  layer on a window drag. The test says the current answer is deliberate.
+- **Gates:** analyze clean / format clean / `test --no-select` green (3 new) / conformance suite
+  updated (its `resize` assertions kept — logical points still must not arrive pre-multiplied).

@@ -32,7 +32,7 @@ class _ProjController
   @override
   Future<void> setStyle(String styleUri) async {}
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {}
+  Future<void> resize(Size size) async {}
   @override
   Future<void> dispose() async => disposeCameraTick();
 
@@ -66,7 +66,7 @@ class _PlainController implements MapLibreMapPlatformController {
   @override
   Future<void> setStyle(String styleUri) async {}
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {}
+  Future<void> resize(Size size) async {}
   @override
   Future<void> dispose() async {}
 }

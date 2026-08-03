@@ -22,7 +22,7 @@ class _FakeController implements MapLibreMapPlatformController {
   @override
   Future<void> setStyle(String styleUri) async => lastStyle = styleUri;
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {}
+  Future<void> resize(Size size) async {}
   @override
   Future<void> dispose() async => disposed = true;
 }
@@ -97,6 +97,7 @@ class _FakePlatform extends MapLibreFlutterPlatform {
   _FakeController Function(MapLibreRenderHandle)? controllerFactory;
   _FakeController? lastController;
   String? lastInitialStyle;
+  MapOptions? lastOptions;
   int createCount = 0;
 
   @override
@@ -106,6 +107,7 @@ class _FakePlatform extends MapLibreFlutterPlatform {
   }) async {
     createCount++;
     lastInitialStyle = style;
+    lastOptions = options;
     final factory = controllerFactory;
     return lastController = factory != null
         ? factory(handle)
@@ -1145,4 +1147,78 @@ void main() {
   // NOTE: the overlay-vs-map arbitration tests live in
   // test/gestures_over_overlay_test.dart — they are a matrix over real overlay
   // widgets and belong together, not scattered through this file.
+
+  group('device pixel ratio', () {
+    // It is INIT-ONLY by engine ceiling: mbgl consumes the ratio in
+    // HeadlessFrontend's constructor and exposes no setter, so the value handed
+    // to createMap is the only one the map will ever have. Getting it from the
+    // right view is therefore the whole game.
+    testWidgets('comes from the MediaQuery the map is built in', (
+      tester,
+    ) async {
+      final platform = _FakePlatform(const TextureHandle(textureId: 1));
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        MediaQuery(
+          // Deliberately NOT the implicit view's ratio, which is what the
+          // platform falls back to and what a second window or a secondary
+          // display makes wrong.
+          data: const MediaQueryData(devicePixelRatio: 3),
+          child: const Directionality(
+            textDirection: TextDirection.ltr,
+            child: MapLibreMap(style: _style, options: _options),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(platform.lastOptions?.pixelRatio, 3);
+    });
+
+    testWidgets('an explicit ratio is not overwritten', (tester) async {
+      // Pinning it is the supported way to render a fixed-size export whose
+      // output must not depend on the display it was produced on.
+      final platform = _FakePlatform(const TextureHandle(textureId: 1));
+      MapLibreFlutterPlatform.instance = platform;
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(devicePixelRatio: 3),
+          child: const Directionality(
+            textDirection: TextDirection.ltr,
+            child: MapLibreMap(
+              style: _style,
+              options: MapOptions(
+                initialCamera: MapCamera(center: LatLng(0, 0)),
+                pixelRatio: 1,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(platform.lastOptions?.pixelRatio, 1);
+    });
+
+    testWidgets('a later DPR change does NOT recreate the map', (tester) async {
+      // The engine cannot change it, so recreating would be the only way to
+      // honour one — and that would drop the style, the tiles and every
+      // app-added layer on a window drag. Documented as a ceiling instead.
+      final platform = _FakePlatform(const TextureHandle(textureId: 1));
+      MapLibreFlutterPlatform.instance = platform;
+      Widget build(double dpr) => MediaQuery(
+        data: MediaQueryData(devicePixelRatio: dpr),
+        child: const Directionality(
+          textDirection: TextDirection.ltr,
+          child: MapLibreMap(style: _style, options: _options),
+        ),
+      );
+      await tester.pumpWidget(build(2));
+      await tester.pumpAndSettle();
+      expect(platform.createCount, 1);
+
+      await tester.pumpWidget(build(3));
+      await tester.pumpAndSettle();
+      expect(platform.createCount, 1, reason: 'still the map built at DPR 2');
+      expect(platform.lastOptions?.pixelRatio, 2);
+    });
+  });
 }

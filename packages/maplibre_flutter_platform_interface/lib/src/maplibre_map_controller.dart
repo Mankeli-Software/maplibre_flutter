@@ -52,7 +52,7 @@ abstract class MapLibreMapPlatformController {
   /// (mobile) auto-sizes its native view and ignores this; the desktop texture
   /// tier resizes its off-screen surface so the map fills the widget crisply
   /// and at the correct aspect ratio. Default: no-op.
-  Future<void> resize(Size size, double devicePixelRatio) async {}
+  Future<void> resize(Size size) async {}
 
   /// Release native resources, callbacks, and the texture/view registration.
   Future<void> dispose();

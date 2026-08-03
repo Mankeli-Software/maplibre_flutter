@@ -20,7 +20,7 @@ class _BareController implements MapLibreMapPlatformController {
   @override
   Future<void> setStyle(String styleUri) async {}
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {}
+  Future<void> resize(Size size) async {}
   @override
   Future<void> dispose() async {}
 }

@@ -201,13 +201,19 @@ class MapLibreCoreWebController
   Future<void> setStyle(String styleUri) async => _map?.setStyle(styleUri);
 
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {
+  Future<void> resize(Size size) async {
     final map = _map;
     if (map == null || _disposed) return;
-    // LOGICAL points plus the ratio, matching the five native tiers: mbgl sizes
-    // its framebuffer as `Size * pixelRatio` itself, and the shim scales to
-    // device pixels once, in present(), when it blits to the canvas.
-    map.resize(size.width, size.height, devicePixelRatio);
+    // LOGICAL points, matching the five native tiers. The ratio comes from the
+    // browser rather than from the platform interface — it sizes a DOM canvas
+    // backing store, so `window.devicePixelRatio` is the authority for it, and
+    // it is the number this controller already uses at creation.
+    //
+    // It only reaches the CANVAS. mbgl was constructed with the ratio it had
+    // then and has no setter (see MapOptions.pixelRatio), so a display-scale
+    // change leaves the engine rendering at the old ratio and this blit scales.
+    // Recreating the map is the only real fix, here as everywhere else.
+    map.resize(size.width, size.height, web.window.devicePixelRatio);
   }
 
   // --- MapLibreMapProjector -------------------------------------------------

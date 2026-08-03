@@ -19,6 +19,7 @@ class MapOptions {
     this.minPitch,
     this.maxPitch,
     this.maxBounds,
+    this.pixelRatio,
   });
 
   /// Camera the map starts at before any user interaction. Use the controller's
@@ -52,6 +53,27 @@ class MapOptions {
   /// rather than shipping Android semantics under a gl-js name.
   final LatLngBounds? maxBounds;
 
+  /// Device pixel ratio to render at, or null for the view the map is in.
+  ///
+  /// **Init-only, and that is an ENGINE ceiling rather than a choice.** mbgl
+  /// consumes the ratio in `HeadlessFrontend`'s constructor and stores it
+  /// privately; `Map` has `setSize` and no `setPixelRatio`. So a display-scale
+  /// change — dragging a window between a Retina and a non-Retina monitor, or
+  /// an accessibility zoom — cannot be honoured without destroying and
+  /// recreating the map. `MapLibreMap` therefore does not try; the ratio is
+  /// whatever it was when the map was built.
+  ///
+  /// Null is almost always right: `MapLibreMap` fills it in from the
+  /// `MediaQuery` of the view it is being built in. Set it to pin a ratio —
+  /// 1.0 for a fixed-size export whose output must not depend on the display it
+  /// was rendered on, which is the same thing `MapSnapshotOptions.pixelRatio`
+  /// is for.
+  ///
+  /// It is not a quality knob. Too low renders blurry and fetches low-detail
+  /// raster tiles; too high burns memory and bandwidth on detail no one can
+  /// see.
+  final double? pixelRatio;
+
   /// Whether anything here constrains the camera — lets a tier skip the whole
   /// apply step, which is a render-thread round trip, on the common case.
   bool get hasConstraints =>
@@ -79,5 +101,26 @@ class MapOptions {
     minPitch,
     maxPitch,
     maxBounds,
+  );
+
+  /// A copy with the named fields replaced. Null means "leave alone", so there
+  /// is deliberately no way to un-set [pixelRatio] through it — the widget's
+  /// only use is filling it IN.
+  MapOptions copyWith({
+    MapCamera? initialCamera,
+    double? minZoom,
+    double? maxZoom,
+    double? minPitch,
+    double? maxPitch,
+    LatLngBounds? maxBounds,
+    double? pixelRatio,
+  }) => MapOptions(
+    initialCamera: initialCamera ?? this.initialCamera,
+    minZoom: minZoom ?? this.minZoom,
+    maxZoom: maxZoom ?? this.maxZoom,
+    minPitch: minPitch ?? this.minPitch,
+    maxPitch: maxPitch ?? this.maxPitch,
+    maxBounds: maxBounds ?? this.maxBounds,
+    pixelRatio: pixelRatio ?? this.pixelRatio,
   );
 }

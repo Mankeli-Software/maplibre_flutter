@@ -140,7 +140,7 @@ class MapLibreFlutterWebController implements MapLibreMapPlatformController {
   Future<void> setStyle(String styleUri) async => _map?.setStyle(styleUri.toJS);
 
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {
+  Future<void> resize(Size size) async {
     // The host div is CSS 100% and maplibre-gl-js reads its box and the device
     // pixel ratio itself; just prompt a recompute after a layout change.
     _map?.resize();

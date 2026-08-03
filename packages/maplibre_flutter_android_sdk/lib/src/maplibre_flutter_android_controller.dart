@@ -132,7 +132,7 @@ class MapLibreFlutterAndroidController
   }
 
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {
+  Future<void> resize(Size size) async {
     // The Android platform view auto-sizes to the widget; nothing to do.
   }
 

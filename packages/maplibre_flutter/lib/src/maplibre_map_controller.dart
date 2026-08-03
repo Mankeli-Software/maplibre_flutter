@@ -654,8 +654,7 @@ class MapLibreMapController {
   /// Reports the embedding view's size so the desktop texture tier can resize
   /// its off-screen surface. A no-op on the mobile/web tiers.
   @internal
-  Future<void> resize(Size size, double devicePixelRatio) async =>
-      _platform?.resize(size, devicePixelRatio);
+  Future<void> resize(Size size) async => _platform?.resize(size);
 
   /// Whether the bound platform tier's texture lags the widget box on resize
   /// (Windows), so the widget should **mask** resizes (hold the surface + cover-fit

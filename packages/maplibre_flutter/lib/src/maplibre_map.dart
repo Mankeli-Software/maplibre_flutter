@@ -380,12 +380,37 @@ class _MapLibreMapState extends State<MapLibreMap> {
       setState(() => _zoomForHalo = camera.zoom);
     });
     _controller.style.retainRuntimeStyle = widget.retainRuntimeStyle;
+    // The attach itself is in didChangeDependencies: it needs the view's device
+    // pixel ratio, and MediaQuery is not readable from initState.
+  }
+
+  bool _attachedOnce = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_attachedOnce) return;
+    _attachedOnce = true;
     _attach = _controller.attach(
       styleUri: widget.style,
-      options: widget.options,
+      options: _resolvedOptions,
     );
     _applyModelsWhenAttached(const <MapLibreModel>[], widget.models);
   }
+
+  /// [MapOptions] with [MapOptions.pixelRatio] filled in from THIS view.
+  ///
+  /// Resolved from the widget's own `MediaQuery` rather than left to the
+  /// platform, which falls back to the implicit view — the primary display's,
+  /// which is wrong for a second window or a window opened on a display of a
+  /// different scale. The engine consumes the ratio at construction and has no
+  /// setter, so getting it right here is the only chance to get it right at
+  /// all.
+  MapOptions get _resolvedOptions => widget.options.pixelRatio != null
+      ? widget.options
+      : widget.options.copyWith(
+          pixelRatio: MediaQuery.devicePixelRatioOf(context),
+        );
 
   /// Applies a model diff once the native map exists.
   ///
@@ -460,7 +485,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
       setState(() {
         _attach = _controller.attach(
           styleUri: widget.style,
-          options: widget.options,
+          options: _resolvedOptions,
         );
       });
     } else {
@@ -658,19 +683,19 @@ class _TextureMapViewState extends State<_TextureMapView> {
   void _syncSize(Size size, double dpr) {
     if (!size.isFinite || size.isEmpty) return;
     if (!widget.controller.debounceResize) {
-      widget.controller.resize(size, dpr);
+      widget.controller.resize(size);
       return;
     }
     if (_committedSize == null) {
       _committedSize = size; // first sizing: apply immediately
-      widget.controller.resize(size, dpr);
+      widget.controller.resize(size);
       return;
     }
     if (size == _committedSize) return;
     _resizeDebounce?.cancel();
     _resizeDebounce = Timer(const Duration(milliseconds: 100), () {
       if (!mounted) return;
-      widget.controller.resize(size, dpr);
+      widget.controller.resize(size);
       setState(() => _committedSize = size);
     });
   }

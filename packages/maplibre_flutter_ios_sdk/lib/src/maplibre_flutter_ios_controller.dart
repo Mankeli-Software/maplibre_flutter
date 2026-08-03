@@ -120,7 +120,7 @@ class MapLibreFlutterIosController implements MapLibreMapPlatformController {
   }
 
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {
+  Future<void> resize(Size size) async {
     // The iOS UiKitView auto-sizes to the widget; nothing to do.
   }
 

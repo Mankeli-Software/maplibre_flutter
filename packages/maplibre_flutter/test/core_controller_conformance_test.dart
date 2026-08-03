@@ -554,17 +554,20 @@ void main() {
       // runner — and at DPR 2 makes gestures move twice as fast and puts every
       // marker at twice its coordinates.
       test('resize passes logical points, never points x DPR', () async {
-        await controller.resize(const Size(800, 600), 3);
-        expect(core.resizes, [
-          (width: 800, height: 600),
-        ], reason: 'DPR 3 must not reach the core as 2400x1800');
+        await controller.resize(const Size(800, 600));
+        expect(
+          core.resizes,
+          [(width: 800, height: 600)],
+          reason:
+              'the core multiplies by its own ratio; 2400x1800 would double it',
+        );
       });
 
       test('resize ignores degenerate sizes and repeats', () async {
-        await controller.resize(const Size(800, 600), 1);
-        await controller.resize(const Size(800, 600), 1);
-        await controller.resize(const Size(0, 600), 1);
-        await controller.resize(const Size(800, -1), 1);
+        await controller.resize(const Size(800, 600));
+        await controller.resize(const Size(800, 600));
+        await controller.resize(const Size(0, 600));
+        await controller.resize(const Size(800, -1));
         expect(core.resizes, hasLength(1));
       });
 
@@ -812,7 +815,7 @@ void main() {
           ..addSourceJson('s', '{}')
           ..addLayerJson('{}')
           ..removeLayer('a');
-        await controller.resize(const Size(11, 22), 1);
+        await controller.resize(const Size(11, 22));
         await controller.setStyle('after-dispose');
 
         expect(core.moves, isEmpty);

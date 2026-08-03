@@ -193,7 +193,13 @@ class MapLibreFlutterWindowsController
     // device-pixel texture then composites 1:1 with no resampling (pr=1 rendered a 1x
     // map blown up — more area, tiny labels, tile edges on fractional device pixels).
     final dpr =
-        ui.PlatformDispatcher.instance.implicitView?.devicePixelRatio ?? 1.0;
+        options.pixelRatio ??
+        // Only when the caller supplied none — MapLibreMap always does. The
+        // implicit view is a LAST RESORT and is wrong whenever the map is not
+        // in it: a second window, or a window opened on a display whose scale
+        // differs from the primary's.
+        ui.PlatformDispatcher.instance.implicitView?.devicePixelRatio ??
+        1.0;
     final coreMap = core.MapLibreCoreMap.create(
       width: _initialWidth,
       height: _initialHeight,
@@ -396,7 +402,7 @@ class MapLibreFlutterWindowsController
   }
 
   @override
-  Future<void> resize(Size size, double devicePixelRatio) async {
+  Future<void> resize(Size size) async {
     if (_disposed) return;
     // Pass LOGICAL points as mbgl's size; the core multiplies by the pixelRatio set
     // at create to produce the device-pixel texture. (devicePixelRatio is unused
