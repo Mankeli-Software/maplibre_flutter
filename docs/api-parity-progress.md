@@ -258,8 +258,15 @@ subset of the spec; this file's own bar is "every P0 and P1 row implemented or e
 rejected". A 2026-08-02 audit checked all 229 of them against the code, one reader per spec
 domain, every verdict cited to a file and line:
 
-**137 implemented, 92 outstanding, 5 of them P0** — as measured on 2026-08-02, before 10.1-10.5.
-Those closed 9 rows and 4 of the 5 P0s; only 10.4 (runtime DPR) is left of them.
+**137 implemented, 92 outstanding, 15 of them P0** — as measured on 2026-08-02, before 10.1-10.5.
+
+(An earlier revision of this section said "5 of them P0". That was wrong — a miscount when
+summarising, not a change in the data. The audit's own rows say 15 P0 and 77 P1. Recounted
+2026-08-03.)
+
+10.1-10.5 closed **9 of the 15 P0s**: the four gesture rows, both halves of `transformRequest`,
+runtime DPR, and the three that were only ever missing an export (`MapLibreError`, the map-load
+failure event, and the `MapLibreMapEvents` capability). **Six P0s remain**, listed in 10.6.
 
 | Domain | Done | Left |
 | --- | --- | --- |
@@ -304,9 +311,21 @@ upstream-API coverage, not plumbing — which is why most of what is left is Dar
       key; `setHttpHeaders` for an `Authorization` header, scoped by URL prefix, over two new
       engine patches and the Android JNI bridge; `setRequestTransform` for signed URLs, over
       `mbgl::ResourceTransform`.
-- [ ] 10.6 The rest, by domain, worst first: gestures (15), models and `light` (16), events
-      (hover, long-press, `isSourceLoaded`, `areTilesLoaded`), sources (`promoteId`, `generateId`),
-      annotations (compass, scale bar, marker tap).
+- [ ] 10.6 **The six remaining P0s**, which are not one theme:
+      - **Models, two correctness bugs.** `.glb` must be a real filesystem path, not a Flutter
+        asset key — so a model cannot be shipped in the bundle. And the mesh cache is never
+        evicted, so it grows for the life of the process.
+      - **Web-WASM has no touch gestures at all**, and the generated matrix now overstates the web
+        column in the opposite direction from the old hand-maintained one: a capability-level tick
+        stands in for member-level truth.
+      - **`addSource` still swallows the render-thread half** of its errors — a duplicate id
+        `fprintf`s to stderr instead of reaching `MapCommandError`, so nothing reaches Dart.
+      - **`controller.events` namespace** — the streams sit directly on the controller rather than
+        grouped like `camera` and `style`. Possibly an accepted deviation; decide and record it
+        either way rather than leaving it ambiguous.
+- [ ] 10.7 The ~79 remaining P1s, by domain, worst first: gestures (15), models and `light` (16),
+      events (hover, long-press, `isSourceLoaded`, `areTilesLoaded`), sources (`promoteId`,
+      `generateId`), annotations (compass, scale bar, marker tap).
 
 ## Run log
 
