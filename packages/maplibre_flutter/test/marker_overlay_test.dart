@@ -409,8 +409,10 @@ void main() {
       ],
     );
 
+    // Settled past the double-tap window: a map tap is held back until a second
+    // has been ruled out, so that a double-tap-to-zoom cannot also report taps.
     await tester.tapAt(const Offset(123, 222));
-    await tester.pump();
+    await tester.pumpAndSettle(const Duration(seconds: 1));
 
     expect(mapTapped, isNotNull);
     // The fake unproject scales by 10 so the latitude stays inside the ±90 mbgl

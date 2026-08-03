@@ -713,6 +713,16 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
 - **`createTicker()` does an inherited-widget lookup**, so a lazy `late final _ticker = …`
   constructs it inside `dispose()` when it never ran, asserting on a deactivated element. Create
   tickers in `initState`.
+- **Adding a gesture forces a decision about the taps it is made of.** Double-tap-to-zoom made a
+  double tap report TWO `onTap` events as well as the zoom — so the example app dropped two pins
+  every time the user zoomed. Apple and Android both suppress the single tap
+  (`requireGestureRecognizerToFail:` / `onSingleTapConfirmed`); only gl-js reports both, because
+  that is what a browser does with click and dblclick. We suppress, which costs **~300 ms of
+  latency on every map tap** — inherent, since a tap is not known to be single until the window
+  closes — and `MapGestureSettings.doubleTapZoomEnabled: false` removes the gesture and the
+  latency together. Consequence for tests: `pump()` after `tapAt` no longer sees the tap, and an
+  `expect(taps, isEmpty)` right after a pump now passes whether or not the tap was eaten. Settle
+  past the window or the assertion is vacuous.
 - **What decides whether a widget blocks the map is which SIDE OF THE GESTURE LAYER it is on, not
   its hit-test behaviour.** A `Card` the app stacks over the map is outside it and must block — an
   opaque hit stops the stack from testing the map beneath, so the map's recognisers never enter the

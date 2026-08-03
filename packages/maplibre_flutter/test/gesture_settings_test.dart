@@ -405,4 +405,69 @@ void main() {
       expect(map.moves, isNotEmpty);
     });
   });
+
+  group('a double tap must not also report taps', () {
+    // The user-visible bug: in the example app's interaction demo, every
+    // double-tap-to-zoom dropped TWO pins, because both taps of the pair were
+    // reported. Apple and Android suppress them (requireGestureRecognizerToFail
+    // / onSingleTapConfirmed); gl-js reports both only because that is what a
+    // browser does with click and dblclick.
+    Future<void> doubleTapAt(WidgetTester tester, Offset at) async {
+      await tester.tapAt(at);
+      await tester.pump(kDoubleTapMinTime);
+      await tester.tapAt(at);
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+    }
+
+    testWidgets('reports NO tap, and zooms once', (tester) async {
+      final taps = <MapTapEvent>[];
+      final map = await _pumpMap(tester, taps: taps);
+      await doubleTapAt(tester, const Offset(200, 150));
+
+      expect(taps, isEmpty, reason: 'both taps belong to the zoom');
+      expect(map.eases, hasLength(1));
+    });
+
+    testWidgets('a single tap is still reported, just late', (tester) async {
+      // The cost of the above, and the same one Apple and Android pay: a tap
+      // cannot be known to be single until the double-tap window has passed.
+      final taps = <MapTapEvent>[];
+      await _pumpMap(tester, taps: taps);
+      await tester.tapAt(const Offset(200, 150));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(taps, isEmpty, reason: 'still waiting to see if a second arrives');
+
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+      expect(taps, hasLength(1));
+    });
+
+    testWidgets('with double-tap zoom off, a tap is reported IMMEDIATELY', (
+      tester,
+    ) async {
+      // An app that does not want the gesture should not pay its latency.
+      final taps = <MapTapEvent>[];
+      await _pumpMap(
+        tester,
+        gestures: const MapGestureSettings(doubleTapZoomEnabled: false),
+        taps: taps,
+      );
+      await tester.tapAt(const Offset(200, 150));
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(taps, hasLength(1));
+    });
+
+    testWidgets('two taps far apart are two taps, not a double tap', (
+      tester,
+    ) async {
+      final taps = <MapTapEvent>[];
+      final map = await _pumpMap(tester, taps: taps);
+      await tester.tapAt(const Offset(100, 100));
+      await tester.pump(kDoubleTapMinTime);
+      await tester.tapAt(const Offset(600, 400)); // beyond the slop
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+
+      expect(taps, hasLength(2));
+      expect(map.eases, isEmpty);
+    });
+  });
 }

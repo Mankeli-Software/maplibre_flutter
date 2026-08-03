@@ -185,8 +185,11 @@ void main() {
       await tester.pump();
       expect(map.moveCalls, isEmpty, reason: '$name must eat a drag');
 
+      // Settled past the double-tap window, or this asserts nothing: a map tap
+      // is held back until a second is ruled out, so `taps` is empty right
+      // after a pump whether the overlay ate it or not.
       await tester.tapAt(at);
-      await tester.pump();
+      await tester.pumpAndSettle(const Duration(seconds: 1));
       expect(taps, isEmpty, reason: '$name must eat a tap');
     });
   });
@@ -209,8 +212,12 @@ void main() {
     await _trackpadPanAt(tester, const Offset(500, 400));
     expect(map.moveCalls, isNotEmpty);
 
+    // Settled past the double-tap window, not merely pumped: a map tap is held
+    // back until a second tap has been ruled out, so that dropping a pin on a
+    // double-tap-to-zoom is impossible (gesture_settings_test.dart pins both
+    // halves of that). The assertion is unchanged — the tap still arrives.
     await tester.tapAt(const Offset(500, 400));
-    await tester.pump();
+    await tester.pumpAndSettle(const Duration(seconds: 1));
     expect(taps, hasLength(1));
   });
 

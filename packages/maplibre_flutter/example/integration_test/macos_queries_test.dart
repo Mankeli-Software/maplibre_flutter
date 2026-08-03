@@ -220,7 +220,10 @@ void main() {
 
     final at = wholeScreen(tester).center + const Offset(30, -20);
     await tester.tapAt(at);
-    await tester.pump(const Duration(milliseconds: 200));
+    // Past the double-tap window (300 ms), not merely a frame: a map tap is
+    // held back until a second tap has been ruled out, so that
+    // double-tap-to-zoom cannot also report the taps it is made of.
+    await tester.pump(const Duration(milliseconds: 500));
 
     expect(tapped, isNotNull);
     expect(tapped!.screenPoint.dx, closeTo(at.dx, 1));

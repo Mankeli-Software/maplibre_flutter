@@ -633,13 +633,18 @@ class _MapEmbed extends StatelessWidget {
     // first, being in front); a tap on empty space falls through the
     // (transparent) overlay to this detector and reports a LatLng.
     if (onTap case final onTap?) {
-      map = GestureDetector(
-        onTapUp: (details) {
-          final point = projector.unproject(details.localPosition);
+      map = _MapTapDetector(
+        // A tap that turns out to be the first of a double tap must NOT be
+        // reported: it is the zoom gesture starting, and reporting it drops a
+        // pin (or opens a sheet) every time the user zooms. Apple and Android
+        // both suppress it — `requireGestureRecognizerToFail:` and
+        // `onSingleTapConfirmed` — and only gl-js reports both, because that is
+        // what a browser does with click and dblclick.
+        awaitDoubleTap: gestures.interactive && gestures.doubleTapZoomEnabled,
+        onTap: (position) {
+          final point = projector.unproject(position);
           if (point != null) {
-            onTap(
-              MapTapEvent(point: point, screenPoint: details.localPosition),
-            );
+            onTap(MapTapEvent(point: point, screenPoint: position));
           }
         },
         child: map,
@@ -657,6 +662,96 @@ class _MapEmbed extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Reports map taps, holding each one back until a double tap has been ruled
+/// out.
+///
+/// A `GestureDetector` rather than the raw `Listener` the zoom uses, and that is
+/// the point: the arena is what stops a tap consumed by a MARKER from also
+/// being reported as a map tap. A Listener sees every pointer in the hit path
+/// whether or not anything else claimed it, so tapping a pin would drop a pin
+/// under it.
+///
+/// The cost is real and is the same one Apple and Android pay: with
+/// [awaitDoubleTap] a single tap is reported ~300 ms late, because that is how
+/// long it takes to know it was single. Turning off
+/// `MapGestureSettings.doubleTapZoomEnabled` removes both the gesture and the
+/// latency.
+class _MapTapDetector extends StatefulWidget {
+  const _MapTapDetector({
+    required this.onTap,
+    required this.awaitDoubleTap,
+    required this.child,
+  });
+
+  final ValueChanged<Offset> onTap;
+  final bool awaitDoubleTap;
+  final Widget child;
+
+  @override
+  State<_MapTapDetector> createState() => _MapTapDetectorState();
+}
+
+class _MapTapDetectorState extends State<_MapTapDetector> {
+  Timer? _pending;
+  Offset? _pendingAt;
+  Offset? _lastTapPos;
+  int _lastTapUs = 0;
+  final Stopwatch _clock = Stopwatch()..start();
+
+  @override
+  void dispose() {
+    _pending?.cancel();
+    super.dispose();
+  }
+
+  /// Reports the held tap now. Called when something proves it was single.
+  void _flush() {
+    _pending?.cancel();
+    _pending = null;
+    if (_pendingAt case final at?) {
+      _pendingAt = null;
+      widget.onTap(at);
+    }
+  }
+
+  void _drop() {
+    _pending?.cancel();
+    _pending = null;
+    _pendingAt = null;
+  }
+
+  void _onTapUp(TapUpDetails details) {
+    final at = details.localPosition;
+    if (!widget.awaitDoubleTap) {
+      widget.onTap(at);
+      return;
+    }
+    final nowUs = _clock.elapsedMicroseconds;
+    final previous = _lastTapPos;
+    if (previous != null &&
+        nowUs - _lastTapUs <= _kDoubleTapWindowUs &&
+        (at - previous).distance <= _kTapSlop) {
+      // The second of a pair: drop this one AND the one still held.
+      _drop();
+      _lastTapPos = null;
+      return;
+    }
+    // A tap that is NOT the pair of the held one proves that one was single —
+    // report it now rather than making the user wait out a window its own
+    // successor has already closed. Cancelling it instead loses it outright,
+    // which is what tapping twice in two different places used to do.
+    _flush();
+    _lastTapPos = at;
+    _lastTapUs = nowUs;
+    _pendingAt = at;
+    _pending = Timer(const Duration(microseconds: _kDoubleTapWindowUs), _flush);
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      GestureDetector(onTapUp: _onTapUp, child: widget.child);
 }
 
 /// Desktop tier: embeds the rendered map [Texture]. Reports the view's size +
@@ -897,6 +992,13 @@ class _UnimplementedEmbed extends StatelessWidget {
 /// their thresholds. Latching a pan mode on the first update — when rotation is
 /// necessarily still ~0 — makes rotation permanently unreachable.
 enum _GestureMode { none, rotate, shove }
+
+/// What counts as a double tap. Shared by the zoom recogniser and by the map's
+/// tap detector, which has to suppress the taps a double tap is made of — if
+/// the two disagreed, a tap would be swallowed with no zoom to show for it, or
+/// a zoom would arrive with a spurious tap beside it.
+const int _kDoubleTapWindowUs = 300000; // Flutter's kDoubleTapTimeout
+const double _kTapSlop = 18; // kDoubleTapTouchSlop
 
 class _DesktopMapGestures extends StatefulWidget {
   const _DesktopMapGestures({
@@ -1288,9 +1390,6 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   Offset? _lastTapPos;
   int _lastTapUs = 0;
   bool _tapMoved = false;
-
-  static const int _kDoubleTapWindowUs = 300000; // Flutter's kDoubleTapTimeout
-  static const double _kTapSlop = 18; // kDoubleTapTouchSlop
 
   void _onDoubleTap(Offset anchor) {
     // Inertia from a preceding pan would fight the ease and land somewhere
