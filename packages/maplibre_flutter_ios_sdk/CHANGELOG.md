@@ -1,8 +1,8 @@
 ## 0.0.2+1
 
- - **REFACTOR**(ios): mbgl-core is the default; split SDK into maplibre_flutter_ios_sdk. ([0b65d381](https://github.com/Mankeli-Software/maplibre_flutter/commit/0b65d381f69ed100eb2dc3c1d439794b2c53cb74))
- - **DOCS**: compact CLAUDE.md and archive the decision log. ([c2f5a506](https://github.com/Mankeli-Software/maplibre_flutter/commit/c2f5a5062a025f5cc2e5c9b1bd83b35cfb786606))
- - **DOCS**: reframe for core-primary on every platform; record the inversion. ([576ff2e4](https://github.com/Mankeli-Software/maplibre_flutter/commit/576ff2e454b6a46befc4ef1bc3895f39bd86842d))
+ - **REFACTOR**(ios): mbgl-core is the default; split SDK into maplibre_flutter_ios_sdk. ([872b2282](https://github.com/Mankeli-Software/maplibre_flutter/commit/872b2282faeaca8188fc16367d2f0adc2ff6be6d))
+ - **DOCS**: compact CLAUDE.md and archive the decision log. ([40bbfd06](https://github.com/Mankeli-Software/maplibre_flutter/commit/40bbfd06aa4f7dfb16b6a542c763673bdf69cdd5))
+ - **DOCS**: reframe for core-primary on every platform; record the inversion. ([3161a63d](https://github.com/Mankeli-Software/maplibre_flutter/commit/3161a63d5f48663bbffe70f74f36687e0873ee08))
 
 ## 0.0.2
 

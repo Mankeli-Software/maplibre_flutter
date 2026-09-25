@@ -1,6 +1,6 @@
 ## 0.0.2+1
 
- - **REFACTOR**(web): mbgl-core WASM is the default; split gl-js into maplibre_flutter_web_gljs. ([85ccc100](https://github.com/Mankeli-Software/maplibre_flutter/commit/85ccc1009a3945a1f7e4cc48d69b036d7e6961c2))
+ - **REFACTOR**(web): mbgl-core WASM is the default; split gl-js into maplibre_flutter_web_gljs. ([1544efe2](https://github.com/Mankeli-Software/maplibre_flutter/commit/1544efe27e3665b68147ad0062eb05783c363599))
 
 ## 0.0.2
 
