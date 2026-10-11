@@ -112,6 +112,44 @@ typedef void (*MblDiagnosticCallback)(void *user, int32_t kind,
 FFI_PLUGIN_EXPORT void mbl_map_set_diagnostic_callback(
     MblMap *map, MblDiagnosticCallback callback, void *user);
 
+// --- Dart callback lifetime --------------------------------------------------
+//
+// A Dart NativeCallable's function pointer is valid only while its isolate
+// lives, but everything this shim stores it in — maps, the request transform,
+// offline observers, one-shot replies — can outlive the isolate. A Flutter hot
+// restart does exactly that: it throws the isolate group away without running
+// any dispose(), and the next call through a stored pointer jumps into a freed
+// trampoline. These four calls let the shim refuse such calls instead.
+//
+// A Dart isolate opens one session and attaches mbl_dart_session_close to a
+// NativeFinalizer, which the VM runs at isolate shutdown BEFORE it frees the
+// isolate's callbacks. Every NativeCallable is registered under the session
+// BEFORE its pointer is passed to any other mbl_ call, and unregistered before
+// it is closed. A stored callback is then called only while the exact
+// registration it was stored under is live.
+//
+// Only NativeCallable.LISTENERS may be registered: the shim may hold internal
+// locks while calling one, which is safe only because a listener posts and
+// returns. A function pointer that is never registered (plain C) is unaffected
+// and always called.
+
+// Opens a session for the calling isolate. Never 0.
+FFI_PLUGIN_EXPORT uint64_t mbl_dart_session_open(void);
+
+// Closes a session: every callable registered under it stops being called.
+// `session` is the id from mbl_dart_session_open, cast to a pointer — the
+// signature is a NativeFinalizer callback's. Does not block on Dart.
+FFI_PLUGIN_EXPORT void mbl_dart_session_close(void *session);
+
+// Registers a callable's function pointer under an open session. Returns 0 if
+// the session is not open (the pointer then must not be handed over).
+FFI_PLUGIN_EXPORT int mbl_dart_callback_register(uint64_t session,
+                                                 void *callback);
+
+// Unregisters a callable before it is closed. Returns once no call into it is
+// still executing, so closing it afterwards cannot race a native thread.
+FFI_PLUGIN_EXPORT void mbl_dart_callback_unregister(void *callback);
+
 // --- Process-wide configuration ----------------------------------------------
 //
 // Tile cache, API key and tile-server URLs, set ONCE before the first map.

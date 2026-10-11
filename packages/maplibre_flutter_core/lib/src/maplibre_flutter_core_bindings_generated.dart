@@ -36,6 +36,21 @@ external void mbl_map_set_diagnostic_callback(
   ffi.Pointer<ffi.Void> user,
 );
 
+@ffi.Native<ffi.Uint64 Function()>()
+external int mbl_dart_session_open();
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void mbl_dart_session_close(ffi.Pointer<ffi.Void> session);
+
+@ffi.Native<ffi.Int Function(ffi.Uint64, ffi.Pointer<ffi.Void>)>()
+external int mbl_dart_callback_register(
+  int session,
+  ffi.Pointer<ffi.Void> callback,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void mbl_dart_callback_unregister(ffi.Pointer<ffi.Void> callback);
+
 @ffi.Native<
   ffi.Int Function(ffi.Pointer<ffi.Char>, ffi.Uint64, ffi.Pointer<ffi.Char>)
 >()

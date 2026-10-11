@@ -317,6 +317,12 @@ Bridge with abstract class + factory, each platform file importing only its own 
 **Keep a Dart-side field reference to every callback you register** (not just a local) or the GC
 can collect the proxy and silently break callbacks. Clear it on dispose.
 
+**In the core, every `NativeCallable` goes through `_Callbacks`**: `_Callbacks.track(…)` before
+its pointer reaches any `mbl_` call, `_Callbacks.close(…)` instead of `.close()`. That registers
+it in the isolate's native session, which a `NativeFinalizer` closes at isolate shutdown, and the
+shim refuses calls into anything unregistered or from a closed session. A bare `NativeCallable`
+still works but is unprotected, and segfaults the app on the first callback after a hot restart.
+
 ---
 
 ## 6. Tooling & commands
@@ -739,6 +745,15 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   is invisible on a device. Recognise extra gestures on the raw `Listener` the gesture layer
   already has, and keep the drag helper in `gesture_settings_test.dart` at ONE move: that is what
   notices.
+- **A hot restart runs no `dispose()` and frees every `NativeCallable` of the old isolate
+  group, but native state survives it.** Maps, the request transform and offline observers all
+  outlive the isolate, so the next call through a stored pointer jumps into a freed trampoline
+  (SIGSEGV, `pc == far`). The process-wide mbgl log observer made it near-certain: one glyph 404
+  from any map fanned out to every map's diagnostic callback. Hence the callback gate (§5e).
+  `NativeFinalizer`s are the hook because `Isolate::Shutdown` runs them BEFORE
+  `LowLevelShutdown` deletes the isolate's FFI callbacks. Reproduce with `Isolate.spawnUri` (a
+  new isolate GROUP, as a restart makes); a plain `Isolate.spawn` shares the group and its
+  trampoline pages, and may not fault. `test/isolate_shutdown_test.dart` does exactly that.
 - **`RenderRepaintBoundary.toImage()` waits on a real raster-pipeline callback** that
   `flutter_test`'s fake async never delivers. Rasterizer tests **must** use `tester.runAsync` or
   they hang to the 10-minute timeout.

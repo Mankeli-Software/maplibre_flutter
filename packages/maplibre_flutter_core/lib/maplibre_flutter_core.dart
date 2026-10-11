@@ -12,6 +12,67 @@ import 'src/maplibre_flutter_core_bindings_generated.dart' as bindings;
 typedef _QueryCallbackNative =
     ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Char>);
 
+/// The isolate-shutdown hook's token. Only its identity matters.
+final class _SessionToken implements ffi.Finalizable {}
+
+/// Every `NativeCallable` handed to the core goes through here: [track] before
+/// its pointer is passed to any `mbl_` call, [close] instead of
+/// `NativeCallable.close`.
+///
+/// A callable's pointer is valid only while this isolate lives, but the core
+/// keeps what it is given — maps, the request transform, offline observers —
+/// for as long as the process. A Flutter hot restart replaces the isolate group
+/// without running a single `dispose()`, so before this the next log record or
+/// resource request called into a freed trampoline and the app segfaulted.
+///
+/// So each isolate opens a native session, closed by a [ffi.NativeFinalizer]:
+/// the VM runs native finalizers in its isolate shutdown BEFORE it frees the
+/// isolate's callbacks, so the core learns that the pointers are going while
+/// they are still valid, and refuses every call into them from then on. See
+/// "Dart callback lifetime" in `src/maplibre_flutter_core.h`.
+abstract final class _Callbacks {
+  static final _onIsolateExit = ffi.NativeFinalizer(
+    ffi.Native.addressOf<
+          ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>
+        >(bindings.mbl_dart_session_close)
+        .cast(),
+  );
+
+  // Held in a static, so it is never collected: the finalizer runs at isolate
+  // shutdown and not before.
+  static final _token = _SessionToken();
+
+  static final int _session = () {
+    final id = bindings.mbl_dart_session_open();
+    _onIsolateExit.attach(_token, ffi.Pointer<ffi.Void>.fromAddress(id));
+    return id;
+  }();
+
+  /// Registers [callable] with the core, which will then call it only until
+  /// it is [close]d or this isolate exits. Listeners only — see the header.
+  static ffi.NativeCallable<T> track<T extends Function>(
+    ffi.NativeCallable<T> callable,
+  ) {
+    final registered = bindings.mbl_dart_callback_register(
+      _session,
+      callable.nativeFunction.cast(),
+    );
+    if (registered == 0) {
+      callable.close();
+      throw StateError('maplibre_flutter_core: callback session is closed');
+    }
+    return callable;
+  }
+
+  /// Unregisters [callable] — waiting out any call already in progress on a
+  /// native thread — and then closes it. Null is a no-op.
+  static void close(ffi.NativeCallable<Function>? callable) {
+    if (callable == null) return;
+    bindings.mbl_dart_callback_unregister(callable.nativeFunction.cast());
+    callable.close();
+  }
+}
+
 /// A camera read back from the native core.
 ///
 /// Plain record — `maplibre_flutter_core` has no Flutter dependency, so it does
@@ -226,37 +287,39 @@ abstract final class MapLibreCoreSettings {
     if (transform == null) {
       final removed =
           bindings.mbl_set_request_transform(ffi.nullptr, ffi.nullptr) != 0;
-      _requestTransformCallable?.close();
+      _Callbacks.close(_requestTransformCallable);
       _requestTransformCallable = null;
       return removed;
     }
     final previous = _requestTransformCallable;
-    final callable = ffi.NativeCallable<_RequestTransformNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      int requestId,
-      int kind,
-      ffi.Pointer<ffi.Char> url,
-    ) {
-      // Ownership of `url` came with the call; release it whatever happens.
-      String original = '';
-      try {
-        original = url == ffi.nullptr ? '' : url.cast<Utf8>().toDartString();
-      } finally {
-        if (url != ffi.nullptr) bindings.mbl_string_free(url);
-      }
-      var answer = original;
-      try {
-        answer = transform(CoreResourceKind.fromCode(kind), original);
-      } on Object {
-        answer = original; // declining beats stranding the request
-      }
-      using((arena) {
-        bindings.mbl_transform_reply(
-          requestId,
-          answer.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
-        );
-      });
-    });
+    final callable = _Callbacks.track(
+      ffi.NativeCallable<_RequestTransformNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        int requestId,
+        int kind,
+        ffi.Pointer<ffi.Char> url,
+      ) {
+        // Ownership of `url` came with the call; release it whatever happens.
+        String original = '';
+        try {
+          original = url == ffi.nullptr ? '' : url.cast<Utf8>().toDartString();
+        } finally {
+          if (url != ffi.nullptr) bindings.mbl_string_free(url);
+        }
+        var answer = original;
+        try {
+          answer = transform(CoreResourceKind.fromCode(kind), original);
+        } on Object {
+          answer = original; // declining beats stranding the request
+        }
+        using((arena) {
+          bindings.mbl_transform_reply(
+            requestId,
+            answer.toNativeUtf8(allocator: arena).cast<ffi.Char>(),
+          );
+        });
+      }),
+    );
     _requestTransformCallable = callable;
     final installed =
         bindings.mbl_set_request_transform(
@@ -264,9 +327,9 @@ abstract final class MapLibreCoreSettings {
           ffi.nullptr,
         ) !=
         0;
-    previous?.close();
+    _Callbacks.close(previous);
     if (!installed) {
-      callable.close();
+      _Callbacks.close(callable);
       _requestTransformCallable = null;
     }
     return installed;
@@ -1276,13 +1339,15 @@ class MapLibreCoreMap {
     // Kept in a field-scoped local closed over by the callable itself, then
     // closed on first use — one query, one callable, no registry to leak.
     late final ffi.NativeCallable<_QueryCallbackNative> callable;
-    callable = ffi.NativeCallable<_QueryCallbackNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      ffi.Pointer<ffi.Char> json,
-    ) {
-      callable.close();
-      if (!completer.isCompleted) completer.complete(_takeString(json));
-    });
+    callable = _Callbacks.track(
+      ffi.NativeCallable<_QueryCallbackNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        ffi.Pointer<ffi.Char> json,
+      ) {
+        _Callbacks.close(callable);
+        if (!completer.isCompleted) completer.complete(_takeString(json));
+      }),
+    );
     using((arena) {
       bindings.mbl_map_query_rendered_features_async(
         _handle,
@@ -1558,9 +1623,12 @@ class MapLibreCoreMap {
   /// Frees the native map. Idempotent.
   void dispose() {
     if (_disposed) return;
-    _disposed = true;
+    // Callbacks first, while the handle is still live: they skip the native
+    // unregister once `_disposed` is set, and a callable closed while the map
+    // still holds its pointer is one log record away from being called.
     setDiagnosticCallback(null);
     setCameraFinishCallback(null);
+    _disposed = true;
     if (_projIn != ffi.nullptr) malloc.free(_projIn);
     if (_projOut != ffi.nullptr) malloc.free(_projOut);
     if (_projVis != ffi.nullptr) malloc.free(_projVis);
@@ -1609,47 +1677,48 @@ class MapLibreCoreMap {
           ffi.nullptr,
         );
       }
-      _diagnosticCallable?.close();
+      _Callbacks.close(_diagnosticCallable);
       _diagnosticCallable = null;
       return;
     }
     _checkAlive();
     final previous = _diagnosticCallable;
-    final callable =
-        ffi.NativeCallable<
-          ffi.Void Function(
-            ffi.Pointer<ffi.Void>,
-            ffi.Int32,
-            ffi.Int32,
-            ffi.Pointer<ffi.Char>,
-          )
-        >.listener((
-          ffi.Pointer<ffi.Void> user,
-          int kind,
-          int severity,
-          ffi.Pointer<ffi.Char> message,
-        ) {
-          // Ownership of `message` came with the call; release it whatever the
-          // handler does, including throw.
-          try {
-            onDiagnostic((
-              kind: CoreDiagnosticKind.fromCode(kind),
-              severity: CoreDiagnosticSeverity.fromCode(severity),
-              message: message == ffi.nullptr
-                  ? ''
-                  : message.cast<Utf8>().toDartString(),
-            ));
-          } finally {
-            if (message != ffi.nullptr) bindings.mbl_string_free(message);
-          }
-        });
+    final callable = _Callbacks.track(
+      ffi.NativeCallable<
+        ffi.Void Function(
+          ffi.Pointer<ffi.Void>,
+          ffi.Int32,
+          ffi.Int32,
+          ffi.Pointer<ffi.Char>,
+        )
+      >.listener((
+        ffi.Pointer<ffi.Void> user,
+        int kind,
+        int severity,
+        ffi.Pointer<ffi.Char> message,
+      ) {
+        // Ownership of `message` came with the call; release it whatever the
+        // handler does, including throw.
+        try {
+          onDiagnostic((
+            kind: CoreDiagnosticKind.fromCode(kind),
+            severity: CoreDiagnosticSeverity.fromCode(severity),
+            message: message == ffi.nullptr
+                ? ''
+                : message.cast<Utf8>().toDartString(),
+          ));
+        } finally {
+          if (message != ffi.nullptr) bindings.mbl_string_free(message);
+        }
+      }),
+    );
     _diagnosticCallable = callable;
     bindings.mbl_map_set_diagnostic_callback(
       _handle,
       callable.nativeFunction,
       ffi.nullptr,
     );
-    previous?.close();
+    _Callbacks.close(previous);
   }
 
   // --- Images -----------------------------------------------------------------
@@ -2196,25 +2265,26 @@ class MapLibreCoreMap {
           ffi.nullptr,
         );
       }
-      _cameraFinishCallable?.close();
+      _Callbacks.close(_cameraFinishCallable);
       _cameraFinishCallable = null;
       return;
     }
     _checkAlive();
     final previous = _cameraFinishCallable;
-    final callable =
-        ffi.NativeCallable<
-          ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint64)
-        >.listener((ffi.Pointer<ffi.Void> user, int token) {
-          onFinish(token);
-        });
+    final callable = _Callbacks.track(
+      ffi.NativeCallable<
+        ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint64)
+      >.listener((ffi.Pointer<ffi.Void> user, int token) {
+        onFinish(token);
+      }),
+    );
     _cameraFinishCallable = callable;
     bindings.mbl_map_set_camera_finish_callback(
       _handle,
       callable.nativeFunction,
       ffi.nullptr,
     );
-    previous?.close();
+    _Callbacks.close(previous);
   }
 
   void _checkAlive() {
@@ -2441,35 +2511,37 @@ abstract final class MapLibreCoreOffline {
   static Future<List<CoreOfflineRegion>> listRegions() {
     final completer = Completer<List<CoreOfflineRegion>>();
     late final ffi.NativeCallable<_OfflineListNative> callable;
-    callable = ffi.NativeCallable<_OfflineListNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      ffi.Pointer<ffi.Char> json,
-    ) {
-      callable.close();
-      // Freed BEFORE the isCompleted check, not after: ownership of the string
-      // came with the call, so returning early without taking it leaks the
-      // whole JSON array.
-      final text = _takeOfflineString(json);
-      if (completer.isCompleted) return;
-      if (text == null) {
-        completer.completeError(
-          const CoreOfflineException('could not read the offline database'),
-        );
-        return;
-      }
-      // Parsing runs inside a listener, which is the ONLY thing that can
-      // complete this Future — so a throw here (malformed JSON, an unexpected
-      // type, a non-UTF-8 byte in a style URL) would escape as an unhandled
-      // async error and leave the caller awaiting forever. A failure the caller
-      // can catch is worth more than a spinner that never resolves.
-      try {
-        completer.complete(_parseRegions(text));
-      } on Object catch (error) {
-        completer.completeError(
-          CoreOfflineException('could not parse the region list: $error'),
-        );
-      }
-    });
+    callable = _Callbacks.track(
+      ffi.NativeCallable<_OfflineListNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        ffi.Pointer<ffi.Char> json,
+      ) {
+        _Callbacks.close(callable);
+        // Freed BEFORE the isCompleted check, not after: ownership of the string
+        // came with the call, so returning early without taking it leaks the
+        // whole JSON array.
+        final text = _takeOfflineString(json);
+        if (completer.isCompleted) return;
+        if (text == null) {
+          completer.completeError(
+            const CoreOfflineException('could not read the offline database'),
+          );
+          return;
+        }
+        // Parsing runs inside a listener, which is the ONLY thing that can
+        // complete this Future — so a throw here (malformed JSON, an unexpected
+        // type, a non-UTF-8 byte in a style URL) would escape as an unhandled
+        // async error and leave the caller awaiting forever. A failure the caller
+        // can catch is worth more than a spinner that never resolves.
+        try {
+          completer.complete(_parseRegions(text));
+        } on Object catch (error) {
+          completer.completeError(
+            CoreOfflineException('could not parse the region list: $error'),
+          );
+        }
+      }),
+    );
     bindings.mbl_offline_list_regions(callable.nativeFunction, ffi.nullptr);
     return completer.future;
   }
@@ -2494,39 +2566,41 @@ abstract final class MapLibreCoreOffline {
   static Future<CoreOfflineRegionStatus?> getRegionStatus(int regionId) {
     final completer = Completer<CoreOfflineRegionStatus?>();
     late final ffi.NativeCallable<_OfflineProgressNative> callable;
-    callable = ffi.NativeCallable<_OfflineProgressNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      int id,
-      int state,
-      int completedResources,
-      int requiredResources,
-      int precise,
-      int completedBytes,
-      int completedTiles,
-      int requiredTiles,
-      int completedTileBytes,
-    ) {
-      callable.close();
-      if (completer.isCompleted) return;
-      // MBL_OFFLINE_STATUS_UNAVAILABLE: the engine promised a delivery and this
-      // is how it says it has nothing. Reporting it as a real all-zero status
-      // would read as "downloaded nothing", which is a different and wrong
-      // answer.
-      if (precise < 0) {
-        completer.complete(null);
-        return;
-      }
-      completer.complete((
-        downloadState: CoreOfflineDownloadState.fromCode(state),
-        completedResourceCount: completedResources,
-        completedResourceSize: completedBytes,
-        completedTileCount: completedTiles,
-        completedTileSize: completedTileBytes,
-        requiredResourceCount: requiredResources,
-        requiredTileCount: requiredTiles,
-        requiredResourceCountIsPrecise: precise != 0,
-      ));
-    });
+    callable = _Callbacks.track(
+      ffi.NativeCallable<_OfflineProgressNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        int id,
+        int state,
+        int completedResources,
+        int requiredResources,
+        int precise,
+        int completedBytes,
+        int completedTiles,
+        int requiredTiles,
+        int completedTileBytes,
+      ) {
+        _Callbacks.close(callable);
+        if (completer.isCompleted) return;
+        // MBL_OFFLINE_STATUS_UNAVAILABLE: the engine promised a delivery and this
+        // is how it says it has nothing. Reporting it as a real all-zero status
+        // would read as "downloaded nothing", which is a different and wrong
+        // answer.
+        if (precise < 0) {
+          completer.complete(null);
+          return;
+        }
+        completer.complete((
+          downloadState: CoreOfflineDownloadState.fromCode(state),
+          completedResourceCount: completedResources,
+          completedResourceSize: completedBytes,
+          completedTileCount: completedTiles,
+          completedTileSize: completedTileBytes,
+          requiredResourceCount: requiredResources,
+          requiredTileCount: requiredTiles,
+          requiredResourceCountIsPrecise: precise != 0,
+        ));
+      }),
+    );
     final dispatched = bindings.mbl_offline_get_region_status(
       regionId,
       callable.nativeFunction,
@@ -2537,7 +2611,7 @@ abstract final class MapLibreCoreOffline {
       // here is safe and the Future resolves instead of hanging. A timeout
       // would be the wrong tool twice over: it cannot tell "slow" from "never",
       // and closing a callable mbgl might still hold is a use-after-free.
-      callable.close();
+      _Callbacks.close(callable);
       return Future.value(null);
     }
     return completer.future;
@@ -2567,54 +2641,58 @@ abstract final class MapLibreCoreOffline {
         ffi.nullptr,
         ffi.nullptr,
       );
-      previous?.progress.close();
-      previous?.error.close();
+      _Callbacks.close(previous?.progress);
+      _Callbacks.close(previous?.error);
       return removed != 0;
     }
 
-    final progress = ffi.NativeCallable<_OfflineProgressNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      int id,
-      int state,
-      int completedResources,
-      int requiredResources,
-      int precise,
-      int completedBytes,
-      int completedTiles,
-      int requiredTiles,
-      int completedTileBytes,
-    ) {
-      onStatus?.call((
-        downloadState: CoreOfflineDownloadState.fromCode(state),
-        completedResourceCount: completedResources,
-        completedResourceSize: completedBytes,
-        completedTileCount: completedTiles,
-        completedTileSize: completedTileBytes,
-        requiredResourceCount: requiredResources,
-        requiredTileCount: requiredTiles,
-        requiredResourceCountIsPrecise: precise != 0,
-      ));
-    });
-    final error = ffi.NativeCallable<_OfflineErrorNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      int id,
-      int isTileLimit,
-      ffi.Pointer<ffi.Char> message,
-    ) {
-      // Ownership of `message` came with the call; release it whatever the
-      // handler does, including throw.
-      try {
-        onError?.call((
-          regionId: id,
-          isTileCountLimit: isTileLimit != 0,
-          message: message == ffi.nullptr
-              ? ''
-              : message.cast<Utf8>().toDartString(),
+    final progress = _Callbacks.track(
+      ffi.NativeCallable<_OfflineProgressNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        int id,
+        int state,
+        int completedResources,
+        int requiredResources,
+        int precise,
+        int completedBytes,
+        int completedTiles,
+        int requiredTiles,
+        int completedTileBytes,
+      ) {
+        onStatus?.call((
+          downloadState: CoreOfflineDownloadState.fromCode(state),
+          completedResourceCount: completedResources,
+          completedResourceSize: completedBytes,
+          completedTileCount: completedTiles,
+          completedTileSize: completedTileBytes,
+          requiredResourceCount: requiredResources,
+          requiredTileCount: requiredTiles,
+          requiredResourceCountIsPrecise: precise != 0,
         ));
-      } finally {
-        if (message != ffi.nullptr) bindings.mbl_string_free(message);
-      }
-    });
+      }),
+    );
+    final error = _Callbacks.track(
+      ffi.NativeCallable<_OfflineErrorNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        int id,
+        int isTileLimit,
+        ffi.Pointer<ffi.Char> message,
+      ) {
+        // Ownership of `message` came with the call; release it whatever the
+        // handler does, including throw.
+        try {
+          onError?.call((
+            regionId: id,
+            isTileCountLimit: isTileLimit != 0,
+            message: message == ffi.nullptr
+                ? ''
+                : message.cast<Utf8>().toDartString(),
+          ));
+        } finally {
+          if (message != ffi.nullptr) bindings.mbl_string_free(message);
+        }
+      }),
+    );
 
     final installed = bindings.mbl_offline_set_observer(
       regionId,
@@ -2622,13 +2700,13 @@ abstract final class MapLibreCoreOffline {
       error.nativeFunction,
       ffi.nullptr,
     );
-    previous?.progress.close();
-    previous?.error.close();
+    _Callbacks.close(previous?.progress);
+    _Callbacks.close(previous?.error);
     if (installed == 0) {
       // Nothing native took the pointers, so nothing can call them. Do not keep
       // them alive in the registry pretending otherwise.
-      progress.close();
-      error.close();
+      _Callbacks.close(progress);
+      _Callbacks.close(error);
       return false;
     }
     _offlineObservers[regionId] = (progress: progress, error: error);
@@ -2734,22 +2812,24 @@ abstract final class MapLibreCoreOffline {
     // One call, one callable, closed on first use — no registry to leak. It
     // fires on the DATABASE thread, so it has to be a listener.
     late final ffi.NativeCallable<_OfflineRegionNative> callable;
-    callable = ffi.NativeCallable<_OfflineRegionNative>.listener((
-      ffi.Pointer<ffi.Void> _,
-      int id,
-      ffi.Pointer<ffi.Char> error,
-    ) {
-      callable.close();
-      // Taken before any early return: ownership of the string came with the
-      // call.
-      final message = _takeOfflineString(error);
-      if (completer.isCompleted) return;
-      if (message != null) {
-        completer.completeError(CoreOfflineException(message));
-      } else {
-        completer.complete(id);
-      }
-    });
+    callable = _Callbacks.track(
+      ffi.NativeCallable<_OfflineRegionNative>.listener((
+        ffi.Pointer<ffi.Void> _,
+        int id,
+        ffi.Pointer<ffi.Char> error,
+      ) {
+        _Callbacks.close(callable);
+        // Taken before any early return: ownership of the string came with the
+        // call.
+        final message = _takeOfflineString(error);
+        if (completer.isCompleted) return;
+        if (message != null) {
+          completer.completeError(CoreOfflineException(message));
+        } else {
+          completer.complete(id);
+        }
+      }),
+    );
     try {
       invoke(callable.nativeFunction);
     } on Object {
@@ -2757,7 +2837,7 @@ abstract final class MapLibreCoreOffline {
       // means the engine never took the pointer, so nothing will ever call back
       // — close the callable rather than leaving it and the Future alive for
       // the life of the isolate.
-      callable.close();
+      _Callbacks.close(callable);
       rethrow;
     }
     return completer.future;

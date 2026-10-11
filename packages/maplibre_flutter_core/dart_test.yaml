@@ -1,0 +1,6 @@
+# Every test file runs in its own isolate but in ONE process, and the core's
+# state is process-wide: mbl_configure is refused while any map is alive, and
+# the resource-configuration and offline groups depend on that. Run the files
+# one after another so one file's maps cannot be alive during another's
+# configure-before-the-first-map tests.
+concurrency: 1

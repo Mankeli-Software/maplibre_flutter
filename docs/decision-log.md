@@ -1993,4 +1993,43 @@ same `DatabaseFileSource` and are what a storage settings screen needs beside it
   from "never", and closing a `NativeCallable` that mbgl might still hold is a use-after-free. Both
   it and `mbl_offline_set_observer` now return whether they dispatched.
 
+## 2026-10-11 — Dart callbacks are gated by isolate session: a hot restart segfaulted the app
+
+**Symptom.** A consuming app (VEJO, macOS debug) crashed right after every hot restart:
+`EXC_BAD_ACCESS`, pc equal to the faulting address, under `DiagnosticLogObserver::onRecord` ←
+`mbgl::Log::record` ← `RenderOrchestrator::onGlyphsError`. Its style's glyph server 404s some
+ranges, so mbgl logs constantly.
+
+**Root cause.** A hot restart replaces the root isolate group without running any `dispose()`. The
+old isolate's maps live on natively, each still holding its diagnostic callback — the pointer of a
+`NativeCallable.listener` the VM frees with the group. mbgl's log observer is process-wide and
+fans every record out to every map with a diagnostic callback, so the first record from any map
+called into freed memory. The same applied to the camera-finish callback, the process-wide request
+transform, offline observers and every one-shot reply in flight. Two smaller holes on the same
+path: the log fan-out dispatched to a COPY of the map list, so a map destroyed meanwhile was still
+dereferenced; and `MapLibreCoreMap.dispose()` closed its callables before the native map stopped
+calling them.
+
+**Decision.** A native callback gate, with no Dart API (`dart_api_dl`) dependency:
+
+- Each isolate opens a session (`mbl_dart_session_open`) and attaches `mbl_dart_session_close` to
+  a `NativeFinalizer`. `Isolate::Shutdown` runs native finalizers before `LowLevelShutdown`
+  deletes the isolate's FFI callbacks, so the shim hears about it while the pointers are valid.
+- Every `NativeCallable` is registered under its session before its pointer is handed over, and
+  unregistered (waiting out calls in flight) before it is closed. Registering mints a serial;
+  wherever the shim stores a pointer it stores the serial too, and calls only if that exact
+  registration is still live. The VM recycles trampoline addresses, so a stale pointer can never
+  reach a NEW isolate's callable either.
+- Unregistered pointers (plain C, e.g. a test harness) are always called, so native embedders
+  are unaffected. A request the dead transform will never answer is answered unchanged.
+
+**Rejected.** `Dart_PostCObject` to native ports (safe after shutdown by construction) needs
+`dart_api_dl.c` and the SDK's headers in every platform build, and an ABI change on every
+callback-taking call. Clearing callbacks when the next isolate starts leaves a window between the
+old isolate dying and the new one running. An unbounded wait in the session-close finalizer would
+risk hanging shutdown, since a listener call allocates in the VM; it waits at most 100 ms.
+
+**Not fixed, still true:** maps orphaned by a hot restart keep their render threads until the
+process exits (no platform tells plugins about a restart). They are now inert, not dangerous.
+
 _Append new decisions here with date and rationale._

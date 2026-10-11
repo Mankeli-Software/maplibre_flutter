@@ -123,6 +123,124 @@ struct CameraState {
 void dispatchDiagnostic(MblMap *m, MblDiagnosticKind kind,
                         MblDiagnosticSeverity severity,
                         const std::string &message);
+
+// --- Dart callback gate -------------------------------------------------------
+//
+// Every callback the Dart side registers here is a NativeCallable.listener, and
+// a NativeCallable's function pointer stays valid only while its isolate lives.
+// Native state does not die with the isolate: a Flutter HOT RESTART replaces the
+// root isolate group without running a single dispose(), so every map, the
+// request transform and the offline observers survive it, each still holding a
+// pointer into a trampoline the VM has freed. The first call after that jumps
+// to garbage — SIGSEGV with pc == the faulting address. The log observer made it
+// near-certain: it is process-wide and fans every mbgl log record out to every
+// map with a diagnostic callback, so one glyph 404 from any map was enough.
+//
+// The gate closes that without a Dart API dependency:
+//
+//   * Each isolate opens a SESSION (mbl_dart_session_open) and attaches
+//     mbl_dart_session_close to a NativeFinalizer. The VM runs native
+//     finalizers in Isolate::Shutdown BEFORE LowLevelShutdown deletes the
+//     isolate's FFI callbacks, so the session is closed while every pointer it
+//     owns is still valid.
+//   * Each NativeCallable is REGISTERED under its session before its pointer is
+//     handed over, and unregistered before it is closed. Registration mints a
+//     serial; whoever stores the pointer stores a ticket {session, serial} with
+//     it, taken at that moment.
+//   * Every call goes through GuardedCallback::invoke, which calls only if that
+//     exact registration is still live. A trampoline address the VM recycles
+//     for a NEW isolate's callable gets a new serial, so a stale ticket can
+//     never reach the new isolate's code either.
+//
+// A pointer that was never registered — a C caller's plain function, such as a
+// test harness passing one — has serial 0 and is always called, so this changes
+// nothing for native embedders.
+struct DartCallbackRegistry {
+  struct Entry {
+    uint64_t session = 0;
+    uint64_t serial = 0;
+  };
+  std::mutex mutex;
+  std::condition_variable idle;
+  uint64_t nextSession = 1;
+  uint64_t nextSerial = 1;
+  std::unordered_map<uint64_t, bool> openSessions;
+  std::unordered_map<const void *, Entry> live;
+  // Calls currently executing, by serial. An entry exists only while > 0.
+  std::unordered_map<uint64_t, int> inFlight;
+};
+
+// Leaked like the other process-wide state: callbacks can arrive from mbgl's
+// threads during static destruction, and a destroyed mutex there is an abort.
+DartCallbackRegistry &dartCallbacks() {
+  static auto *registry = new DartCallbackRegistry();
+  return *registry;
+}
+
+// One registration of one function pointer, captured when it is stored.
+struct DartCallbackTicket {
+  uint64_t session = 0;
+  uint64_t serial = 0; // 0 = not a registered Dart callable
+
+  static DartCallbackTicket of(const void *fn) {
+    if (fn == nullptr) return {};
+    auto &r = dartCallbacks();
+    std::lock_guard<std::mutex> lk(r.mutex);
+    const auto it = r.live.find(fn);
+    if (it == r.live.end()) return {};
+    return {it->second.session, it->second.serial};
+  }
+};
+
+// A (callback, user) pair plus the ticket that says whether it may still be
+// called. Copyable, so the one-shot paths can capture it in a lambda.
+template <typename Fn>
+struct GuardedCallback {
+  Fn fn = nullptr;
+  void *user = nullptr;
+  DartCallbackTicket ticket;
+
+  GuardedCallback() = default;
+  GuardedCallback(Fn callback, void *callbackUser)
+      : fn(callback), user(callbackUser),
+        ticket(DartCallbackTicket::of(reinterpret_cast<const void *>(callback))) {}
+
+  explicit operator bool() const { return fn != nullptr; }
+
+  // Runs `body(fn, user)` if, and only if, this registration is still live,
+  // and keeps it counted as in flight meanwhile so unregistering waits for it.
+  // Anything the call hands over (a heap string) must be ALLOCATED INSIDE
+  // `body`, so that a refused call leaks nothing. Returns whether it ran.
+  template <typename Body>
+  bool invoke(Body &&body) const {
+    if (fn == nullptr) return false;
+    const auto key = reinterpret_cast<const void *>(fn);
+    auto &r = dartCallbacks();
+    if (ticket.serial != 0) {
+      std::lock_guard<std::mutex> lk(r.mutex);
+      const auto it = r.live.find(key);
+      if (it == r.live.end() || it->second.serial != ticket.serial) {
+        return false;
+      }
+      ++r.inFlight[ticket.serial];
+    }
+    struct Leave {
+      uint64_t serial;
+      ~Leave() {
+        if (serial == 0) return;
+        auto &reg = dartCallbacks();
+        std::lock_guard<std::mutex> lk(reg.mutex);
+        const auto it = reg.inFlight.find(serial);
+        if (it != reg.inFlight.end() && --it->second == 0) {
+          reg.inFlight.erase(it);
+          reg.idle.notify_all();
+        }
+      }
+    } leave{ticket.serial};
+    body(fn, user);
+    return true;
+  }
+};
 } // namespace
 
 struct MblMap {
@@ -210,13 +328,13 @@ struct MblMap {
 
   // Diagnostic callback, guarded by the same mutex. Called on the render thread
   // for observer events, and on whichever thread logged for MBL_DIAG_LOG.
-  MblDiagnosticCallback diagCb = nullptr;
-  void *diagCbUser = nullptr;
+  // Gated (see GuardedCallback): it is a Dart NativeCallable that can outlive
+  // its isolate.
+  GuardedCallback<MblDiagnosticCallback> diagCb;
 
   // Camera-finished callback, guarded by cbMutex like the others. Fires on the
-  // render thread when an animated move ends or is superseded.
-  MblCameraFinishCallback cameraFinishCb = nullptr;
-  void *cameraFinishCbUser = nullptr;
+  // render thread when an animated move ends or is superseded. Gated likewise.
+  GuardedCallback<MblCameraFinishCallback> cameraFinishCb;
 
   // How many styles have finished loading. Registration necessarily happens
   // after mbl_map_create — the caller has to have the handle first — and a
@@ -388,22 +506,22 @@ std::once_flag gLogObserverOnce;
 void dispatchDiagnostic(MblMap *m, MblDiagnosticKind kind,
                         MblDiagnosticSeverity severity,
                         const std::string &message) {
-  MblDiagnosticCallback cb = nullptr;
-  void *user = nullptr;
+  GuardedCallback<MblDiagnosticCallback> cb;
   {
     std::lock_guard<std::mutex> lk(m->cbMutex);
     cb = m->diagCb;
-    user = m->diagCbUser;
   }
-  if (cb == nullptr) return;
-  // The receiver is necessarily asynchronous (a Dart NativeCallable.listener
-  // hops to the isolate), so the string has to outlive this call. Ownership
-  // goes with it; the receiver releases it with mbl_string_free.
-  char *owned = static_cast<char *>(std::malloc(message.size() + 1));
-  if (owned == nullptr) return;
-  std::memcpy(owned, message.data(), message.size());
-  owned[message.size()] = '\0';
-  cb(user, static_cast<int32_t>(kind), static_cast<int32_t>(severity), owned);
+  cb.invoke([&](MblDiagnosticCallback fn, void *user) {
+    // The receiver is necessarily asynchronous (a Dart NativeCallable.listener
+    // hops to the isolate), so the string has to outlive this call. Ownership
+    // goes with it; the receiver releases it with mbl_string_free. Allocated
+    // inside the gate, so a refused call leaks nothing.
+    char *owned = static_cast<char *>(std::malloc(message.size() + 1));
+    if (owned == nullptr) return;
+    std::memcpy(owned, message.data(), message.size());
+    owned[message.size()] = '\0';
+    fn(user, static_cast<int32_t>(kind), static_cast<int32_t>(severity), owned);
+  });
 }
 
 // mbgl's own log stream, which is the ONLY place several failures surface.
@@ -414,12 +532,15 @@ class DiagnosticLogObserver final : public mbgl::Log::Observer {
 public:
   bool onRecord(mbgl::EventSeverity severity, mbgl::Event, int64_t,
                 const std::string &msg) override {
-    std::vector<MblMap *> maps;
-    {
-      std::lock_guard<std::mutex> lk(gDiagMapsMutex);
-      maps = gDiagMaps;
-    }
-    for (MblMap *m : maps) {
+    // Fanned out UNDER the list lock, not from a copy of it. A copy let a map
+    // be destroyed between the copy and the dispatch — mbl_map_destroy takes
+    // it off this list and then deletes it, and a record logged by ANOTHER
+    // map's thread meanwhile still dereferenced it. Holding the lock makes
+    // that removal wait for a fan-out in progress. Safe to hold: the only
+    // thing on the far side is a listener trampoline, which posts and returns
+    // without re-entering the shim or logging.
+    std::lock_guard<std::mutex> lk(gDiagMapsMutex);
+    for (MblMap *m : gDiagMaps) {
       dispatchDiagnostic(m, MBL_DIAG_LOG,
                          static_cast<MblDiagnosticSeverity>(severity), msg);
     }
@@ -1888,14 +2009,14 @@ void fromCameraOptions(const mbgl::CameraOptions &in, MblCameraOptions *out) {
 std::function<void()> makeFinishFn(MblMap *m, uint64_t token) {
   if (token == 0) return nullptr;
   return [m, token] {
-    MblCameraFinishCallback cb = nullptr;
-    void *user = nullptr;
+    GuardedCallback<MblCameraFinishCallback> cb;
     {
       std::lock_guard<std::mutex> lk(m->cbMutex);
       cb = m->cameraFinishCb;
-      user = m->cameraFinishCbUser;
     }
-    if (cb != nullptr) cb(user, token);
+    cb.invoke([token](MblCameraFinishCallback fn, void *user) {
+      fn(user, token);
+    });
   };
 }
 
@@ -1966,9 +2087,9 @@ void mbl_map_set_camera_finish_callback(MblMap *m,
                                         MblCameraFinishCallback callback,
                                         void *user) {
   if (m == nullptr) return;
+  const GuardedCallback<MblCameraFinishCallback> cb(callback, user);
   std::lock_guard<std::mutex> lk(m->cbMutex);
-  m->cameraFinishCb = callback;
-  m->cameraFinishCbUser = user;
+  m->cameraFinishCb = cb;
 }
 
 void mbl_map_jump_to(MblMap *m, const MblCameraOptions *camera) {
@@ -3166,15 +3287,16 @@ void mbl_map_query_rendered_features_async(MblMap *m, double min_x,
                                            MblQueryCallback callback,
                                            void *user) {
   if (callback == nullptr) return;
+  const GuardedCallback<MblQueryCallback> reply(callback, user);
   if (m == nullptr) {
     // Still call back: a caller awaiting a Future must not wait forever on a
     // handle that was already dead.
-    callback(user, nullptr);
+    reply.invoke([](MblQueryCallback fn, void *u) { fn(u, nullptr); });
     return;
   }
   auto layers = splitCsv(layer_ids);
   auto filter = parseFilter(m, filter_json);
-  m->post([m, min_x, min_y, max_x, max_y, layers, filter, callback, user] {
+  m->post([m, min_x, min_y, max_x, max_y, layers, filter, reply] {
     std::string json;
     try {
       auto *renderer =
@@ -3189,7 +3311,9 @@ void mbl_map_query_rendered_features_async(MblMap *m, double min_x,
     } catch (...) {
       fprintf(stderr, "maplibre_flutter_core: query failed (unknown)\n");
     }
-    callback(user, dupJson(json));
+    reply.invoke([&json](MblQueryCallback fn, void *u) {
+      fn(u, dupJson(json));
+    });
   });
 }
 
@@ -3247,9 +3371,9 @@ void mbl_map_set_diagnostic_callback(MblMap *m, MblDiagnosticCallback callback,
     return;
   }
   {
+    const GuardedCallback<MblDiagnosticCallback> cb(callback, user);
     std::lock_guard<std::mutex> lk(m->cbMutex);
-    m->diagCb = callback;
-    m->diagCbUser = user;
+    m->diagCb = cb;
   }
   {
     // Keep the log-observer fan-out list in step. Registering twice would
@@ -3636,11 +3760,16 @@ namespace {
 // Where a region's progress and errors go. Empty callbacks mean "observed, but
 // nothing to deliver" — the observer is still installed, since mbgl has no way
 // to install one for errors only.
+//
+// Both are gated (see GuardedCallback): a region's observer outlives the isolate
+// that installed it across a hot restart, and mbgl keeps reporting to it.
 struct MblOfflineSink {
-  MblOfflineProgressCallback onProgress = nullptr;
-  MblOfflineErrorCallback onError = nullptr;
-  void *user = nullptr;
+  GuardedCallback<MblOfflineProgressCallback> onProgress;
+  GuardedCallback<MblOfflineErrorCallback> onError;
 };
+
+// A one-shot result callback, gated like every other Dart callback.
+using OfflineDone = GuardedCallback<MblOfflineRegionCallback>;
 
 // All offline state, INTENTIONALLY LEAKED — allocated on first use and never
 // destroyed.
@@ -3701,23 +3830,22 @@ std::string offlineErrorText(const std::exception_ptr &error) {
 }
 
 // Report a one-shot result. `error` empty means success.
-void offlineComplete(MblOfflineRegionCallback callback, void *user, int64_t id,
+void offlineComplete(const OfflineDone &done, int64_t id,
                      const std::string &error) {
-  if (callback == nullptr) return;
-  callback(user, id, error.empty() ? nullptr : dupToHeap(error));
+  done.invoke([&](MblOfflineRegionCallback fn, void *user) {
+    fn(user, id, error.empty() ? nullptr : dupToHeap(error));
+  });
 }
 
-void offlineCompleteFromExceptionPtr(MblOfflineRegionCallback callback,
-                                     void *user, int64_t id,
+void offlineCompleteFromExceptionPtr(const OfflineDone &done, int64_t id,
                                      const std::exception_ptr &error) {
-  offlineComplete(callback, user, id, offlineErrorText(error));
+  offlineComplete(done, id, offlineErrorText(error));
 }
 
 void emitOfflineStatus(const MblOfflineSink &sink, int64_t id,
                        const mbgl::OfflineRegionStatus &status) {
-  if (sink.onProgress == nullptr) return;
-  sink.onProgress(
-      sink.user, id,
+  sink.onProgress.invoke([&](MblOfflineProgressCallback fn, void *user) {
+    fn(user, id,
       status.downloadState == mbgl::OfflineRegionDownloadState::Active
           ? MBL_OFFLINE_ACTIVE
           : MBL_OFFLINE_INACTIVE,
@@ -3725,6 +3853,7 @@ void emitOfflineStatus(const MblOfflineSink &sink, int64_t id,
       status.requiredResourceCountIsPrecise ? 1 : 0,
       status.completedResourceSize, status.completedTileCount,
       status.requiredTileCount, status.completedTileSize);
+  });
 }
 
 // Deliver to a region's observer WHILE HOLDING the table lock.
@@ -3799,10 +3928,11 @@ class MblOfflineObserver final : public mbgl::OfflineRegionObserver {
  private:
   void emitError(int isTileLimit, const std::string &message) {
     withOfflineSink(regionId, [&](const MblOfflineSink &sink) {
-      if (sink.onError == nullptr) return;
       // dupToHeap only once there is somewhere for it to go: transferring
       // ownership to a callback that is not there leaks the string outright.
-      sink.onError(sink.user, regionId, isTileLimit, dupToHeap(message));
+      sink.onError.invoke([&](MblOfflineErrorCallback fn, void *user) {
+        fn(user, regionId, isTileLimit, dupToHeap(message));
+      });
     });
   }
 
@@ -3947,19 +4077,20 @@ void mbl_offline_create_region(const char *style_url, double north,
                                float pixel_ratio, int include_ideographs,
                                const uint8_t *metadata, uint32_t metadata_len,
                                MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   // Validated here rather than in mbgl: LatLngBounds' constructor throws on a
   // bad latitude, and a throw crossing `extern "C"` is undefined behaviour.
   if (style_url == nullptr || *style_url == '\0') {
-    offlineComplete(callback, user, 0, "style URL is empty");
+    offlineComplete(done, 0, "style URL is empty");
     return;
   }
   if (!std::isfinite(north) || !std::isfinite(south) || !std::isfinite(east) ||
       !std::isfinite(west) || north < south || east < west) {
-    offlineComplete(callback, user, 0, "bounds are not a valid box");
+    offlineComplete(done, 0, "bounds are not a valid box");
     return;
   }
   if (north > 90.0 || south < -90.0) {
-    offlineComplete(callback, user, 0, "latitude is outside -90..90");
+    offlineComplete(done, 0, "latitude is outside -90..90");
     return;
   }
   // NaN is why this is spelled out rather than written as `max_zoom < min_zoom`
@@ -3971,7 +4102,7 @@ void mbl_offline_create_region(const char *style_url, double north,
   // goes") and must stay legal, so this is not simply `isfinite`.
   if (!std::isfinite(min_zoom) || min_zoom < 0 || std::isnan(max_zoom) ||
       max_zoom < min_zoom) {
-    offlineComplete(callback, user, 0, "zoom range is not valid");
+    offlineComplete(done, 0, "zoom range is not valid");
     return;
   }
   // Likewise `!(pixel_ratio > 0)` alone rejects NaN and negatives but ACCEPTS
@@ -3980,13 +4111,13 @@ void mbl_offline_create_region(const char *style_url, double north,
   // since rapidjson refuses to serialise a non-finite double and leaves the key
   // with no value at all.
   if (!std::isfinite(pixel_ratio) || pixel_ratio <= 0) {
-    offlineComplete(callback, user, 0, "pixel ratio must be positive and finite");
+    offlineComplete(done, 0, "pixel ratio must be positive and finite");
     return;
   }
 
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, 0, "no offline database");
+    offlineComplete(done, 0, "no offline database");
     return;
   }
 
@@ -3998,23 +4129,24 @@ void mbl_offline_create_region(const char *style_url, double north,
 
   db->createOfflineRegion(
       definition, offlineMetadataFrom(metadata, metadata_len),
-      [callback, user](mbgl::expected<mbgl::OfflineRegion, std::exception_ptr>
+      [done](mbgl::expected<mbgl::OfflineRegion, std::exception_ptr>
                            result) {
         if (!result) {
-          offlineCompleteFromExceptionPtr(callback, user, 0, result.error());
+          offlineCompleteFromExceptionPtr(done, 0, result.error());
           return;
         }
         rememberOfflineRegion(*result);
-        offlineComplete(callback, user, result->getID(), "");
+        offlineComplete(done, result->getID(), "");
       });
 }
 
 void mbl_offline_set_metadata(int64_t region_id, const uint8_t *metadata,
                               uint32_t metadata_len,
                               MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, region_id, "no offline database");
+    offlineComplete(done, region_id, "no offline database");
     return;
   }
   // The cached OfflineRegion still carries the OLD blob afterwards, and there
@@ -4025,26 +4157,31 @@ void mbl_offline_set_metadata(int64_t region_id, const uint8_t *metadata,
   // metadata.
   db->updateOfflineMetadata(
       region_id, offlineMetadataFrom(metadata, metadata_len),
-      [region_id, callback,
-       user](mbgl::expected<mbgl::OfflineRegionMetadata, std::exception_ptr>
+      [region_id, done](mbgl::expected<mbgl::OfflineRegionMetadata, std::exception_ptr>
                  result) {
-        offlineComplete(callback, user, region_id,
+        offlineComplete(done, region_id,
                         result ? std::string() : offlineErrorText(result.error()));
       });
 }
 
 void mbl_offline_list_regions(MblOfflineListCallback callback, void *user) {
   if (callback == nullptr) return;
+  const GuardedCallback<MblOfflineListCallback> reply(callback, user);
+  const auto deliver = [reply](const char *json) {
+    reply.invoke([json](MblOfflineListCallback fn, void *u) {
+      fn(u, json == nullptr ? nullptr : dupToHeap(std::string(json)));
+    });
+  };
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    callback(user, nullptr);
+    deliver(nullptr);
     return;
   }
-  db->listOfflineRegions([db, callback, user](
+  db->listOfflineRegions([db, deliver](
                              mbgl::expected<mbgl::OfflineRegions,
                                             std::exception_ptr> result) {
     if (!result) {
-      callback(user, nullptr);
+      deliver(nullptr);
       return;
     }
     // Everything below runs on the database thread, in order: listOfflineRegions
@@ -4055,7 +4192,7 @@ void mbl_offline_list_regions(MblOfflineListCallback callback, void *user) {
     for (const auto &region : *regions) rememberOfflineRegion(region);
 
     if (regions->empty()) {
-      callback(user, dupToHeap("[]"));
+      deliver("[]");
       return;
     }
 
@@ -4065,7 +4202,7 @@ void mbl_offline_list_regions(MblOfflineListCallback callback, void *user) {
     for (std::size_t i = 0; i < regions->size(); ++i) {
       db->getOfflineRegionStatus(
           (*regions)[i],
-          [i, regions, statuses, remaining, callback, user](
+          [i, regions, statuses, remaining, deliver](
               mbgl::expected<mbgl::OfflineRegionStatus, std::exception_ptr>
                   statusResult) {
             // A status that could not be read is reported as an all-zero one
@@ -4081,9 +4218,8 @@ void mbl_offline_list_regions(MblOfflineListCallback callback, void *user) {
               writeOfflineRegionJson(writer, (*regions)[j], (*statuses)[j]);
             }
             writer.EndArray();
-            callback(user,
-                     dupToHeap(std::string(buffer.GetString(),
-                                           buffer.GetSize())));
+            // GetString is NUL-terminated, and JSON carries no raw NULs.
+            deliver(buffer.GetString());
           });
     }
   });
@@ -4107,9 +4243,11 @@ int mbl_offline_get_region_status(int64_t region_id,
   const auto region = offlineRegionFor(region_id);
   const auto db = offlineDatabase();
   if (region == nullptr || db == nullptr) return 0;
+  const MblOfflineSink sink{
+      GuardedCallback<MblOfflineProgressCallback>(callback, user), {}};
   db->getOfflineRegionStatus(
       *region,
-      [region_id, callback, user](
+      [region_id, sink](
           mbgl::expected<mbgl::OfflineRegionStatus, std::exception_ptr>
               result) {
         if (!result) {
@@ -4118,11 +4256,13 @@ int mbl_offline_get_region_status(int64_t region_id,
           // process lifetime, holding its callback open with it. mbgl reaches
           // here whenever the region row has gone or SQLite refuses (a second
           // connection, a full disk), which a caller cannot predict.
-          callback(user, region_id, MBL_OFFLINE_INACTIVE, 0, 0,
+          sink.onProgress.invoke(
+              [region_id](MblOfflineProgressCallback fn, void *u) {
+                fn(u, region_id, MBL_OFFLINE_INACTIVE, 0, 0,
                    MBL_OFFLINE_STATUS_UNAVAILABLE, 0, 0, 0, 0);
+              });
           return;
         }
-        const MblOfflineSink sink{callback, nullptr, user};
         emitOfflineStatus(sink, region_id, *result);
       });
   return 1;
@@ -4152,7 +4292,9 @@ int mbl_offline_set_observer(int64_t region_id,
   {
     auto &state = offlineState();
   std::lock_guard<std::mutex> lk(state.mutex);
-    state.sinks[region_id] = MblOfflineSink{on_progress, on_error, user};
+    state.sinks[region_id] = MblOfflineSink{
+        GuardedCallback<MblOfflineProgressCallback>(on_progress, user),
+        GuardedCallback<MblOfflineErrorCallback>(on_error, user)};
   }
   db->setOfflineRegionObserver(
       *region, std::make_unique<MblOfflineObserver>(region_id));
@@ -4161,10 +4303,11 @@ int mbl_offline_set_observer(int64_t region_id,
 
 void mbl_offline_delete_region(int64_t region_id,
                                MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   const auto region = offlineRegionFor(region_id);
   const auto db = offlineDatabase();
   if (region == nullptr || db == nullptr) {
-    offlineComplete(callback, user, region_id,
+    offlineComplete(done, region_id,
                     "no such region in this process — list regions first");
     return;
   }
@@ -4179,29 +4322,30 @@ void mbl_offline_delete_region(int64_t region_id,
   db->setOfflineRegionDownloadState(*region,
                                     mbgl::OfflineRegionDownloadState::Inactive);
   db->deleteOfflineRegion(
-      *region, [region_id, region, callback, user](std::exception_ptr error) {
+      *region, [region_id, region, done](std::exception_ptr error) {
         if (!error) {
           auto &state = offlineState();
   std::lock_guard<std::mutex> lk(state.mutex);
           state.regions.erase(region_id);
         }
-        offlineCompleteFromExceptionPtr(callback, user, region_id, error);
+        offlineCompleteFromExceptionPtr(done, region_id, error);
       });
 }
 
 void mbl_offline_invalidate_region(int64_t region_id,
                                    MblOfflineRegionCallback callback,
                                    void *user) {
+  const OfflineDone done(callback, user);
   const auto region = offlineRegionFor(region_id);
   const auto db = offlineDatabase();
   if (region == nullptr || db == nullptr) {
-    offlineComplete(callback, user, region_id,
+    offlineComplete(done, region_id,
                     "no such region in this process — list regions first");
     return;
   }
   db->invalidateOfflineRegion(
-      *region, [region_id, region, callback, user](std::exception_ptr error) {
-        offlineCompleteFromExceptionPtr(callback, user, region_id, error);
+      *region, [region_id, region, done](std::exception_ptr error) {
+        offlineCompleteFromExceptionPtr(done, region_id, error);
       });
 }
 
@@ -4212,45 +4356,49 @@ void mbl_offline_set_tile_count_limit(uint64_t limit) {
 }
 
 void mbl_offline_pack_database(MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, 0, "no offline database");
+    offlineComplete(done, 0, "no offline database");
     return;
   }
-  db->packDatabase([callback, user](std::exception_ptr error) {
-    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  db->packDatabase([done](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(done, 0, error);
   });
 }
 
 void mbl_offline_clear_ambient_cache(MblOfflineRegionCallback callback,
                                      void *user) {
+  const OfflineDone done(callback, user);
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, 0, "no offline database");
+    offlineComplete(done, 0, "no offline database");
     return;
   }
-  db->clearAmbientCache([callback, user](std::exception_ptr error) {
-    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  db->clearAmbientCache([done](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(done, 0, error);
   });
 }
 
 void mbl_offline_set_maximum_ambient_cache_size(
     uint64_t bytes, MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, 0, "no offline database");
+    offlineComplete(done, 0, "no offline database");
     return;
   }
   db->setMaximumAmbientCacheSize(
-      bytes, [callback, user](std::exception_ptr error) {
-        offlineCompleteFromExceptionPtr(callback, user, 0, error);
+      bytes, [done](std::exception_ptr error) {
+        offlineCompleteFromExceptionPtr(done, 0, error);
       });
 }
 
 void mbl_offline_reset_database(MblOfflineRegionCallback callback, void *user) {
+  const OfflineDone done(callback, user);
   const auto db = offlineDatabase();
   if (db == nullptr) {
-    offlineComplete(callback, user, 0, "no offline database");
+    offlineComplete(done, 0, "no offline database");
     return;
   }
   // Stop every download FIRST, and only then forget the regions.
@@ -4278,8 +4426,8 @@ void mbl_offline_reset_database(MblOfflineRegionCallback callback, void *user) {
     state.regions.clear();
     state.sinks.clear();
   }
-  db->resetDatabase([callback, user](std::exception_ptr error) {
-    offlineCompleteFromExceptionPtr(callback, user, 0, error);
+  db->resetDatabase([done](std::exception_ptr error) {
+    offlineCompleteFromExceptionPtr(done, 0, error);
   });
 }
 
@@ -4425,8 +4573,10 @@ namespace {
 // safe and needs no lifetime dance of its own.
 struct MblTransformState {
   std::mutex mutex;
-  MblRequestTransformCallback callback = nullptr;
-  void *user = nullptr;
+  // Gated (see GuardedCallback). The transform is process-wide and outlives the
+  // isolate that installed it, so after a hot restart it is still asked for
+  // every resource, by maps of the NEW isolate too.
+  GuardedCallback<MblRequestTransformCallback> callback;
   uint64_t nextId = 1;
   std::unordered_map<uint64_t, mbgl::ResourceTransform::FinishedCallback> pending;
 
@@ -4473,8 +4623,7 @@ int mbl_set_request_transform(MblRequestTransformCallback callback,
   auto &state = transformState();
   {
     std::lock_guard<std::mutex> lk(state.mutex);
-    state.callback = callback;
-    state.user = user;
+    state.callback = GuardedCallback<MblRequestTransformCallback>(callback, user);
     if (callback == nullptr) {
       state.pending.clear();
     } else {
@@ -4492,19 +4641,17 @@ int mbl_set_request_transform(MblRequestTransformCallback callback,
       [](mbgl::Resource::Kind kind, const std::string &url,
          mbgl::ResourceTransform::FinishedCallback finished) {
         auto &state = transformState();
-        MblRequestTransformCallback callback = nullptr;
-        void *user = nullptr;
+        GuardedCallback<MblRequestTransformCallback> callback;
         uint64_t id = 0;
         {
           std::lock_guard<std::mutex> lk(state.mutex);
           callback = state.callback;
-          user = state.user;
-          if (callback != nullptr) {
+          if (callback) {
             id = state.nextId++;
             state.pending.emplace(id, std::move(finished));
           }
         }
-        if (callback == nullptr) {
+        if (!callback) {
           // Removed between the install and this call: answer with the URL
           // unchanged rather than stranding the resource forever.
           finished(url);
@@ -4513,7 +4660,24 @@ int mbl_set_request_transform(MblRequestTransformCallback callback,
         // Outside the lock: this hops to the Dart isolate, and a handler that
         // called back in here synchronously would deadlock on a mutex the
         // engine's own thread holds.
-        callback(user, id, resourceKindToAbi(kind), dupToHeap(url));
+        const bool asked = callback.invoke(
+            [&](MblRequestTransformCallback fn, void *user) {
+              fn(user, id, resourceKindToAbi(kind), dupToHeap(url));
+            });
+        if (!asked) {
+          // The isolate that installed it is gone (a hot restart), so nobody
+          // will ever reply. Answer unchanged, as for a removed transform.
+          mbgl::ResourceTransform::FinishedCallback stranded;
+          {
+            std::lock_guard<std::mutex> lk(state.mutex);
+            const auto it = state.pending.find(id);
+            if (it != state.pending.end()) {
+              stranded = std::move(it->second);
+              state.pending.erase(it);
+            }
+          }
+          if (stranded) stranded(url);
+        }
       }));
   return 1;
 }
@@ -4531,4 +4695,72 @@ void mbl_transform_reply(uint64_t request_id, const char *url) {
   // Released first: the engine may run the request inline from here, and it
   // would then be doing so under our lock.
   if (finished) finished(url != nullptr ? std::string(url) : std::string());
+}
+
+// --- Dart callback lifetime (see the gate near the top of this file) ---------
+//
+// At the end of the file, outside every anonymous namespace, for the same
+// reason as the offline block: an `extern "C"` definition inside one gets
+// internal linkage and is dead-stripped (CLAUDE.md §11).
+
+uint64_t mbl_dart_session_open(void) {
+  auto &r = dartCallbacks();
+  std::lock_guard<std::mutex> lk(r.mutex);
+  const uint64_t id = r.nextSession++;
+  r.openSessions[id] = true;
+  return id;
+}
+
+void mbl_dart_session_close(void *session) {
+  const auto id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(session));
+  auto &r = dartCallbacks();
+  std::unique_lock<std::mutex> lk(r.mutex);
+  if (r.openSessions.erase(id) == 0) return;
+  std::vector<uint64_t> serials;
+  for (auto it = r.live.begin(); it != r.live.end();) {
+    if (it->second.session == id) {
+      serials.push_back(it->second.serial);
+      it = r.live.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  // From here no NEW call can start. A call that passed the check a moment ago
+  // may still be inside its trampoline, and the VM frees the trampolines right
+  // after this returns — so wait for those, but only briefly. This runs as a
+  // NativeFinalizer, in the VM's isolate shutdown, and a listener call does
+  // enter the VM (it allocates its message); were one ever stuck behind this
+  // thread, an unbounded wait would hang shutdown. A trampoline post takes
+  // microseconds, so the bound is never what ends a normal wait.
+  r.idle.wait_for(lk, std::chrono::milliseconds(100), [&] {
+    for (const auto serial : serials) {
+      if (r.inFlight.count(serial) != 0) return false;
+    }
+    return true;
+  });
+}
+
+int mbl_dart_callback_register(uint64_t session, void *callback) {
+  if (callback == nullptr) return 0;
+  auto &r = dartCallbacks();
+  std::lock_guard<std::mutex> lk(r.mutex);
+  if (r.openSessions.count(session) == 0) return 0;
+  // Overwrites a stale entry: the VM recycles trampoline addresses, and the new
+  // serial is what keeps a ticket taken for the old callable from matching.
+  r.live[callback] = {session, r.nextSerial++};
+  return 1;
+}
+
+void mbl_dart_callback_unregister(void *callback) {
+  if (callback == nullptr) return;
+  auto &r = dartCallbacks();
+  std::unique_lock<std::mutex> lk(r.mutex);
+  const auto it = r.live.find(callback);
+  if (it == r.live.end()) return;
+  const uint64_t serial = it->second.serial;
+  r.live.erase(it);
+  // Called from Dart through a non-leaf FFI call, so the isolate is in native
+  // state here and a listener call that needs the VM can still complete: an
+  // unbounded wait is safe, and it is what makes the close() after it safe.
+  r.idle.wait(lk, [&] { return r.inFlight.count(serial) == 0; });
 }
