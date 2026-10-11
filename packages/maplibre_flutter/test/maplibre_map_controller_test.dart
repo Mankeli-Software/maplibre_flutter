@@ -68,6 +68,9 @@ class _CameraController extends _FakePlatformController
 
   final List<CameraOptions> eased = <CameraOptions>[];
 
+  /// When set, an easeTo lasts until this completes — a transition in flight.
+  Completer<void>? easeGate;
+
   @override
   int project(List<LatLng> points, List<Offset> out, {List<bool>? visible}) {
     for (var i = 0; i < points.length; i++) {
@@ -90,6 +93,7 @@ class _CameraController extends _FakePlatformController
     CameraAnimation? animation,
   }) async {
     eased.add(camera);
+    await easeGate?.future;
   }
 
   @override
@@ -399,6 +403,128 @@ void main() {
       }, ended: true);
       expect(c.isMoving, isFalse);
       expect(c.isZooming, isFalse);
+      await c.dispose();
+    });
+
+    test('a programmatic move never hides the gesture it overlaps', () async {
+      // The single-slot bug: a programmatic move ending mid-gesture emptied
+      // movingBecause while the finger was still down. A linked second map
+      // pushing its camera here every frame did exactly that.
+      MapLibreFlutterPlatform.instance = _CameraPlatform();
+      final c = MapLibreMapController();
+      final ends = <Set<MapCameraChangeReason>>[];
+      c.onCameraMoveEnd.listen(ends.add);
+      await c.attach(styleUri: 's', options: _attachOptions);
+
+      c.reportCameraMove(const {
+        MapCameraChangeReason.gesturePan,
+      }, ended: false);
+      await c.camera.jumpTo(const CameraOptions(zoom: 9));
+      await Future<void>.delayed(Duration.zero);
+      expect(c.movingBecause, {MapCameraChangeReason.gesturePan});
+      expect(c.movingBecause.isGesture, isTrue);
+      expect(ends, isEmpty, reason: 'the finger is still down');
+
+      c.reportCameraMove(const {MapCameraChangeReason.gesturePan}, ended: true);
+      await Future<void>.delayed(Duration.zero);
+      expect(c.isMoving, isFalse);
+      expect(ends, hasLength(1));
+      expect(ends.single, {
+        MapCameraChangeReason.gesturePan,
+        MapCameraChangeReason.programmatic,
+      }, reason: 'the end lists every reason the camera moved for');
+      await c.dispose();
+    });
+
+    test(
+      'overlapping programmatic moves end once, when the last lands',
+      () async {
+        final platform = _CameraPlatform();
+        MapLibreFlutterPlatform.instance = platform;
+        final c = MapLibreMapController();
+        final starts = <Set<MapCameraChangeReason>>[];
+        final ends = <Set<MapCameraChangeReason>>[];
+        c.onCameraMoveStart.listen(starts.add);
+        c.onCameraMoveEnd.listen(ends.add);
+        await c.attach(styleUri: 's', options: _attachOptions);
+
+        final gate = platform.last!.easeGate = Completer<void>();
+        final ease = c.camera.easeTo(const CameraOptions(zoom: 8));
+        await Future<void>.delayed(Duration.zero);
+        await c.camera.jumpTo(const CameraOptions(zoom: 9));
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          c.isMoving,
+          isTrue,
+          reason: 'the jump ending must not end the ease still in flight',
+        );
+        expect(ends, isEmpty);
+        expect(
+          starts,
+          hasLength(1),
+          reason: 'the same reason is not a new start',
+        );
+
+        gate.complete();
+        await ease;
+        await Future<void>.delayed(Duration.zero);
+        expect(c.isMoving, isFalse);
+        expect(ends, hasLength(1));
+        await c.dispose();
+      },
+    );
+
+    test(
+      'a programmatic move tells the gesture layer to stop a fling',
+      () async {
+        MapLibreFlutterPlatform.instance = _CameraPlatform();
+        final c = MapLibreMapController();
+        await c.attach(styleUri: 's', options: _attachOptions);
+        var stops = 0;
+        bool? movingAtStop;
+        c.gestureMotionStops.addListener(() {
+          stops++;
+          movingAtStop = c.isMoving;
+        });
+
+        await c.camera.easeTo(const CameraOptions(zoom: 8));
+        expect(stops, 1);
+        expect(
+          movingAtStop,
+          isTrue,
+          reason:
+              'the move is registered first, so the fling ending is not '
+              'reported as a stop of its own',
+        );
+        await c.camera.stop();
+        expect(stops, 2, reason: 'stop() ends a fling too');
+        await c.dispose();
+      },
+    );
+
+    test('stop() ends every move in flight, as cancelled', () async {
+      final platform = _CameraPlatform();
+      MapLibreFlutterPlatform.instance = platform;
+      final c = MapLibreMapController();
+      final ends = <Set<MapCameraChangeReason>>[];
+      c.onCameraMoveEnd.listen(ends.add);
+      await c.attach(styleUri: 's', options: _attachOptions);
+
+      final gate = platform.last!.easeGate = Completer<void>();
+      final ease = c.camera.easeTo(const CameraOptions(zoom: 8));
+      await Future<void>.delayed(Duration.zero);
+      expect(c.isMoving, isTrue);
+
+      await c.camera.stop();
+      await Future<void>.delayed(Duration.zero);
+      expect(c.isMoving, isFalse);
+      expect(ends, hasLength(1));
+      expect(ends.single.isCancelled, isTrue);
+
+      gate.complete(); // the superseded ease completes late: no second end
+      await ease;
+      await Future<void>.delayed(Duration.zero);
+      expect(ends, hasLength(1));
       await c.dispose();
     });
 

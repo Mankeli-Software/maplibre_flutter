@@ -832,6 +832,125 @@ void main() {
     expect(controller.isMoving, isFalse);
   });
 
+  /// A quick drag released while still moving: it flings.
+  Future<void> flick(WidgetTester tester) async {
+    final gesture = await tester.startGesture(const Offset(400, 300));
+    for (var i = 0; i < 5; i++) {
+      await gesture.moveBy(const Offset(-40, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+  }
+
+  testWidgets('a fling is still the pan: gesturePan holds until it stops', (
+    tester,
+  ) async {
+    // The regression: the reasons ended when the fingers lifted, so for the
+    // whole glide `movingBecause` said nothing was moving the camera. An app
+    // that follows the user's moves (a second map linked to this one) stopped
+    // dead while this map glided on, and the two came apart.
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final ends = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveEnd.listen(ends.add);
+    final map = await pumpGestureMapWith(tester, controller);
+
+    await flick(tester);
+    final atRelease = map.moveCalls.length;
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 16));
+
+    expect(
+      map.moveCalls.length,
+      greaterThan(atRelease),
+      reason: 'the release must fling, or this test proves nothing',
+    );
+    expect(
+      controller.movingBecause,
+      contains(MapCameraChangeReason.gesturePan),
+    );
+    expect(controller.movingBecause.isGesture, isTrue);
+    expect(ends, isEmpty, reason: 'the camera has not stopped yet');
+
+    await tester.pumpAndSettle();
+    final glided = map.moveCalls.length;
+    expect(controller.isMoving, isFalse, reason: 'the glide is over');
+    expect(ends, hasLength(1), reason: 'one stop, at the end of the glide');
+    expect(ends.single, contains(MapCameraChangeReason.gesturePan));
+
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(map.moveCalls, hasLength(glided), reason: 'nothing after the end');
+  });
+
+  testWidgets('a programmatic move stops a fling, and reports one stop', (
+    tester,
+  ) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final ends = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveEnd.listen(ends.add);
+    final map = await pumpGestureMapWith(tester, controller);
+
+    await flick(tester);
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(controller.movingBecause.isGesture, isTrue);
+
+    // gl-js `jumpTo` stops its handlers' inertia, Apple's cancels its
+    // deceleration: the fling must not keep shoving the map off the target.
+    await controller.camera.jumpTo(const CameraOptions(zoom: 12));
+    final atJump = map.moveCalls.length;
+    await tester.pumpAndSettle();
+
+    expect(map.moveCalls, hasLength(atJump), reason: 'the glide was stopped');
+    expect(controller.isMoving, isFalse);
+    expect(
+      ends,
+      hasLength(1),
+      reason: 'the fling ending under the jump is not a stop of its own',
+    );
+    expect(
+      ends.single,
+      containsAll(const {
+        MapCameraChangeReason.gesturePan,
+        MapCameraChangeReason.programmatic,
+      }),
+    );
+  });
+
+  testWidgets('a programmatic move leaves a finger on the map alone', (
+    tester,
+  ) async {
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final map = await pumpGestureMapWith(tester, controller);
+
+    final gesture = await tester.startGesture(const Offset(400, 300));
+    await gesture.moveBy(const Offset(-40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+    await gesture.moveBy(const Offset(-40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(controller.movingBecause.isGesture, isTrue);
+
+    // E.g. a second map, linked to this one, pushing its camera here. That
+    // used to wipe the gesture's reasons, and the gesture layer reports a
+    // reason only when it is new, so the pan went unreported until the
+    // finger lifted.
+    await controller.camera.jumpTo(const CameraOptions(zoom: 12));
+    expect(
+      controller.movingBecause.isGesture,
+      isTrue,
+      reason: 'the finger is still down and still panning',
+    );
+
+    final before = map.moveCalls.length;
+    await gesture.moveBy(const Offset(-40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(map.moveCalls.length, greaterThan(before), reason: 'still panning');
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.isMoving, isFalse);
+  });
+
   testWidgets('a twisting pinch reports BOTH pinch and rotate', (tester) async {
     final controller = MapLibreMapController();
     addTearDown(controller.dispose);

@@ -2032,4 +2032,42 @@ risk hanging shutdown, since a listener call allocates in the VM; it waits at mo
 **Not fixed, still true:** maps orphaned by a hot restart keep their render threads until the
 process exits (no platform tells plugins about a restart). They are now inert, not dangerous.
 
+## 2026-10-11 — A fling is part of its pan; programmatic moves no longer hide gestures
+
+**Reported** by an app that links two maps (the user moves one, the other follows every camera
+change while `movingBecause.isGesture`): after a flick, the touched map glided on and the other
+stopped dead, so they came apart.
+
+**Root causes, three, all in the Dart layer:**
+
+1. `_DesktopMapGestures._onScaleEnd` ended the gesture's reasons on release, before starting the
+   pan fling. For the whole glide `movingBecause` was empty and `onCameraMoveEnd` had already
+   fired, although the camera was visibly still moving because of the user.
+2. `movingBecause` was ONE slot that every report overwrote. A programmatic move ending
+   mid-gesture (a linked map's `jumpTo`, the `easeTo` a double tap runs) emptied it while the
+   finger was down, and the gesture layer reports a reason only when it is new, so it stayed
+   empty for the rest of the gesture. Nested or overlapping programmatic moves (`resetNorth`
+   wraps an `easeTo`) cleared each other the same way.
+3. A programmatic move did not stop a fling: the glide's per-frame `moveBy` landed on top of
+   the app's `jumpTo`/`easeTo`. gl-js `jumpTo` calls `stop()`, which ends its handlers'
+   inertia; Apple's camera setters call `cancelTransitions`, which ends its deceleration.
+
+**Decision.**
+
+- The fling holds the pan's reasons (`gesturePan`) until the glide stops or is stopped.
+- The controller keeps the gesture's reasons and each programmatic move's reasons (one token
+  per `_reported` call) apart; `movingBecause` is their union. `onCameraMoveStart` fires when a
+  new reason joins; `onCameraMoveEnd` fires once, when nothing moves the camera any more, with
+  every reason since it was last still (a fling cut short by an `easeTo` ends as
+  `{gesturePan, programmatic}`).
+- Every programmatic move (and `stop()`) fires `gestureMotionStops`, which stops a fling. It is
+  fired AFTER the move is registered, so the fling ending does not report a stop in between.
+  A finger still on the map is left alone, as on every SDK.
+- `fitBounds` now goes through `_reported` too (it reported nothing before).
+- `stop()` ends every programmatic move at once and adds `transitionCancelled` to the end's
+  payload. (Before, its `transitionCancelled` argument was silently dropped: an end reported
+  the previous start's reasons.)
+
+**Not changed:** rotate and zoom still have no inertia, so only the pan fling is affected.
+
 _Append new decisions here with date and rationale._

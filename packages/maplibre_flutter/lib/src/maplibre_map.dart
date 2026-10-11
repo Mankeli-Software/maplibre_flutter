@@ -882,6 +882,7 @@ class _TextureMapViewState extends State<_TextureMapView> {
             handler: handler,
             onDoubleTapZoom: widget.controller.zoomInAbout,
             onCameraMove: widget.controller.reportCameraMove,
+            motionStops: widget.controller.gestureMotionStops,
             // Null on a tier without the capability, which simply means no
             // rotate or tilt — pan and zoom are unaffected.
             rotator: widget.controller.rotateHandler,
@@ -1008,6 +1009,7 @@ class _DesktopMapGestures extends StatefulWidget {
     this.gestures = const MapGestureSettings(),
     this.onDoubleTapZoom,
     this.onCameraMove,
+    this.motionStops,
   });
 
   final MapLibreGestureHandler handler;
@@ -1034,6 +1036,11 @@ class _DesktopMapGestures extends StatefulWidget {
     required bool ended,
   })?
   onCameraMove;
+
+  /// Fires when app code moves the camera, which stops a pan's fling — gl-js
+  /// `stop()` ends its handlers' inertia and Apple's `cancelTransitions` its
+  /// deceleration. A finger still on the map is left alone.
+  final Listenable? motionStops;
 
   final Widget child;
 
@@ -1081,9 +1088,27 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
 
   /// Ends the reported gesture, if one was reported.
   void _endReasons() {
+    _inertiaHoldsReasons = false;
     final live = _liveReasons;
     _liveReasons = null;
     if (live != null) widget.onCameraMove?.call(live, ended: true);
+  }
+
+  /// Whether a fling is carrying the released pan's reasons. The fling is the
+  /// same pan, carried on: the camera is still moving because of the user, so
+  /// `movingBecause` keeps saying so until the glide stops. Ending the reasons
+  /// on release instead — as this layer once did — told every listener the
+  /// gesture was over while the map was visibly still moving; a second map
+  /// following this one's gestures stopped dead and the two came apart.
+  bool _inertiaHoldsReasons = false;
+
+  @override
+  void didUpdateWidget(_DesktopMapGestures old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.motionStops, widget.motionStops)) {
+      old.motionStops?.removeListener(_stopInertia);
+      widget.motionStops?.addListener(_stopInertia);
+    }
   }
 
   // ScaleUpdateDetails.rotation is CUMULATIVE radians since the gesture began,
@@ -1251,6 +1276,7 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   void initState() {
     super.initState();
     GestureBinding.instance.pointerRouter.addGlobalRoute(_globalPointerRoute);
+    widget.motionStops?.addListener(_stopInertia);
   }
 
   // Linux's GTK embedder reports touchpad two-finger pan deltas ~2x larger than the
@@ -1290,8 +1316,10 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
       ? _kLinuxTrackpadPanGain
       : 1.0;
 
+  /// Stops a fling, and ends the reasons it was carrying.
   void _stopInertia() {
     _inertiaTicker?.stop();
+    if (_inertiaHoldsReasons) _endReasons();
   }
 
   void _onScaleStart(ScaleStartDetails details) {
@@ -1540,24 +1568,28 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
-    // The gesture is over as far as the fingers are concerned. Inertia below
-    // keeps moving the map, but it is a continuation of the same pan rather
-    // than a new reason, and `onCameraChanged` still fires throughout.
-    _endReasons();
+    // The fingers are up. If the pan flings, the fling carries its reasons on
+    // until the glide stops (see [_inertiaHoldsReasons]); otherwise the gesture
+    // ends here.
+    if (!_startInertia()) _endReasons();
+  }
+
+  /// Starts the release fling if the pan earned one; false if it did not.
+  bool _startInertia() {
     // Pan inertia only. Never fling a gesture that zoomed (its focal drift isn't a
     // pan flick) — that was the "map also moves when zoomed" funkiness. A two-finger
     // *pan* (no scale change) still flings. Fling only if released while still moving
     // (not after a pause) and fast enough, using our tracked velocity, not the
     // unreliable details.velocity.
-    if (_gestureHadScale) return;
+    if (_gestureHadScale) return false;
     // A map that does not pan does not glide either; without this the drag is
     // ignored and then the release slides it anyway.
-    if (!_panAllowed) return;
+    if (!_panAllowed) return false;
     final sinceMoveUs = _clock.elapsedMicroseconds - _lastMoveUs;
-    if (sinceMoveUs > 100000) return; // released after a pause → no fling
+    if (sinceMoveUs > 100000) return false; // released after a pause → no fling
     var velocity = _dragVelocity;
     final speed = velocity.distance;
-    if (speed < _inertiaStartSpeed) return;
+    if (speed < _inertiaStartSpeed) return false;
     // Cap the release speed (belt-and-braces with the dt floor).
     if (speed > _inertiaMaxSpeed) {
       velocity = velocity * (_inertiaMaxSpeed / speed);
@@ -1581,9 +1613,13 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     // Reuse a single Ticker for the State's life — SingleTickerProviderStateMixin
     // forbids creating a second one, so a per-fling createTicker() throws on the
     // second pan-release. Stop (no-op if idle) then restart from elapsed zero.
+    // The glide moves the map because of the pan: keep reporting it.
+    _reportReason(MapCameraChangeReason.gesturePan);
+    _inertiaHoldsReasons = true;
     (_inertiaTicker ??= createTicker(_onInertiaTick))
       ..stop()
       ..start();
+    return true;
   }
 
   void _onInertiaTick(Duration elapsed) {
@@ -1608,8 +1644,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
     GestureBinding.instance.pointerRouter.removeGlobalRoute(
       _globalPointerRoute,
     );
+    widget.motionStops?.removeListener(_stopInertia);
     _inertiaTicker?.stop();
     _inertiaTicker?.dispose();
+    // A map unmounted mid-gesture or mid-fling must not leave its controller
+    // reporting a move that will never end.
+    _endReasons();
     super.dispose();
   }
 

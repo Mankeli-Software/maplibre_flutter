@@ -5,7 +5,8 @@ import 'dart:ui' show Offset, Rect, Size;
 import 'package:flutter/animation.dart' show Cubic;
 import 'package:flutter/painting.dart' show EdgeInsets;
 
-import 'package:flutter/foundation.dart' show FlutterError, Listenable;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, FlutterError, Listenable;
 
 import 'package:maplibre_flutter_platform_interface/geojson.dart';
 import 'package:maplibre_flutter_platform_interface/maplibre_flutter_platform_interface.dart';
@@ -173,6 +174,24 @@ class MapLibreMapController {
       StreamController<Set<MapCameraChangeReason>>.broadcast();
   Set<MapCameraChangeReason> _movingBecause = const {};
 
+  // The two sources of movement are kept apart and [movingBecause] is their
+  // union. One shared slot let either side wipe the other: a programmatic move
+  // ending mid-gesture (a linked map's jumpTo, the easeTo a double tap runs)
+  // emptied `movingBecause` while the finger was still down, and the gesture
+  // layer only reports a reason when it is NEW, so it stayed empty for the rest
+  // of the gesture. Overlapping programmatic moves (resetNorth wraps an easeTo)
+  // cleared each other the same way.
+  Set<MapCameraChangeReason> _gestureReasons = const {};
+  final Map<Object, Set<MapCameraChangeReason>> _programmaticMoves = {};
+  // Every reason seen since the camera was last still: the moveEnd payload.
+  final Set<MapCameraChangeReason> _movedBecause = {};
+
+  // Fired before a programmatic move starts, so the gesture layer can stop a
+  // pan fling still gliding — as gl-js `stop()` does to its handlers' inertia
+  // and Apple's `cancelTransitions` does to its deceleration. Without it the
+  // fling's per-frame deltas land on top of the app's move.
+  final _GestureMotionStops _gestureMotionStops = _GestureMotionStops();
+
   /// Fires when the camera starts moving, saying why — gl-js `movestart`,
   /// Apple `-mapView:regionWillChangeWithReason:animated:`.
   ///
@@ -190,9 +209,20 @@ class MapLibreMapController {
 
   /// Fires when the camera stops moving, with the reasons it moved for — gl-js
   /// `moveend`, Apple `-mapView:regionDidChangeWithReason:animated:`.
+  ///
+  /// "Stops" means nothing is moving it any more: the gesture (including the
+  /// fling that carries a pan on after the fingers lift) and every
+  /// programmatic move in flight have all ended. The payload is every reason
+  /// that took part since the camera was last still, so a fling the app cut
+  /// short with an `easeTo` ends as `{gesturePan, programmatic}`.
   Stream<Set<MapCameraChangeReason>> get onCameraMoveEnd => _moveEnds.stream;
 
   /// Why the camera is moving right now; empty when it is still.
+  ///
+  /// The union of the gesture in progress and every programmatic move in
+  /// flight, so a programmatic move that overlaps a gesture never hides it. A
+  /// pan's fling is part of the gesture: [MapCameraChangeReason.gesturePan]
+  /// stays here until the glide stops.
   Set<MapCameraChangeReason> get movingBecause => _movingBecause;
 
   /// Whether the camera is moving at all — gl-js `isMoving`.
@@ -209,8 +239,9 @@ class MapLibreMapController {
   /// Whether the bearing is changing — gl-js `isRotating`.
   bool get isRotating => _movingBecause.isRotation;
 
-  /// Reports a camera movement's start or end. Called by the gesture layer and
-  /// by the camera namespace; not app API.
+  /// Reports the start (or growth) and the end of the GESTURE in progress.
+  /// Called by the gesture layer; not app API. [reasons] replaces the
+  /// gesture's reasons on a start, and is ignored on an end.
   @internal
   void reportCameraMove(
     Set<MapCameraChangeReason> reasons, {
@@ -218,15 +249,75 @@ class MapLibreMapController {
   }) {
     if (_disposed) return;
     if (ended) {
-      if (_movingBecause.isEmpty) return; // nothing was started
-      final was = _movingBecause;
+      if (_gestureReasons.isEmpty) return; // nothing was started
+      _gestureReasons = const {};
+    } else {
+      _gestureReasons = Set.unmodifiable(reasons);
+    }
+    _updateMoving();
+  }
+
+  /// Starts a programmatic move under [token]; [_endProgrammaticMove] ends it.
+  void _startProgrammaticMove(
+    Object token,
+    Set<MapCameraChangeReason> reasons,
+  ) {
+    if (_disposed) return;
+    _programmaticMoves[token] = reasons;
+    _updateMoving();
+    // Only now, with the move registered: a fling ending first would empty
+    // [movingBecause] for an instant and report a stop that is not one.
+    _gestureMotionStops.fire();
+  }
+
+  /// Ends the programmatic move started under [token], if it is still live.
+  void _endProgrammaticMove(Object token) {
+    if (_disposed) return;
+    if (_programmaticMoves.remove(token) == null) return;
+    _updateMoving();
+  }
+
+  /// Recomputes [movingBecause] and fires the start and end streams.
+  void _updateMoving() {
+    final now = <MapCameraChangeReason>{
+      ..._gestureReasons,
+      for (final reasons in _programmaticMoves.values) ...reasons,
+    };
+    final was = _movingBecause;
+    if (now.isEmpty) {
+      if (was.isEmpty) return;
       _movingBecause = const {};
-      if (!_moveEnds.isClosed) _moveEnds.add(was);
+      final moved = Set<MapCameraChangeReason>.unmodifiable(_movedBecause);
+      _movedBecause.clear();
+      if (!_moveEnds.isClosed) _moveEnds.add(moved);
       return;
     }
-    _movingBecause = reasons;
-    if (!_moveStarts.isClosed) _moveStarts.add(reasons);
+    _movingBecause = Set.unmodifiable(now);
+    _movedBecause.addAll(now);
+    // A start whenever a new reason joins; the same reasons again (a second
+    // easeTo while one is in flight) are not a new start.
+    if (!was.containsAll(now) && !_moveStarts.isClosed) {
+      _moveStarts.add(_movingBecause);
+    }
   }
+
+  /// Ends every programmatic move and the fling: [MapLibreCameraController.stop].
+  void _stopMoves() {
+    if (_disposed) return;
+    // Apple reports an interrupted transition as its own reason; do the same,
+    // so a listener can tell "arrived" from "was cut short".
+    if (_movingBecause.isNotEmpty) {
+      _movedBecause.add(MapCameraChangeReason.transitionCancelled);
+    }
+    _programmaticMoves.clear();
+    _gestureMotionStops.fire();
+    _updateMoving();
+  }
+
+  /// Fires before every programmatic move; the gesture layer listens, to stop
+  /// a pan fling still gliding. Widget glue, not app API.
+  @internal
+  Listenable get gestureMotionStops => _gestureMotionStops;
 
   /// The id of an image a layer asked for that the style does not have.
   ///
@@ -322,6 +413,7 @@ class MapLibreMapController {
     await platform?.dispose();
     await _moveStarts.close();
     await _moveEnds.close();
+    _gestureMotionStops.dispose();
     await _errors.close();
     await _styleLoads.close();
     await _idles.close();
@@ -738,12 +830,18 @@ class MapLibreCameraController {
     Future<void> Function() move, {
     Set<MapCameraChangeReason> extra = const {},
   }) async {
-    final reasons = {MapCameraChangeReason.programmatic, ...extra};
-    _owner.reportCameraMove(reasons, ended: false);
+    // A token per move, so overlapping moves (resetNorth wraps an easeTo; an
+    // app can start a second ease before the first lands) end one at a time
+    // instead of the first end wiping the rest.
+    final token = Object();
+    _owner._startProgrammaticMove(token, {
+      MapCameraChangeReason.programmatic,
+      ...extra,
+    });
     try {
       await move();
     } finally {
-      _owner.reportCameraMove(reasons, ended: true);
+      _owner._endProgrammaticMove(token);
     }
   }
 
@@ -822,13 +920,15 @@ class MapLibreCameraController {
   }) async {
     final commands = _commands;
     if (commands == null) return;
-    return commands.fitBounds(
-      bounds,
-      padding: padding,
-      bearing: bearing,
-      pitch: pitch,
-      transition: transition,
-      animation: CameraAnimation(duration: duration),
+    return _reported(
+      () => commands.fitBounds(
+        bounds,
+        padding: padding,
+        bearing: bearing,
+        pitch: pitch,
+        transition: transition,
+        animation: CameraAnimation(duration: duration),
+      ),
     );
   }
 
@@ -928,15 +1028,11 @@ class MapLibreCameraController {
     Duration duration = const Duration(milliseconds: 300),
   }) => easeTo(const CameraOptions(pitch: 0), duration: duration);
 
-  /// Stops any transition in flight, leaving the camera where it reached —
-  /// gl-js `stop`.
+  /// Stops any transition in flight, and a pan's fling, leaving the camera
+  /// where it reached — gl-js `stop`. A finger still on the map keeps going.
   Future<void> stop() async {
     await _commands?.stopCamera();
-    // Apple reports an interrupted transition as its own reason; do the same,
-    // so a listener can tell "arrived" from "was cut short".
-    _owner.reportCameraMove(const {
-      MapCameraChangeReason.transitionCancelled,
-    }, ended: true);
+    _owner._stopMoves();
   }
 
   // --- Constraints ------------------------------------------------------------
@@ -981,4 +1077,9 @@ class MapLibreCameraController {
   /// Every camera limit currently in force.
   Future<MapCameraConstraints?> getConstraints() async =>
       _commands?.getCameraConstraints();
+}
+
+/// [MapLibreMapController.gestureMotionStops]: a notifier the controller fires.
+class _GestureMotionStops extends ChangeNotifier {
+  void fire() => notifyListeners();
 }
