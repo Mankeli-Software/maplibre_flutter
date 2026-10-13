@@ -31,6 +31,15 @@ void main() {
       ]);
     });
 
+    test('character references show as their characters', () {
+      final a = MapAttribution.parse(
+        '&copy; <a href="https://www.openstreetmap.org/copyright">'
+        'OpenStreetMap</a> &amp; &#169; &#xA9; &unknown;',
+      );
+      expect(a.text, '© OpenStreetMap & © © &unknown;');
+      expect(a.links.single.text, 'OpenStreetMap');
+    });
+
     test('plain text with no markup survives unchanged', () {
       final a = MapAttribution.parse('© Some Provider');
       expect(a.text, '© Some Provider');

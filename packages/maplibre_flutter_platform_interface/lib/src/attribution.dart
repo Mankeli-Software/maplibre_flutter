@@ -51,7 +51,9 @@ class MapAttribution {
             ? html.substring(close + 1)
             : html.substring(close + 1, end);
         text.write(label);
-        if (href != null) links.add(AttributionLink(text: label, url: href));
+        if (href != null) {
+          links.add(AttributionLink(text: _decode(label), url: href));
+        }
         i = end < 0 ? html.length : end + 4;
         continue;
       }
@@ -59,10 +61,43 @@ class MapAttribution {
     }
     return MapAttribution(
       html: html,
-      text: text.toString().replaceAll(RegExp(r'\s+'), ' ').trim(),
+      text: _decode(text.toString()).replaceAll(RegExp(r'\s+'), ' ').trim(),
       links: List.unmodifiable(links),
     );
   }
+
+  /// The character references a credit uses (`&copy;` in OpenStreetMap's),
+  /// so the text shows "©" rather than the markup. Unknown ones stay as
+  /// written.
+  static String _decode(String html) => html.replaceAllMapped(
+    RegExp(r'&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);'),
+    (m) {
+      final ref = m.group(1)!;
+      final code = ref.startsWith('#x') || ref.startsWith('#X')
+          ? int.tryParse(ref.substring(2), radix: 16)
+          : ref.startsWith('#')
+          ? int.tryParse(ref.substring(1))
+          : _named[ref];
+      return code == null || code > 0x10FFFF
+          ? m.group(0)!
+          : String.fromCharCode(code);
+    },
+  );
+
+  static const _named = {
+    'amp': 0x26,
+    'lt': 0x3C,
+    'gt': 0x3E,
+    'quot': 0x22,
+    'apos': 0x27,
+    'nbsp': 0xA0,
+    'copy': 0xA9,
+    'reg': 0xAE,
+    'trade': 0x2122,
+    'middot': 0xB7,
+    'ndash': 0x2013,
+    'mdash': 0x2014,
+  };
 
   static String? _href(String tag) {
     final match = RegExp(
