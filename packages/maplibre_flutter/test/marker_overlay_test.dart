@@ -459,6 +459,46 @@ void main() {
     expect(ended!.latitude, closeTo(12, 1e-9)); // and y→lat
   });
 
+  testWidgets('a tap on a draggable marker taps, and ends no drag', (
+    tester,
+  ) async {
+    // A "+" handle inserts on tap and on drop: a tap used to also report a
+    // drag end at the previous drag's stale position (two inserts, one of
+    // them somewhere else).
+    final controller = _ProjController(const TextureHandle(textureId: 5));
+    controller.projectFn = (_) => const Offset(100, 100);
+    MapLibreFlutterPlatform.instance = _FixedPlatform(controller);
+
+    final events = <String>[];
+    await _pump(
+      tester,
+      markers: [
+        MapLibreMarker(
+          point: const LatLng(0, 0),
+          draggable: true,
+          onDragEnd: (_) => events.add('dragEnd'),
+          child: GestureDetector(
+            onTap: () => events.add('tap'),
+            child: Container(
+              key: const Key('m'),
+              width: 40,
+              height: 40,
+              color: const Color(0xFF000000),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    await tester.drag(find.byKey(const Key('m')), const Offset(30, 20));
+    await tester.pump();
+    events.clear();
+    await tester.tap(find.byKey(const Key('m')));
+    await tester.pump();
+
+    expect(events, ['tap']);
+  });
+
   testWidgets('a controller without a projector renders no overlay', (
     tester,
   ) async {

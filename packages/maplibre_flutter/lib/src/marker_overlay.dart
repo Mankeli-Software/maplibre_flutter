@@ -125,6 +125,9 @@ class _MarkerOverlayState extends State<MarkerOverlay>
   }
 
   void _onDragEnd(int i) {
+    // A press that never became a pan (a tap) cancels without a start: there
+    // is no drag to end, and _dragScreen is stale from an earlier drag.
+    if (_dragIndex != i) return;
     final ll = widget.projector.unproject(_dragScreen);
     if (ll != null) widget.markers[i].onDragEnd?.call(ll);
     setState(() => _dragIndex = null);
