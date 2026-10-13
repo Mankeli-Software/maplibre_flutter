@@ -49,6 +49,7 @@ class MapLibreMap extends StatefulWidget {
     this.tiltGesturesEnabled,
     this.retainRuntimeStyle = false,
     this.showAttribution = true,
+    this.attributionAlignment = Alignment.bottomRight,
     this.onAttributionTap,
     this.userLocation,
     this.userTrackingMode = MapUserTrackingMode.none,
@@ -204,6 +205,11 @@ class MapLibreMap extends StatefulWidget {
   /// off only when you are rendering the credit yourself from
   /// `controller.style.getAttributions()`, not to tidy the screen.
   final bool showAttribution;
+
+  /// Where the credit sits over the map: the bottom right by default. Move it
+  /// when your own UI covers that corner (a bottom sheet over the map), so it
+  /// stays visible rather than being turned off.
+  final Alignment attributionAlignment;
 
   /// Called with a URL when an attribution link is tapped.
   ///
@@ -547,6 +553,7 @@ class _MapLibreMapState extends State<MapLibreMap> {
             MapLibreAttributionBar(
               attributions: _attributions,
               onLinkTap: widget.onAttributionTap,
+              alignment: widget.attributionAlignment,
             ),
           ],
         );
