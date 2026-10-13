@@ -47,9 +47,12 @@ class MapAttribution {
       if (tag.toLowerCase().startsWith('a ')) {
         final href = _href(tag);
         final end = html.indexOf('</a>', close);
-        final label = end < 0
-            ? html.substring(close + 1)
-            : html.substring(close + 1, end);
+        // Tags inside the anchor (`<b>`, `<span>`) are markup, not words.
+        final label =
+            (end < 0
+                    ? html.substring(close + 1)
+                    : html.substring(close + 1, end))
+                .replaceAll(RegExp('<[^>]*>'), '');
         text.write(label);
         if (href != null) {
           links.add(AttributionLink(text: _decode(label), url: href));

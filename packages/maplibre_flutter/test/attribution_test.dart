@@ -40,6 +40,25 @@ void main() {
       expect(a.links.single.text, 'OpenStreetMap');
     });
 
+    test('the credit Protomaps and planetiler tiles ship reads as "©"', () {
+      // The PMTiles metadata's attribution replaces the style's own for a
+      // `url` source, so this is the line a protomaps basemap shows.
+      final a = MapAttribution.parse(
+        '<a href="https://www.openstreetmap.org/copyright" target="_blank">'
+        '&copy; OpenStreetMap</a>',
+      );
+      expect(a.text, '© OpenStreetMap');
+      expect(a.links.single.text, '© OpenStreetMap');
+    });
+
+    test('tags inside a link are stripped from its label', () {
+      final a = MapAttribution.parse(
+        '<a href="https://x.example"><b>&copy;</b> <span>X</span></a> y',
+      );
+      expect(a.text, '© X y');
+      expect(a.links.single.text, '© X');
+    });
+
     test('plain text with no markup survives unchanged', () {
       final a = MapAttribution.parse('© Some Provider');
       expect(a.text, '© Some Provider');
@@ -86,6 +105,21 @@ void main() {
         ),
       ]);
       expect(find.textContaining('OpenStreetMap'), findsOneWidget);
+    });
+
+    testWidgets('shows a character reference as its character', (tester) async {
+      final osm = MapAttribution.parse(
+        '<a href="https://www.openstreetmap.org/copyright">'
+        '&copy; OpenStreetMap</a>',
+      );
+      await pump(tester, [osm]);
+      expect(find.text('© OpenStreetMap'), findsOneWidget);
+      expect(find.textContaining('&copy;'), findsNothing);
+
+      String? tapped;
+      await pump(tester, [osm], onLinkTap: (url) => tapped = url);
+      await tester.tap(find.text('© OpenStreetMap'));
+      expect(tapped, 'https://www.openstreetmap.org/copyright');
     });
 
     testWidgets('takes no space when there is nothing to credit', (
