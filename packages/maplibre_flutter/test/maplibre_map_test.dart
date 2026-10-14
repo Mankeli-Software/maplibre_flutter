@@ -882,6 +882,50 @@ void main() {
     expect(map.moveCalls, hasLength(glided), reason: 'nothing after the end');
   });
 
+  testWidgets('a trackpad fling is still the pan: gesturePan holds too', (
+    tester,
+  ) async {
+    // The same regression on a trackpad (macOS two-finger pan): the
+    // overlay fallback's global route ended the reasons on EVERY pan-zoom
+    // end, its own or not, right after the scale recogniser had started the
+    // fling. The map glided on, reporting nothing; a linked map stopped.
+    final controller = MapLibreMapController();
+    addTearDown(controller.dispose);
+    final ends = <Set<MapCameraChangeReason>>[];
+    controller.onCameraMoveEnd.listen(ends.add);
+    final map = await pumpGestureMapWith(tester, controller);
+
+    const at = Offset(400, 300);
+    final pad = TestPointer(3, PointerDeviceKind.trackpad);
+    await tester.sendEventToBinding(pad.panZoomStart(at));
+    for (var i = 1; i <= 5; i++) {
+      await tester.sendEventToBinding(
+        pad.panZoomUpdate(at, pan: Offset(-40.0 * i, 0)),
+      );
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await tester.sendEventToBinding(pad.panZoomEnd());
+    final atRelease = map.moveCalls.length;
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 16));
+
+    expect(
+      map.moveCalls.length,
+      greaterThan(atRelease),
+      reason: 'the release must fling, or this test proves nothing',
+    );
+    expect(
+      controller.movingBecause,
+      contains(MapCameraChangeReason.gesturePan),
+      reason: 'the glide is the pan, carried on',
+    );
+    expect(ends, isEmpty, reason: 'the camera has not stopped yet');
+
+    await tester.pumpAndSettle();
+    expect(controller.isMoving, isFalse, reason: 'the glide is over');
+    expect(ends, hasLength(1), reason: 'one stop, at the end of the glide');
+  });
+
   testWidgets('a programmatic move stops a fling, and reports one stop', (
     tester,
   ) async {

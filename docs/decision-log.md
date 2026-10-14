@@ -2070,4 +2070,21 @@ stopped dead, so they came apart.
 
 **Not changed:** rotate and zoom still have no inertia, so only the pan fling is affected.
 
+## 2026-10-14 — A trackpad fling is part of its pan too
+
+**Reported** by the same app: on a Mac, after a two-finger trackpad swipe the touched map
+glided on and the linked one stopped dead again. The mouse and touch fling (2026-10-11) were
+fine; the tests flicked with a pointer, never with a trackpad.
+
+**Root cause.** The overlay fallback (`_globalPointerRoute`, for pan-zoom gestures whose
+position is stale) ended the gesture's reasons on EVERY `PointerPanZoomEndEvent`, whether it
+had driven that gesture or not. Global routes run after the per-pointer routes, so the scale
+recogniser had already turned the pan into a fling holding `gesturePan` when the route ended
+it: for the whole glide `movingBecause` was empty and `onCameraMoveEnd` had fired. Every map
+on screen has the route, so a pan-zoom end anywhere did the same to a gliding map.
+
+**Decision.** The route ends only a gesture it drove (`_blockedPanZoom`); the local path's
+gesture, fling included, ends where it always did. Test: a trackpad fling holds `gesturePan`
+until the glide stops, with one end.
+
 _Append new decisions here with date and rationale._

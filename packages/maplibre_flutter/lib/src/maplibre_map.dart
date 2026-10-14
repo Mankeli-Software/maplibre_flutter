@@ -1769,6 +1769,12 @@ class _DesktopMapGesturesState extends State<_DesktopMapGestures>
         _blockedLastRotation = event.rotation;
       }
     } else if (event is PointerPanZoomEndEvent) {
+      // Only a gesture this route drove ends here. Every pan-zoom end in the
+      // app passes through every map's global route, after the scale
+      // recogniser: ending the reasons unconditionally ended them for a
+      // trackpad pan the local path had just turned into a fling, so the
+      // glide reported no gesture and a map linked to this one stopped.
+      if (!_blockedPanZoom) return;
       _blockedPanZoom = false;
       _inTrackpadPanZoom = false;
       _endReasons();
