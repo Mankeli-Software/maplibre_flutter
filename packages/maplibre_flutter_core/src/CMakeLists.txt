@@ -15,7 +15,16 @@
 #   primitives (libuv/curl/png/jpeg/webp/ICU). Present is CPU pixel-buffer (GL has no
 #   public texture handle); zero-copy (FlTextureGL / D3D shared handle) is a later step.
 cmake_minimum_required(VERSION 3.25)
-project(maplibre_flutter_core CXX C)
+
+# The Apple toolchain prepends its flags to their cached value on every configure;
+# these two calls keep the flags the same from one configure to the next, so a
+# rerun of the build hook does not rebuild all of mbgl-core (see the module).
+# On Apple, OBJC and OBJCXX are enabled here rather than in the Apple arm below,
+# so their flags exist to be fixed up too (MFC_TOOLCHAIN_LANGUAGES).
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain_flags.cmake")
+mfc_toolchain_flags_before_project()
+project(maplibre_flutter_core CXX C ${MFC_TOOLCHAIN_LANGUAGES})
+mfc_toolchain_flags_after_project()
 
 set(CMAKE_CXX_STANDARD 20) # mbgl-core requires C++20.
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

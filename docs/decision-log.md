@@ -2087,4 +2087,37 @@ on screen has the route, so a pan-zoom end anywhere did the same to a gliding ma
 gesture, fling included, ends where it always did. Test: a trackpad fling holds `gesturePan`
 until the glide stops, with one end.
 
+## 2026-10-14 — Reconfiguring an Apple build no longer rebuilds all of mbgl-core
+
+**Reported** by an app on this branch: a hook rerun (a new consumer, an integration test app)
+rebuilt mbgl-core from scratch, 10–20 minutes, though nothing native had changed. One macOS
+build dir's compile commands carried `-target arm64-apple-macosx13 -fvisibility=default` 67
+times.
+
+**Root cause.** native_toolchain_cmake configures macOS and iOS with leetal's
+`ios.toolchain.cmake`, which prepends its flags to the cached value of the same variable
+(`set(CMAKE_C_FLAGS "<flags> ${CMAKE_C_FLAGS}" CACHE INTERNAL …)`, likewise CXX, OBJC, OBJCXX
+and the `*_LINK_FLAGS`). CMake reads a toolchain twice on a dir's first configure and once on
+each later one, and `RunCMakeBuilder` reconfigures on every hook run, so every run added one
+more copy and changed every object's command line, which ninja and ccache both rebuild on.
+The per-build-type flags (`CMAKE_<LANG>_FLAGS_RELEASE`, plain variables) also differ between a
+first and a later configure (`-DNDEBUG -O3 -DNDEBUG -O3` vs `-DNDEBUG -O3 -O3 -DNDEBUG`), so
+even without the pile-up the second run of a new dir rebuilt everything once.
+
+**Decision.** `src/cmake/toolchain_flags.cmake`, called around `project()`: before it, each
+cached flag goes back to its starting value (the user's own, normally none); after it, every
+flag is rewritten into the shape a fresh configure produces (toolchain prefix twice, then the
+user's flags). OBJC and OBJCXX are enabled in `project()` on Apple so theirs are in place to
+fix too. Only the leetal toolchain is touched; other platforms are unchanged. Not
+`skipGenerateIfCached`: ninja's own regeneration rule would still reconfigure on any CMake
+edit and add a copy, and the hook's defines would stop reaching the cache.
+
+**Proof, configure only.** `tool/check_toolchain_flags.sh` configures a fixture three times
+per Apple platform and requires `ninja -t commands` to match a fresh pre-fix configure (it
+fails on all four with the module stubbed out). The real `src/` configured three times gives
+identical commands for all 503 build steps, byte-identical to an app's macOS arm64 and iOS
+device dirs that had been configured once. So dirs configured once keep their objects; dirs
+that had already piled up copies rebuild once, back to the fresh-configure command lines,
+which ccache may still hold from those dirs' first builds.
+
 _Append new decisions here with date and rationale._

@@ -149,6 +149,7 @@ void main(List<String> args) async {
       src.resolve('maplibre_flutter_core_android_present.h'),
       src.resolve('maplibre_flutter_core_android_present.cpp'),
       src.resolve('CMakeLists.txt'),
+      src.resolve('cmake/toolchain_flags.cmake'),
       // Derived from the same list the applier walks, so a new patch cannot be
       // added without becoming a build input.
       for (final p in _submodulePatches) packageRoot.resolve(p.patch),
