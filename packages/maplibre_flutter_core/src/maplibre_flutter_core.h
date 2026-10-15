@@ -1286,6 +1286,22 @@ FFI_PLUGIN_EXPORT int mbl_map_current_d3d_handle(MblMap *map, void **out_handle,
 // GpuSurfaceTexture path. 0 on non-Windows.
 FFI_PLUGIN_EXPORT int mbl_map_d3d_active(MblMap *map);
 
+// What the last mbl_map_set_zero_copy(map, 1) came to. Values are part of the
+// ABI.
+typedef enum {
+  // Not decided yet: the render thread has not run the request.
+  MBL_ZERO_COPY_PENDING = 0,
+  // The D3D11 presenter is live (mbl_map_d3d_active reports 1).
+  MBL_ZERO_COPY_ACTIVE = 1,
+  // This GPU cannot share frames with Flutter; the map stays on CPU readback.
+  MBL_ZERO_COPY_UNAVAILABLE = 2,
+} MblZeroCopyState;
+
+// The MblZeroCopyState of `map`, so a caller can stop waiting the moment the
+// render thread has decided rather than after a timeout. Always
+// MBL_ZERO_COPY_UNAVAILABLE off Windows.
+FFI_PLUGIN_EXPORT int mbl_map_zero_copy_state(MblMap *map);
+
 // --- 3D models (SPIKE — not a stable API) ------------------------------------
 //
 // EXPERIMENTAL. Draws an animated 3D mesh inside mbgl, anchored to a LatLng, via

@@ -459,7 +459,9 @@ void mbl_vk_presenter_destroy(MblVkPresenter *p) {
     return;
   }
   if (p->device) {
-    p->device.waitIdle(p->disp());
+    // Not the throwing waitIdle: on a lost device it threw out of teardown and
+    // terminated the process. Teardown goes ahead whatever the result.
+    static_cast<void>(p->disp().vkDeviceWaitIdle(static_cast<VkDevice>(p->device)));
   }
   for (auto &r : p->retired) {
     for (auto &s : r.slots) {

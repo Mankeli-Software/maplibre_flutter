@@ -276,9 +276,13 @@ class MapLibreFlutterWindowsController
   static Future<bool> _confirmZeroCopyActive(
     core.MapLibreCoreMap coreMap,
   ) async {
-    for (var i = 0; i < 20; i++) {
-      if (coreMap.isZeroCopyActive()) return true;
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Until the render thread has decided, then its answer: where the GPU can't
+    // share frames this used to wait out the whole second for every map. The
+    // second stays as a cap for a render thread that never gets to it.
+    for (var i = 0; i < 100; i++) {
+      final decided = coreMap.zeroCopyDecision();
+      if (decided != null) return decided && coreMap.isZeroCopyActive();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     return false;
   }
@@ -415,8 +419,21 @@ class MapLibreFlutterWindowsController
     if (w <= 0 || h <= 0 || (w == _renderWidth && h == _renderHeight)) return;
     _renderWidth = w;
     _renderHeight = h;
+    final before = _coreMap.frameSize();
     _coreMap.resize(w, h);
     notifyCameraChanged(); // viewport size feeds the projection
+    // Complete once a frame at the new size is out, so the widget changes its
+    // cover-fit to the new size when the texture does. Completing at once put
+    // the old frame into the new box for the few frames the render took: a
+    // squashed blink (a map halved when a second one opened beside it). Capped
+    // at a second; the zero-copy path has no CPU frame to watch (null).
+    if (before == null) return;
+    for (var i = 0; i < 60 && !_disposed; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      if (_disposed || _renderWidth != w || _renderHeight != h) return;
+      final now = _coreMap.frameSize();
+      if (now != null && now != before) return;
+    }
   }
 
   @override

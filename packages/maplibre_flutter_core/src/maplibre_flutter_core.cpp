@@ -365,6 +365,10 @@ struct MblMap {
   uint32_t d3dHeight = 0;
   bool d3dActive = false;
   bool d3dTearingDown = false;
+  // What the last setZeroCopy(true) came to (MblZeroCopyState), frameMutex-
+  // guarded: Dart waits for it to leave PENDING rather than polling d3dActive
+  // for a fixed time, which cost every map a second where zero-copy fails.
+  int zeroCopyState = MBL_ZERO_COPY_PENDING;
 #else
   // GL presenter (render thread only). The latest dmabuf frame below is
   // frameMutex-guarded and read by the FlTextureGL getter on the raster thread,
@@ -1062,7 +1066,8 @@ void loadStyleSpec(mbgl::style::Style &style, const std::string &spec) {
 
 void renderThreadMain(MblMap *m, uint32_t width, uint32_t height,
                       float pixelRatio, std::string styleUri) {
-  mbgl::util::RunLoop loop;
+  // A loop of this thread's own — see renderThreadMainContinuous.
+  mbgl::util::RunLoop loop(mbgl::util::RunLoop::Type::New);
   mbgl::HeadlessFrontend frontend(mbgl::Size{width, height}, pixelRatio);
   // Diagnostics only — Static mode publishes frames on demand, not on the
   // observer, and mbgl ignores transition options here anyway.
@@ -1337,7 +1342,13 @@ public:
 
 void renderThreadMainContinuous(MblMap *m, uint32_t width, uint32_t height,
                                 float pixelRatio, std::string styleUri) {
-  mbgl::util::RunLoop loop;
+  // Type::New: a loop of this thread's own. The default type is libuv's
+  // process-wide uv_default_loop() (Windows and Linux; Apple's RunLoop is per
+  // thread anyway), so with two maps both render threads ran the same libuv loop
+  // at once: one map's frames were drawn and read back on the other's thread,
+  // two threads drove one Vulkan device, and the app died (VK_ERROR_DEVICE_LOST
+  // or a fault in the GPU driver) as soon as a second map opened.
+  mbgl::util::RunLoop loop(mbgl::util::RunLoop::Type::New);
   FrameObserver observer(m);
   // Continuous mode: render partial frames immediately and refine as tiles load
   // (invalidateOnUpdate drives renderFrame off the loop; Flush per the upstream
@@ -3492,12 +3503,17 @@ void mbl_map_set_zero_copy(MblMap *m, int enabled) {
       // dispatcher + the per-frame rendered image), so pass it the backend.
       mbgl::gfx::BackendScope guard{*m->frontend->getBackend()};
       m->vkPresenter = mbl_vk_presenter_create(m->frontend->getBackend());
+      std::lock_guard<std::mutex> lk(m->frameMutex);
       if (m->vkPresenter == nullptr) {
         m->zeroCopy = false; // unsupported config → stay on CPU readback
+        m->zeroCopyState = MBL_ZERO_COPY_UNAVAILABLE;
       } else {
-        std::lock_guard<std::mutex> lk(m->frameMutex);
         m->d3dActive = true;
+        m->zeroCopyState = MBL_ZERO_COPY_ACTIVE;
       }
+    } else if (on) {
+      std::lock_guard<std::mutex> lk(m->frameMutex);
+      m->zeroCopyState = MBL_ZERO_COPY_ACTIVE; // already live
     }
     m->renderRequested = true;
   });
@@ -3616,6 +3632,19 @@ int mbl_map_d3d_active(MblMap *m) {
 #else
   (void)m;
   return 0;
+#endif
+}
+
+int mbl_map_zero_copy_state(MblMap *m) {
+#if defined(_WIN32)
+  if (m == nullptr) {
+    return MBL_ZERO_COPY_UNAVAILABLE;
+  }
+  std::lock_guard<std::mutex> lk(m->frameMutex);
+  return m->zeroCopyState;
+#else
+  (void)m;
+  return MBL_ZERO_COPY_UNAVAILABLE;
 #endif
 }
 

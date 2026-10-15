@@ -689,6 +689,20 @@ class MapLibreCoreMap {
         bindings.mbl_map_d3d_active(_handle) != 0;
   }
 
+  /// Whether the Windows D3D presenter has decided after [setZeroCopy](true):
+  /// null while the render thread hasn't run the request, then true (live) or
+  /// false (this GPU can't share frames; the map stays on CPU readback). Lets
+  /// the controller stop waiting the moment it's known instead of after a
+  /// timeout. Always false off Windows.
+  bool? zeroCopyDecision() {
+    _checkAlive();
+    return switch (bindings.mbl_map_zero_copy_state(_handle)) {
+      0 => null, // MBL_ZERO_COPY_PENDING
+      1 => true, // MBL_ZERO_COPY_ACTIVE
+      _ => false, // MBL_ZERO_COPY_UNAVAILABLE
+    };
+  }
+
   /// Selects the byte order [copyFrame] emits: true = BGRA (default; macOS
   /// CVPixelBuffer), false = RGBA (Linux `FlPixelBufferTexture`). No effect on
   /// the zero-copy IOSurface path. Set once at setup.
@@ -1139,6 +1153,28 @@ class MapLibreCoreMap {
   bool awaitFrame(Duration timeout) {
     _checkAlive();
     return bindings.mbl_map_await_frame(_handle, timeout.inMilliseconds) != 0;
+  }
+
+  /// The size in device pixels of the last published CPU frame, or null before
+  /// the first. Lets a caller tell when a frame at a new size has arrived after
+  /// [resize] (the core keeps publishing the old size until then).
+  ({int width, int height})? frameSize() {
+    _checkAlive();
+    return using((arena) {
+      final w = arena<ffi.Uint32>();
+      final h = arena<ffi.Uint32>();
+      final stride = arena<ffi.Uint32>();
+      // Query mode: a null destination reports the dimensions only.
+      final ok = bindings.mbl_map_copy_frame(
+        _handle,
+        ffi.nullptr,
+        0,
+        w,
+        h,
+        stride,
+      );
+      return ok == 0 ? null : (width: w.value, height: h.value);
+    });
   }
 
   /// Resizes the off-screen surface (device pixels) and triggers a re-render.

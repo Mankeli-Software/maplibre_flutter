@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -771,8 +772,9 @@ class _MapTapDetectorState extends State<_MapTapDetector> {
 /// also **masks** the resize: while the window is actively being dragged it holds
 /// the core at one size and cover-fits that frozen frame to the moving box (a
 /// small uniform crop, not a stretch), pushing the real resize once the drag
-/// settles. Because the widget itself decides when to resize, it always knows the
-/// frozen frame's size ([_committedSize]) — no produced-size feedback needed.
+/// settles. The widget decides when to resize and commits the new size
+/// ([_committedSize]) once the controller's `resize` completes, which on the
+/// masked tier is when a frame at that size has been published.
 class _TextureMapView extends StatefulWidget {
   const _TextureMapView({
     required this.controller,
@@ -803,12 +805,33 @@ class _TextureMapViewState extends State<_TextureMapView> {
   // (possibly different) box while a drag is in flight. Null until the first
   // layout / on non-masked tiers (which resize live and render the bare texture).
   Size? _committedSize;
+  // The latest size asked of the core, so an older resize finishing late
+  // doesn't commit its size over a newer one.
+  Size? _requestedSize;
   Timer? _resizeDebounce;
+  // Masked tiers, during a resize: a snapshot of the last frame at
+  // [_committedSize], shown cover-fitted in place of the live texture. The
+  // texture can't be trusted then: the plugin pulls each new frame on the
+  // raster thread, so the first frame at the new size reached it a frame or two
+  // before Dart could commit that size, and was stretched into the old box. An
+  // image of known size can't be. Dropped together with the commit.
+  ui.Image? _mask;
+  bool _masking = false;
 
   @override
   void dispose() {
     _resizeDebounce?.cancel();
+    _mask?.dispose();
     super.dispose();
+  }
+
+  Future<void> _captureMask() async {
+    final image = await widget.controller.snapshotImage();
+    if (!mounted || !_masking) {
+      image?.dispose();
+      return;
+    }
+    setState(() => _mask = image);
   }
 
   // Drive the core's resize during layout (before paint), the desktop-core analog
@@ -829,11 +852,29 @@ class _TextureMapViewState extends State<_TextureMapView> {
       return;
     }
     if (size == _committedSize) return;
+    _requestedSize = size;
+    if (!_masking) {
+      // The core is still at [_committedSize] (the resize goes out after the
+      // debounce), so this captures the old frame.
+      _masking = true;
+      unawaited(_captureMask());
+    }
     _resizeDebounce?.cancel();
-    _resizeDebounce = Timer(const Duration(milliseconds: 100), () {
+    _resizeDebounce = Timer(const Duration(milliseconds: 100), () async {
       if (!mounted) return;
-      widget.controller.resize(size);
-      setState(() => _committedSize = size);
+      // The new size is committed once the controller reports a frame at it,
+      // not when it is asked for: until then the texture still holds the old
+      // frame, and fitting that into the new size squashed it for a moment.
+      await widget.controller.resize(size);
+      if (!mounted || _requestedSize != size) return;
+      final mask = _mask;
+      setState(() {
+        _committedSize = size;
+        _masking = false;
+        _mask = null;
+      });
+      // After the frame that stops drawing it.
+      WidgetsBinding.instance.addPostFrameCallback((_) => mask?.dispose());
     });
   }
 
@@ -845,7 +886,13 @@ class _TextureMapViewState extends State<_TextureMapView> {
         final dpr = MediaQuery.devicePixelRatioOf(context);
         _syncSize(size, dpr);
 
-        Widget map = Texture(textureId: widget.textureId);
+        // During a masked resize, the snapshot of the frame at [_committedSize]
+        // stands in for the texture (see [_mask]); the fit below treats both
+        // alike.
+        final mask = _mask;
+        Widget map = mask != null
+            ? RawImage(image: mask, fit: BoxFit.fill)
+            : Texture(textureId: widget.textureId);
 
         // Mask the resize stretch on lagging tiers: cover-fit the frozen frame
         // (rendered at [_committedSize]) to the current box UNIFORMLY, so it crops

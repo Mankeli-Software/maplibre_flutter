@@ -1,0 +1,118 @@
+--- a/platform/default/include/mbgl/gfx/headless_frontend.hpp
++++ b/platform/default/include/mbgl/gfx/headless_frontend.hpp
+@@ -60,6 +60,10 @@
+     void renderOnce(Map&);
+     void renderFrame();
+ 
++    /// A frame threw (e.g. the Vulkan device was lost): rendering has stopped
++    /// for good and renderFrame() does nothing more.
++    bool hasRenderFailed() const { return renderFailed; }
++
+     std::optional<TransformState> getTransformState() const;
+ 
+ private:
+@@ -70,6 +74,7 @@
+     std::unique_ptr<gfx::HeadlessBackend> backend;
+     util::AsyncTask asyncInvalidate;
+     bool invalidateOnUpdate;
++    bool renderFailed = false;
+ 
+     std::unique_ptr<Renderer> renderer;
+     std::shared_ptr<UpdateParameters> updateParameters;
+--- a/platform/default/src/mbgl/gfx/headless_frontend.cpp
++++ b/platform/default/src/mbgl/gfx/headless_frontend.cpp
+@@ -6,6 +6,7 @@
+ #include <mbgl/renderer/renderer.hpp>
+ #include <mbgl/renderer/renderer_state.hpp>
+ #include <mbgl/renderer/update_parameters.hpp>
++#include <mbgl/util/logging.hpp>
+ #include <mbgl/util/monotonic_timer.hpp>
+ #include <mbgl/util/run_loop.hpp>
+ 
+@@ -162,20 +163,36 @@
+ }
+ 
+ void HeadlessFrontend::renderFrame() {
++    // MBL_RENDER_FAILURE_STOPS_MAP: renderFrame runs from asyncInvalidate inside the
++    // RunLoop, so an exception here (a lost Vulkan device throws from every call)
++    // escaped the render thread and std::terminate took the whole process down. A
++    // failed frame now stops this map only: it is logged as a render error and no
++    // further frame is drawn.
++    if (renderFailed) {
++        return;
++    }
+     if (renderer && updateParameters) {
+-        auto startTime = mbgl::util::MonotonicTimer::now();
+-        gfx::BackendScope guard{*getBackend()};
+-
+-        // onStyleImageMissing might be called during a render. The user
+-        // implemented method could trigger a call to
+-        // MLNRenderFrontend#update which overwrites `updateParameters`.
+-        // Copy the shared pointer here so that the parameters aren't
+-        // destroyed while `render(...)` is still using them.
+-        auto updateParameters_ = updateParameters;
+-        renderer->render(updateParameters_);
+-
+-        auto endTime = mbgl::util::MonotonicTimer::now();
+-        frameTime = (endTime - startTime).count();
++        try {
++            auto startTime = mbgl::util::MonotonicTimer::now();
++            gfx::BackendScope guard{*getBackend()};
++
++            // onStyleImageMissing might be called during a render. The user
++            // implemented method could trigger a call to
++            // MLNRenderFrontend#update which overwrites `updateParameters`.
++            // Copy the shared pointer here so that the parameters aren't
++            // destroyed while `render(...)` is still using them.
++            auto updateParameters_ = updateParameters;
++            renderer->render(updateParameters_);
++
++            auto endTime = mbgl::util::MonotonicTimer::now();
++            frameTime = (endTime - startTime).count();
++        } catch (const std::exception& e) {
++            renderFailed = true;
++            Log::Error(Event::Render, std::string("Rendering failed, the map has stopped: ") + e.what());
++        } catch (...) {
++            renderFailed = true;
++            Log::Error(Event::Render, "Rendering failed, the map has stopped");
++        }
+     }
+ }
+ 
+--- a/src/mbgl/vulkan/context.cpp
++++ b/src/mbgl/vulkan/context.cpp
+@@ -146,7 +146,9 @@
+ void Context::destroyResources() {
+     MBGL_VERIFY_THREAD(tid);
+ 
+-    backend.getDevice()->waitIdle(backend.getDispatcher());
++    // Called from ~Context() (noexcept): the throwing waitIdle terminated the process
++    // when the device had been lost. The result doesn't matter to teardown.
++    static_cast<void>(backend.getDispatcher().vkDeviceWaitIdle(static_cast<VkDevice>(backend.getDevice().get())));
+ 
+     for (auto& frame : frameResources) {
+         frame.runDeletionQueue(*this);
+--- a/src/mbgl/vulkan/renderable_resource.cpp
++++ b/src/mbgl/vulkan/renderable_resource.cpp
+@@ -11,7 +11,8 @@
+         return;
+     }
+ 
+-    backend.getDevice()->waitIdle(backend.getDispatcher());
++    // A destructor: never throw, even on a lost device.
++    static_cast<void>(backend.getDispatcher().vkDeviceWaitIdle(static_cast<VkDevice>(backend.getDevice().get())));
+ 
+     // specific order
+     swapchainFramebuffers.clear();
+--- a/src/mbgl/vulkan/renderer_backend.cpp
++++ b/src/mbgl/vulkan/renderer_backend.cpp
+@@ -659,7 +659,8 @@
+ }
+ 
+ void RendererBackend::destroyResources() {
+-    if (device) device->waitIdle(dispatcher);
++    // Called from the destructor: never throw, even on a lost device.
++    if (device) static_cast<void>(dispatcher.vkDeviceWaitIdle(static_cast<VkDevice>(device.get())));
+ 
+     gfx::BackendScope scope(*this, gfx::BackendScope::ScopeType::Implicit);
+     getThreadPool().runRenderJobs(true /* closeQueue */);

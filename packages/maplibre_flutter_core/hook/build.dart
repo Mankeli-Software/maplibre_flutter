@@ -404,6 +404,19 @@ const _submodulePatches = [
     marker: 'MBL_WIN32_FILE_URL_DRIVE',
     patch: 'patches/windows-file-url-drive-letter.patch',
   ),
+  // A frame that throws stops its own map, not the process. renderFrame runs
+  // inside the render thread's RunLoop, so an exception from it (on Windows,
+  // vk::DeviceLostError from every Vulkan call once the Intel driver drops the
+  // device) reached std::terminate and the whole app died. The frame is now
+  // caught and logged as a render error, and that map draws nothing more. The
+  // teardown's waitIdle calls, inside noexcept destructors, no longer throw on
+  // a lost device either, so the stopped map can still be disposed. After the
+  // other patches: renderer_backend.cpp's context is the external-memory one's.
+  (
+    file: 'platform/default/src/mbgl/gfx/headless_frontend.cpp',
+    marker: 'MBL_RENDER_FAILURE_STOPS_MAP',
+    patch: 'patches/render-failure-stops-map.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.

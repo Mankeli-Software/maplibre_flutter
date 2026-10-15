@@ -2120,4 +2120,20 @@ device dirs that had been configured once. So dirs configured once keep their ob
 that had already piled up copies rebuild once, back to the fresh-configure command lines,
 which ccache may still hold from those dirs' first builds.
 
+## 2026-10-15 — Windows: a second map crashed the app
+
+**Root cause.** Both maps' render threads ran mbgl's `RunLoop` of the default type, which on
+Windows and Linux is libuv's process-wide `uv_default_loop()` (Apple's RunLoop is per thread
+anyway). With two maps, both threads ran the same loop: one map's frames were drawn and read
+back on the other's thread, two threads drove one `VkDevice`, and the app died with
+`VK_ERROR_DEVICE_LOST` or a fault in the Intel driver as soon as the second map opened.
+
+**Decision.** `RunLoop::Type::New` in both render-thread mains. Containment as well, since a
+GPU can still fail on its own: `render-failure-stops-map.patch` catches a frame that throws, so
+it stops only its own map, and teardown's `waitIdle` calls no longer throw on a lost device.
+Two smaller Windows fixes found on the way: Dart waited a fixed second for the zero-copy
+decision on every map (`mbl_map_zero_copy_state` now reports it), and the first map blinked
+and stretched while the second opened (the widget now shows a snapshot of the map, cover-fitted,
+until a frame at the new size arrives, `MapLibreCoreMap.frameSize`).
+
 _Append new decisions here with date and rationale._

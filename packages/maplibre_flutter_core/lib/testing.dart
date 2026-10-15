@@ -215,6 +215,12 @@ class RecordingCoreMap implements MapLibreCoreMap {
   bool isZeroCopyActive() => false;
 
   @override
+  bool? zeroCopyDecision() => false;
+
+  @override
+  ({int width, int height})? frameSize() => null;
+
+  @override
   void setPixelFormatBgra(bool bgra) => pixelFormatIsBgra = bgra;
 
   @override

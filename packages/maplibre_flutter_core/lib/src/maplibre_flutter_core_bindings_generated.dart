@@ -1282,6 +1282,9 @@ external int mbl_map_current_d3d_handle(
 @ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
 external int mbl_map_d3d_active(ffi.Pointer<MblMap> map);
 
+@ffi.Native<ffi.Int Function(ffi.Pointer<MblMap>)>()
+external int mbl_map_zero_copy_state(ffi.Pointer<MblMap> map);
+
 @ffi.Native<
   ffi.Int Function(
     ffi.Pointer<MblMap>,
