@@ -1,0 +1,31 @@
+diff --git a/platform/default/src/mbgl/storage/local_file_source.cpp b/platform/default/src/mbgl/storage/local_file_source.cpp
+index e855e067..b0ab836c 100644
+--- a/platform/default/src/mbgl/storage/local_file_source.cpp
++++ b/platform/default/src/mbgl/storage/local_file_source.cpp
+@@ -11,6 +11,8 @@
+ #include <mbgl/util/url.hpp>
+ #include <mbgl/storage/resource_options.hpp>
+ 
++#include <cctype>
++
+ namespace {
+ bool acceptsURL(const std::string& url) {
+     return url.starts_with(mbgl::util::FILE_PROTOCOL);
+@@ -34,8 +36,16 @@ public:
+         }
+ 
+         // Cut off the protocol and prefix with path.
+-        const auto path = mbgl::util::percentDecode(
++        auto path = mbgl::util::percentDecode(
+             resource.url.substr(std::char_traits<char>::length(util::FILE_PROTOCOL)));
++#ifdef _WIN32
++        // MBL_WIN32_FILE_URL_DRIVE: file:///C:/x leaves "/C:/x", which Windows
++        // can't open; drop the slash before a drive letter.
++        if (path.size() >= 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) &&
++            path[2] == ':') {
++            path.erase(0, 1);
++        }
++#endif
+         requestLocalFile(path, req, resource.dataRange);
+     }
+ 

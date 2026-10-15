@@ -395,6 +395,15 @@ const _submodulePatches = [
     marker: 'MBL_EMBEDDER_HEADERS',
     patch: 'patches/http-embedder-headers-darwin.patch',
   ),
+  // Windows: a `file:///C:/x` URL leaves the path `/C:/x` once mbgl cuts off
+  // `file://`, and Windows can't open that, so every local PMTiles file, glyph
+  // and sprite fails with "path not found". Drops the slash before a drive
+  // letter (`#ifdef _WIN32`, a no-op elsewhere).
+  (
+    file: 'platform/default/src/mbgl/storage/local_file_source.cpp',
+    marker: 'MBL_WIN32_FILE_URL_DRIVE',
+    patch: 'patches/windows-file-url-drive-letter.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.

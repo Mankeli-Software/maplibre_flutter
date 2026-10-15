@@ -23,7 +23,7 @@ index 8b6727307d49..2f385e301d2a 100644
 +    // no dependency on an embedder header; the symbol lives in the shim that
 +    // links this library. Appended LAST so an embedder cannot clobber the
 +    // conditional-GET headers above, which would silently defeat caching.
-+    if (char *extra = mbl_http_headers_for_url(url.c_str())) {
++    if (char *extra = mbl_http_headers_for_url(resource.url.c_str())) {
 +        const char *line = extra;
 +        while (*line) {
 +            const char *end = std::strchr(line, '\n');
