@@ -66,6 +66,12 @@ external ffi.Pointer<ffi.Char> mbl_get_cache_path();
 @ffi.Native<ffi.Int Function(ffi.Int32)>()
 external int mbl_configure_tile_server(int server);
 
+@ffi.Native<ffi.Int Function()>()
+external int mbl_prewarm();
+
+@ffi.Native<ffi.Void Function()>()
+external void mbl_clear_prewarmed_resources();
+
 @ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Char>)>()
 external int mbl_set_http_headers(ffi.Pointer<ffi.Char> rules_json);
 

@@ -130,4 +130,28 @@ abstract final class MapLibreSettings {
   /// Null on a renderer with no cache; `':memory:'` means the cache is not
   /// persistent — which is what you get if [configure] was never called.
   static String? get cachePath => MapLibreFlutterPlatform.instance.cachePath;
+
+  /// Does the engine's one-time GPU setup in the background now, so the next
+  /// map to open skips it. Call it when a map is likely soon — at app start, or
+  /// on entering a screen that shows one — and [clearPrewarmedResources] when
+  /// it is not. Named after gl-js `prewarm` / `clearPrewarmedResources`, which
+  /// do the same for its web workers.
+  ///
+  /// On Windows that setup is the Vulkan instance every map shares, which
+  /// initialises each installed GPU driver: 0.4–0.7 s on a laptop with two
+  /// GPUs, otherwise paid by the first map to open. The warm state is held
+  /// until [clearPrewarmedResources], so it also spans the gap between closing
+  /// one map and opening the next. It costs a loaded driver and a little GPU
+  /// memory; on a laptop with two GPUs, holding it may keep the discrete one
+  /// awake.
+  ///
+  /// Returns false on a renderer with nothing to warm (everything but
+  /// Windows), where it does nothing. Never blocks; calling it again while warm
+  /// is a no-op.
+  static bool prewarm() => MapLibreFlutterPlatform.instance.prewarm();
+
+  /// Drops what [prewarm] held; the shared setup then lives only as long as
+  /// the maps using it. Never blocks; a no-op without a prewarm.
+  static void clearPrewarmedResources() =>
+      MapLibreFlutterPlatform.instance.clearPrewarmedResources();
 }

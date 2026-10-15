@@ -223,6 +223,19 @@ typedef enum {
 // query string needs none of this — that path never consults these options.
 FFI_PLUGIN_EXPORT int mbl_configure_tile_server(int32_t server);
 
+// Starts the GPU backend's process-wide setup on a background thread and keeps
+// it alive until mbl_clear_prewarmed_resources, so the next map skips it. On Windows that
+// is the shared VkInstance, which initialises every installed GPU driver: ~0.4–0.7 s
+// on a hybrid laptop, otherwise paid by the first map to open. Returns 1 when
+// started or already warm, 0 on a tier with nothing to warm (everything but
+// Windows). Never blocks.
+FFI_PLUGIN_EXPORT int mbl_prewarm(void);
+
+// Drops the reference mbl_prewarm took; the shared setup then lives only as
+// long as the maps using it. Never blocks: a prewarm still running releases
+// itself when it finishes. A no-op without a prewarm.
+FFI_PLUGIN_EXPORT void mbl_clear_prewarmed_resources(void);
+
 // Per-request HTTP headers, as a JSON array of rules:
 //
 //   [{"urlPrefix":"https://tiles.example.com/",

@@ -86,6 +86,13 @@ class MapLibreFlutterWindows extends MapLibreFlutterPlatform {
   @override
   String? get cachePath => MapLibreCoreSettings.cachePath;
 
+  @override
+  bool prewarm() => MapLibreCoreSettings.prewarm();
+
+  @override
+  void clearPrewarmedResources() =>
+      MapLibreCoreSettings.clearPrewarmedResources();
+
   /// Offline regions live in the same database `cachePath` names, so the tier
   /// that has a cache is exactly the tier that can store regions.
   @override

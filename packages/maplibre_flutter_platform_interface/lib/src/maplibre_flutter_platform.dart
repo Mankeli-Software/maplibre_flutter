@@ -91,6 +91,13 @@ abstract class MapLibreFlutterPlatform extends PlatformInterface {
   /// means there IS no persistent cache.
   String? get cachePath => null;
 
+  /// Starts the engine's one-time GPU setup ahead of the first map. Returns
+  /// false on a tier with nothing to warm. See `MapLibreSettings.prewarm`.
+  bool prewarm() => false;
+
+  /// Drops what [prewarm] held. See `MapLibreSettings.clearPrewarmedResources`.
+  void clearPrewarmedResources() {}
+
   /// Downloading and managing offline regions, or null on a tier that cannot.
   ///
   /// A capability object rather than a dozen methods on this class (CLAUDE.md

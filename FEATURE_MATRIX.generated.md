@@ -31,14 +31,20 @@ Optional capabilities are feature-detected with `is` (CLAUDE.md §3), so this ta
 ## C ABI surface
 
 Every `FFI_PLUGIN_EXPORT` in `maplibre_flutter_core.h` — the whole engine surface the Dart tiers can reach. 
-**92 entry points.**
+**99 entry points.**
 
 <details><summary>Full list</summary>
 
 - `mbl_map_set_diagnostic_callback`
+- `mbl_dart_session_open`
+- `mbl_dart_session_close`
+- `mbl_dart_callback_register`
+- `mbl_dart_callback_unregister`
 - `mbl_configure`
 - `mbl_get_cache_path`
 - `mbl_configure_tile_server`
+- `mbl_prewarm`
+- `mbl_clear_prewarmed_resources`
 - `mbl_set_http_headers`
 - `mbl_http_headers_for_url`
 - `mbl_set_request_transform`
@@ -118,6 +124,7 @@ Every `FFI_PLUGIN_EXPORT` in `maplibre_flutter_core.h` — the whole engine surf
 - `mbl_map_gl_active`
 - `mbl_map_current_d3d_handle`
 - `mbl_map_d3d_active`
+- `mbl_map_zero_copy_state`
 - `mbl_map_add_model`
 - `mbl_map_set_model_transform`
 - `mbl_map_frame_count`

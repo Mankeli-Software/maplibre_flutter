@@ -229,6 +229,15 @@ abstract final class MapLibreCoreSettings {
   static bool configureTileServer(CoreTileServer server) =>
       bindings.mbl_configure_tile_server(server.code) != 0;
 
+  /// Starts the GPU backend's process-wide setup in the background and keeps
+  /// it until [clearPrewarmedResources], so the next map skips it. Returns false on a
+  /// tier with nothing to warm (everything but Windows). Never blocks.
+  static bool prewarm() => bindings.mbl_prewarm() != 0;
+
+  /// Drops what [prewarm] held. Never blocks; a no-op without a prewarm.
+  static void clearPrewarmedResources() =>
+      bindings.mbl_clear_prewarmed_resources();
+
   /// Extra HTTP request headers, scoped by URL prefix.
   ///
   /// REPLACE-ALL, and that is the whole update protocol: rotating an expiring

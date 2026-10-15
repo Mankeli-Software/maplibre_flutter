@@ -595,7 +595,10 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   31.0.101.2145 reports the KMT import unsupported, yet accepts it and never shares the memory
   (every frame reads back zeros, a white map). The query needs `VK_KHR_external_memory_capabilities`
   on the 1.0 instance, and must run before `mbl_map_d3d_active` reports true, because Dart
-  commits to the GPU texture on it. ANGLE share-handle
+  commits to the GPU texture on it. One `VkInstance` per process, shared by every map
+  (`shared-vk-instance.patch`): creating one initialises every installed driver, ~0.44 s per map
+  on a hybrid laptop. Never share the `VkDevice` — one per map keeps a lost device to its map.
+  ANGLE share-handle
   textures **must be `DXGI_FORMAT_B8G8R8A8_UNORM`** or the map is white.
 - Web: **`glFlush()` after blitting to the canvas** in an rAF callback. Under ANGLE/D3D11 the blit
   can sit unsubmitted and the browser composites a stale canvas.

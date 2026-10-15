@@ -1,0 +1,70 @@
+diff --git a/src/mbgl/vulkan/renderer_backend.cpp b/src/mbgl/vulkan/renderer_backend.cpp
+index 68a0ca6..8181725 100644
+--- a/src/mbgl/vulkan/renderer_backend.cpp
++++ b/src/mbgl/vulkan/renderer_backend.cpp
+@@ -29,6 +29,7 @@
+ #include <mbgl/shaders/vulkan/widevector.hpp>
+ 
+ #include <cassert>
++#include <mutex>
+ #include <string>
+ 
+ #ifdef ENABLE_VULKAN_VALIDATION
+@@ -415,7 +416,28 @@ void RendererBackend::init() {
+     initCommandPool();
+ }
+ 
++// MBL_SHARED_VK_INSTANCE (maplibre_flutter committed patch): one VkInstance per process,
++// shared by every backend that uses this initInstance and destroyed with the last of
++// them. Creating an instance initialises every installed driver, and on a hybrid laptop
++// the discrete GPU's driver alone took ~440 ms, for every map. Each backend still
++// creates its own VkDevice, so maps stay isolated: a lost device stops only its map.
++namespace {
++std::mutex sharedInstanceMutex;
++VkInstance sharedInstance = VK_NULL_HANDLE;
++std::size_t sharedInstanceUsers = 0;
++} // namespace
++
+ void RendererBackend::initInstance() {
++    // Held through creation, so a second map waits for the first's instance.
++    std::lock_guard<std::mutex> sharedLock(sharedInstanceMutex);
++    if (sharedInstance != VK_NULL_HANDLE) {
++        ++sharedInstanceUsers;
++        instance = vk::UniqueInstance(vk::Instance(sharedInstance),
++                                      vk::UniqueHandleTraits<vk::Instance, DispatchLoaderDynamic>::deleter(
++                                          nullptr, dispatcher));
++        return;
++    }
++
+     // Vulkan 1.1 on Android is supported on 71% of devices (compared to 1.3 with 6%) as of April 23 2024
+     // https://vulkan.gpuinfo.org/
+ #ifdef __APPLE__
+@@ -469,6 +491,8 @@ void RendererBackend::initInstance() {
+     }
+ 
+     instance = vk::createInstanceUnique(createInfo, nullptr, dispatcher);
++    sharedInstance = instance.get();
++    sharedInstanceUsers = 1;
+ }
+ 
+ void RendererBackend::initSurface() {
+@@ -681,7 +705,18 @@ void RendererBackend::destroyResources() {
+     debugUtilsCallback.reset();
+     debugReportCallback.reset();
+ 
+-    usingSharedContext ? void(instance.release()) : instance.reset();
++    if (usingSharedContext) {
++        void(instance.release());
++    } else if (instance) {
++        // MBL_SHARED_VK_INSTANCE: destroy the shared instance only with its last user.
++        std::lock_guard<std::mutex> sharedLock(sharedInstanceMutex);
++        const vk::Instance handle = instance.release();
++        const bool shared = static_cast<VkInstance>(handle) == sharedInstance;
++        if (!shared || --sharedInstanceUsers == 0) {
++            if (shared) sharedInstance = VK_NULL_HANDLE;
++            handle.destroy(nullptr, dispatcher);
++        }
++    }
+ }
+ 
+ /// @brief Register a list of types with a shader registry instance

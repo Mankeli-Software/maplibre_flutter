@@ -2154,4 +2154,25 @@ now enabled by the external-memory patch; without it the device extension
 `VK_KHR_external_memory` was already invalid (`VUID-vkCreateDevice-ppEnabledExtensionNames-01387`).
 The validation layer is clean on that GPU, and the maps draw.
 
+## 2026-10-15 — Windows: one VkInstance per process, and `prewarm`
+
+**Measured** (vejo two-map page, Intel UHD 630 + GTX 1070 Max-Q): a map took 0.45–0.9 s in
+Vulkan setup before its first frame. `VkDevice` creation was ~10 ms, glslang ~160 ms once per
+process, and all pipelines together ~1 ms, so a `VkPipelineCache` would have saved nothing.
+The cost was `vkCreateInstance`, ~440 ms per map: it initialises every installed driver, and
+with the NVIDIA one hidden from the loader it fell to ~5 ms, though the maps render on the
+Intel GPU.
+
+**Decision.** `shared-vk-instance.patch`: one reference-counted `VkInstance` per process,
+created by the first backend and destroyed with the last. Each map keeps its own `VkDevice`:
+sharing the device would mean locking its queue across render threads and a lost device
+stopping every map, for ~10 ms. A second map is ready in 190–310 ms instead of ~700 ms. The
+first map still pays, so `MapLibreSettings.prewarm()` / `clearPrewarmedResources()` (named
+after gl-js, which warms its web workers the same way) let the app take that cost earlier:
+a 1x1 headless backend on a background thread holding the instance. Released, the instance
+again lives only as long as its maps, so a laptop's discrete GPU is not kept awake by a map
+nobody has open. One observation: a map created on the app's very first frame still spent
+~420 ms in `vkCreateDevice` after a prewarm, likely the Intel driver busy with Flutter's own
+start; maps opened later saw ~10 ms.
+
 _Append new decisions here with date and rationale._

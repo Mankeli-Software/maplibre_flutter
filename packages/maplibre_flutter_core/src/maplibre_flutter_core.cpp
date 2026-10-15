@@ -15,6 +15,7 @@
 #include "maplibre_flutter_core_model.hpp"
 
 #include <mbgl/gfx/backend_scope.hpp>
+#include <mbgl/gfx/headless_backend.hpp>
 #include <mbgl/gfx/headless_frontend.hpp>
 #include <mbgl/map/bound_options.hpp>
 #include <mbgl/map/camera.hpp>
@@ -4485,6 +4486,73 @@ int mbl_configure_tile_server(int32_t server) {
   std::lock_guard<std::mutex> lk(g_resourceMutex);
   resourceOptionsLocked().withTileServerOptions(std::move(options));
   return 1;
+}
+
+namespace {
+
+// mbl_prewarm's backend. INTENTIONALLY LEAKED like the offline state: a static
+// destructor would tear Vulkan down while the process is unloading the drivers.
+struct PrewarmState {
+  std::mutex mutex;
+  bool warming = false; // the background thread is still creating `backend`
+  bool wanted = false;  // between mbl_prewarm and mbl_clear_prewarmed_resources
+  std::unique_ptr<mbgl::gfx::HeadlessBackend> backend;
+};
+
+PrewarmState &prewarmState() {
+  static auto *state = new PrewarmState();
+  return *state;
+}
+
+// Off the caller's thread: the last reference to the shared VkInstance may go
+// with it, and destroying an instance unloads the drivers.
+void destroyInBackground(std::unique_ptr<mbgl::gfx::HeadlessBackend> backend) {
+  if (backend == nullptr) return;
+  std::thread([b = std::move(backend)]() mutable { b.reset(); }).detach();
+}
+
+} // namespace
+
+int mbl_prewarm(void) {
+#if defined(_WIN32)
+  auto &state = prewarmState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  state.wanted = true;
+  if (state.warming || state.backend != nullptr) return 1;
+  state.warming = true;
+  std::thread([&state] {
+    // A 1x1 backend: a small VkDevice of its own, and a reference on the
+    // process-wide VkInstance that every map's backend reuses
+    // (patches/shared-vk-instance.patch).
+    std::unique_ptr<mbgl::gfx::HeadlessBackend> backend;
+    try {
+      backend = mbgl::gfx::HeadlessBackend::Create(mbgl::Size{1, 1});
+    } catch (const std::exception &e) {
+      fprintf(stderr, "maplibre_flutter_core: prewarm failed: %s\n", e.what());
+    } catch (...) {
+      fprintf(stderr, "maplibre_flutter_core: prewarm failed.\n");
+    }
+    std::lock_guard<std::mutex> lk(state.mutex);
+    state.warming = false;
+    if (state.wanted) {
+      state.backend = std::move(backend);
+    } else {
+      destroyInBackground(std::move(backend)); // released while warming
+    }
+  }).detach();
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+void mbl_clear_prewarmed_resources(void) {
+#if defined(_WIN32)
+  auto &state = prewarmState();
+  std::lock_guard<std::mutex> lk(state.mutex);
+  state.wanted = false;
+  destroyInBackground(std::move(state.backend));
+#endif
 }
 
 namespace {

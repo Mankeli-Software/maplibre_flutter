@@ -417,6 +417,18 @@ const _submodulePatches = [
     marker: 'MBL_RENDER_FAILURE_STOPS_MAP',
     patch: 'patches/render-failure-stops-map.patch',
   ),
+  // Vulkan: one VkInstance per process instead of one per map. Creating an
+  // instance initialises every installed GPU driver; on a hybrid laptop the
+  // NVIDIA one alone took ~440 ms for every map, though the maps render on the
+  // Intel GPU. The instance is reference-counted and destroyed with its last
+  // backend; each map keeps its own VkDevice, so a lost device still stops only
+  // its own map. Also what mbl_prewarm holds. AFTER the render-failure patch:
+  // destroyResources' context is that patch's.
+  (
+    file: 'src/mbgl/vulkan/renderer_backend.cpp',
+    marker: 'MBL_SHARED_VK_INSTANCE',
+    patch: 'patches/shared-vk-instance.patch',
+  ),
 ];
 
 /// Applies [_submodulePatches] to the vendored mbgl-native submodule.
