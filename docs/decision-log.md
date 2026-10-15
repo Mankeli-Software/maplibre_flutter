@@ -2136,4 +2136,22 @@ decision on every map (`mbl_map_zero_copy_state` now reports it), and the first 
 and stretched while the second opened (the widget now shows a snapshot of the map, cover-fitted,
 until a frame at the new size arrives, `MapLibreCoreMap.frameSize`).
 
+## 2026-10-15 — Windows: ask the driver whether a frame can be shared, instead of testing it
+
+**Was.** The presenter proved sharing with a write and a read-back: Vulkan cleared a probe
+texture, D3D11 read it back. Needed because Intel UHD 630 (driver 31.0.101.2145) accepts the
+KMT import and then never shares the memory, so every frame read back as zeros, a white map.
+The validation layer flagged the probe itself: `VUID-VkImageCreateInfo-pNext-00990` and
+`VUID-VkImportMemoryWin32HandleInfoKHR-handleType-09861`, i.e. we created an image the driver
+had said it cannot back.
+
+**Decision.** Ask first, as the spec requires: `vkGetPhysicalDeviceImageFormatProperties2` with
+`VkPhysicalDeviceExternalImageFormatInfo` (D3D11 KMT) for the slot image (BGRA8, OPTIMAL,
+TRANSFER_DST). The UHD 630 answers `VK_ERROR_FORMAT_NOT_SUPPORTED`, so it goes to the CPU path
+without touching the import. The query runs before the D3D11 device is created (12 ms to
+0.1 ms per map there). It needs `VK_KHR_external_memory_capabilities` at the 1.0 instance,
+now enabled by the external-memory patch; without it the device extension
+`VK_KHR_external_memory` was already invalid (`VUID-vkCreateDevice-ppEnabledExtensionNames-01387`).
+The validation layer is clean on that GPU, and the maps draw.
+
 _Append new decisions here with date and rationale._

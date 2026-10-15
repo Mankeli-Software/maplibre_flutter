@@ -589,7 +589,13 @@ specific traps. The *why* for every one is in `docs/decision-log.md`.
   Flutter's raster context — they use different displays. Share via a **dmabuf** (kernel fd) on
   Linux, IOSurface on Apple, a D3D11 shared handle on Windows.
 - Windows: Flutter's consumer needs a **legacy** DXGI shared handle (no keyed mutex); some drivers
-  can only import the NT handle into Vulkan. Detect and fall back to CPU. ANGLE share-handle
+  can only import the NT handle into Vulkan. Detect and fall back to CPU — **by asking
+  `vkGetPhysicalDeviceImageFormatProperties2` (+ `VkPhysicalDeviceExternalImageFormatInfo`, KMT)
+  when the presenter is created**, not by the import succeeding: Intel UHD 630 on driver
+  31.0.101.2145 reports the KMT import unsupported, yet accepts it and never shares the memory
+  (every frame reads back zeros, a white map). The query needs `VK_KHR_external_memory_capabilities`
+  on the 1.0 instance, and must run before `mbl_map_d3d_active` reports true, because Dart
+  commits to the GPU texture on it. ANGLE share-handle
   textures **must be `DXGI_FORMAT_B8G8R8A8_UNORM`** or the map is white.
 - Web: **`glFlush()` after blitting to the canvas** in an rAF callback. Under ANGLE/D3D11 the blit
   can sit unsubmitted and the browser composites a stale canvas.

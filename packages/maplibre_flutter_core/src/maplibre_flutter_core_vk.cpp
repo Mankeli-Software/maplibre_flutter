@@ -235,6 +235,50 @@ bool buildSlot(MblVkPresenter *p, Slot &s, uint32_t w, uint32_t h) {
   return true;
 }
 
+// Asks the driver, as the spec requires before creating an external-memory image,
+// whether our slot image (BGRA8, 2D, OPTIMAL, TRANSFER_DST) can import a D3D11 KMT
+// handle (VUID-VkImageCreateInfo-pNext-00990). Intel UHD 630 on 31.0.101.2145 reports
+// it can't, yet its import calls still succeed without sharing the memory: every frame
+// then reads back as transparent zeros, a white map. So trust this query, not the
+// import calls. Needs VK_KHR_external_memory_capabilities at the 1.0 instance.
+bool kmtImportSupported(const mbgl::vulkan::DispatchLoaderDynamic &disp,
+                        vk::PhysicalDevice physicalDevice) {
+  if (disp.vkGetPhysicalDeviceImageFormatProperties2KHR == nullptr) {
+    fprintf(stderr, "maplibre_flutter_core: vkGetPhysicalDeviceImageFormatProperties2 "
+                    "unavailable; using CPU readback.\n");
+    return false;
+  }
+  vk::PhysicalDeviceExternalImageFormatInfo extInfo;
+  extInfo.handleType = vk::ExternalMemoryHandleTypeFlagBits::eD3D11TextureKmt;
+  vk::PhysicalDeviceImageFormatInfo2 info;
+  info.pNext = &extInfo;
+  info.format = vk::Format::eB8G8R8A8Unorm;
+  info.type = vk::ImageType::e2D;
+  info.tiling = vk::ImageTiling::eOptimal;
+  info.usage = vk::ImageUsageFlagBits::eTransferDst;
+  vk::ExternalImageFormatProperties extProps;
+  vk::ImageFormatProperties2 props;
+  props.pNext = &extProps;
+  // The C entry point, not vk::'s: an unsupported combination is a result here
+  // (VK_ERROR_FORMAT_NOT_SUPPORTED), not an exception.
+  const VkResult r = disp.vkGetPhysicalDeviceImageFormatProperties2KHR(
+      static_cast<VkPhysicalDevice>(physicalDevice),
+      reinterpret_cast<const VkPhysicalDeviceImageFormatInfo2 *>(&info),
+      reinterpret_cast<VkImageFormatProperties2 *>(&props));
+  const auto features = extProps.externalMemoryProperties.externalMemoryFeatures;
+  if (r != VK_SUCCESS ||
+      !(features & vk::ExternalMemoryFeatureFlagBits::eImportable)) {
+    fprintf(stderr,
+            "maplibre_flutter_core: this GPU cannot import the D3D11 legacy shared "
+            "handle into a Vulkan image (result %d, features 0x%x); using CPU "
+            "readback.\n",
+            static_cast<int>(r),
+            static_cast<unsigned>(VkExternalMemoryFeatureFlags(features)));
+    return false;
+  }
+  return true;
+}
+
 void reapRetired(MblVkPresenter *p) {
   for (auto it = p->retired.begin(); it != p->retired.end();) {
     if (p->presentCount >= it->destroyAfter) {
@@ -272,6 +316,10 @@ MblVkPresenter *mbl_vk_presenter_create(void *backend) {
     if (!idProps.deviceLUIDValid) {
       fprintf(stderr, "maplibre_flutter_core: Vulkan device LUID invalid; no D3D "
                       "zero-copy, using CPU readback.\n");
+      return nullptr;
+    }
+    // Before any D3D work: on a GPU that cannot share, skip creating the D3D11 device.
+    if (!kmtImportSupported(disp, physicalDevice)) {
       return nullptr;
     }
 
@@ -319,6 +367,22 @@ MblVkPresenter *mbl_vk_presenter_create(void *backend) {
     p->adapter = adapter;
     p->d3dDevice = d3dDevice;
     p->d3dContext = d3dContext;
+
+    // Decide on the legacy-handle import now, not at the first frame. The ring is
+    // built lazily on the first present, but by then Dart has seen mbl_map_d3d_active
+    // and committed to the GpuSurfaceTexture — a failed import there drops the core
+    // to CPU readback while Flutter keeps sampling an empty shared texture, and the
+    // map is white forever. The format query above already ruled out GPUs that
+    // cannot share the memory (Intel UHD 630: some drivers refuse the import, others
+    // accept it without sharing); this probe slot catches an import that fails
+    // anyway. Failing here leaves d3dActive unset, so Dart registers the CPU texture.
+    Slot probe;
+    const bool usable = buildSlot(p, probe, 16, 16);
+    p->destroySlot(probe);
+    if (!usable) {
+      mbl_vk_presenter_destroy(p);
+      return nullptr;
+    }
     return p;
   } catch (const std::exception &e) {
     fprintf(stderr, "maplibre_flutter_core: Vulkan zero-copy create failed: %s\n",
